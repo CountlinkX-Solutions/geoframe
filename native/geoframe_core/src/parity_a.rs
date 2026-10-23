@@ -20,7 +20,7 @@ use crate::GeoColumn;
 const VALID: &str = "Valid Geometry";
 
 /// Converts the variants that are not stored natively (`Line`, `Rect`, `Triangle`).
-fn normalize(geom: &Geometry<f64>) -> Geometry<f64> {
+pub(crate) fn normalize(geom: &Geometry<f64>) -> Geometry<f64> {
     match geom {
         Geometry::Line(l) => Geometry::LineString(LineString::new(vec![l.start, l.end])),
         Geometry::Rect(r) => Geometry::Polygon(r.to_polygon()),

@@ -147,7 +147,7 @@ def conv(kind, v):
         return int(v)
     if kind == "float":
         return num(v)
-    if kind == "string":
+    if kind in ("string", "json"):
         return str(v)
     if kind == "geom":
         return full(v)
@@ -230,7 +230,8 @@ def singles(ids):
 
 NON_EMPTY_2D = [
     k for k, w in CORPUS.items()
-    if w is not None and "EMPTY" not in w and not k.startswith("g_") and not k.startswith("e_")
+    if w is not None and "EMPTY" not in w
+    and not k.startswith(("g_", "e_", "i_"))
 ]
 EMPTIES = ["pt_empty", "line_empty", "poly_empty", "coll_empty", "null"]
 GEO = [k for k in CORPUS if k.startswith("g_")]
@@ -380,6 +381,73 @@ def build_constructive():
 # --------------------------------------------------------------------------------------
 BIG_EXTEND = "POLYGON ((-30 -30, 40 -30, 40 40, -30 40, -30 -30))"
 PART_EXTEND = "POLYGON ((-1 -1, 12 -1, 12 1, -1 1, -1 -1))"
+
+
+# Batch I1 corpus: simplicity, canonical form and precision cases. The `i_` prefix keeps them out
+# of the shared id lists, so older fixtures are unchanged.
+I_CORPUS = {
+    "i_mpt_dup": "MULTIPOINT ((0 0), (0 0))",
+    "i_mpt_empty": "MULTIPOINT EMPTY",
+    "i_line_t": "LINESTRING (0 0, 2 0, 1 1, 1 0)",
+    "i_line_loop_tail": "LINESTRING (0 0, 2 0, 2 2, 0 0, 0 -2)",
+    "i_line_back": "LINESTRING (0 0, 4 0, 2 0)",
+    "i_line_back_closed": "LINESTRING (0 0, 1 1, 0 0)",
+    "i_line_touch_end": "LINESTRING (0 0, 4 0, 4 4, 2 0)",
+    "i_line_ring_tail": "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0, 2 -1)",
+    "i_line_ring_cross": "LINESTRING (0 0, 4 0, 4 4, 2 2, 0 4, 0 0)",
+    "i_line_vee": "LINESTRING (0 0, 2 2, 4 0, 2 2)",
+    "i_mline_touch": "MULTILINESTRING ((0 0, 2 0), (2 0, 4 0))",
+    "i_mline_cross": "MULTILINESTRING ((0 0, 2 0), (1 -1, 1 1))",
+    "i_mline_overlap": "MULTILINESTRING ((0 0, 2 0), (1 0, 3 0))",
+    "i_mline_star3": "MULTILINESTRING ((0 0, 2 0), (2 0, 4 0), (2 0, 2 2))",
+    "i_mline_star4": "MULTILINESTRING ((0 0, 2 0), (2 0, 4 0), (2 0, 2 2), (2 0, 2 -2))",
+    "i_mline_ring_tail": "MULTILINESTRING ((0 0, 4 0, 4 4, 0 0), (0 0, -2 -2))",
+    "i_mline_ring_mid": "MULTILINESTRING ((0 0, 4 0, 4 4, 0 0), (4 0, 6 0))",
+    "i_mline_tee": "MULTILINESTRING ((0 0, 4 0), (2 0, 2 3))",
+    "i_mline_two_rings": "MULTILINESTRING ((0 0, 4 0, 4 4, 0 0), (10 10, 12 12, 12 10, 10 10))",
+    "i_mline_same_ring": "MULTILINESTRING ((0 0, 4 0, 4 4, 0 0), (0 0, 4 0, 4 4, 0 0))",
+    "i_poly_two_holes": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 4 2, 4 4, 2 4, 2 2), (3 3, 5 3, 5 5, 3 5, 3 3))",
+    "i_mpoly_overlap": "MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((1 1, 3 1, 3 3, 1 3, 1 1)))",
+    "i_gc_two": "GEOMETRYCOLLECTION (POINT (1 1), POINT (2 2))",
+    "i_line_rev3": "LINESTRING (3 3, 2 2, 1 1)",
+    "i_line_closed_rot": "LINESTRING (2 2, 0 0, 2 2)",
+    "i_line_closed_rot2": "LINESTRING (1 0, 0 5, 1 0)",
+    "i_line_dup_end": "LINESTRING (3 3, 3 3, 1 1)",
+    "i_ring_ccw": "LINESTRING (4 4, 0 4, 0 0, 4 0, 4 4)",
+    "i_ring_cw_rot": "LINESTRING (4 4, 4 0, 0 0, 0 4, 4 4)",
+    "i_ring_nonsimple": "LINESTRING (0 0, 2 0, 2 2, 0 0, 2 2, 0 0)",
+    "i_poly_rot": "POLYGON ((2 0, 4 4, 0 4, 0 0, 2 0))",
+    "i_poly_holes_sort": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (6 6, 6 8, 8 8, 8 6, 6 6), (2 2, 2 4, 4 4, 4 2, 2 2), (5 1, 5 2, 6 2, 6 1, 5 1))",
+    "i_poly_holes_size": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 3 2, 3 3, 2 2), (2 2, 5 2, 5 5, 2 5, 2 2))",
+    "i_poly_dup_vertex": "POLYGON ((0 0, 0 0, 4 0, 4 4, 0 0))",
+    "i_mpt_unsorted": "MULTIPOINT ((0 0), (5 5), (1 3), (1 1))",
+    "i_mline_unsorted": "MULTILINESTRING ((0 0, 1 1), (5 5, 6 6), (2 2, 3 3, 4 4), (9 9, 8 8))",
+    "i_mline_dup": "MULTILINESTRING ((5 5, 6 6), (0 0, 1 1, 2 2), (0 0, 1 1))",
+    "i_mpoly_unsorted": "MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((5 5, 8 5, 8 8, 5 8, 5 5)), ((3 3, 4 3, 4 4, 3 4, 3 3)))",
+    "i_mpoly_sizes": "MULTIPOLYGON (((0 0, 20 0, 20 20, 0 20, 0 0)), ((5 5, 8 5, 8 8, 5 8, 5 5)), ((0 0, 1 0, 1 1, 0 0)))",
+    "i_mpoly_holes": "MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((0 0, 2 0, 2 2, 0 2, 0 0), (0.5 0.5, 1 0.5, 1 1, 0.5 0.5)))",
+    "i_gc_mixed": "GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (0 0, 2 2), POLYGON ((0 0, 1 0, 1 1, 0 0)), MULTIPOINT ((1 1), (0 0)))",
+    "i_gc_lines_points": "GEOMETRYCOLLECTION (LINESTRING (5 5, 6 6), LINESTRING (0 0, 7 7), POINT (3 3), POINT (2 9), POINT (3 1))",
+    "i_gc_multis": "GEOMETRYCOLLECTION (MULTIPOINT ((1 1), (0 0)), MULTIPOINT ((5 5)), MULTILINESTRING ((0 0, 1 1)))",
+    "i_pt_frac": "POINT (1.4 2.6)",
+    "i_pt_half": "POINT (0.5 1.5)",
+    "i_pt_neg_half": "POINT (-0.5 -1.5)",
+    "i_pt_fine": "POINT (1.23456 2.34567)",
+    "i_mpt_close": "MULTIPOINT ((0.1 0.1), (0.2 0.2), (3.3 3.3))",
+    "i_line_fine": "LINESTRING (0.1 0.1, 0.2 0.2, 5.4 5.4)",
+    "i_line_collapsed": "LINESTRING (0.1 0.1, 0.2 0.2)",
+    "i_line_collapsed3": "LINESTRING (0 0, 0 0.4, 0 0)",
+    "i_line_wobble": "LINESTRING (0.1 0.1, 5.1 0.2, 5.2 5.1, 0.3 0.4)",
+    "i_line_x": "LINESTRING (0 0, 10 10, 10 0, 0 10)",
+    "i_mline_collapsed": "MULTILINESTRING ((0 0, 5 5), (0.1 0.1, 0.2 0.2))",
+    "i_poly_fine": "POLYGON ((0.1 0.1, 4.2 0.1, 4.2 4.2, 0.1 4.2, 0.1 0.1))",
+    "i_poly_tiny": "POLYGON ((0 0, 0.2 0, 0.2 0.2, 0 0.2, 0 0))",
+    "i_poly_sliver": "POLYGON ((0 0, 5 0, 5.1 0.2, 0 0))",
+    "i_poly_tiny_hole": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2.2 2.2, 2.4 2.2, 2.4 2.4, 2.2 2.2))",
+    "i_mpoly_tiny": "MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((0.1 0.1, 0.3 0.1, 0.3 0.3, 0.1 0.1)))",
+    "i_gc_collapsed": "GEOMETRYCOLLECTION (POINT (1.2 1.2), LINESTRING (0 0, 0.1 0.1))",
+}
+CORPUS.update(I_CORPUS)
 
 
 def build_constructive_e():
@@ -625,6 +693,47 @@ def build_io():
 
 
 # --------------------------------------------------------------------------------------
+# batch I1: is_simple, normalize, set_precision, get_precision, to_json, __geo_interface__
+# --------------------------------------------------------------------------------------
+def _json_text(text):
+    """Compact, sorted JSON with NaN as null (Python writes the non-JSON token NaN)."""
+    return json.dumps(json.loads(text, parse_constant=lambda c: None), sort_keys=True, separators=(",", ":"))
+
+
+def build_parity_i():
+    w = Writer("parity_i")
+    i_ids = sorted(I_CORPUS)
+    everything = NON_EMPTY_2D + i_ids + EMPTIES
+    w.add_set("all", singles(everything))
+    w.add_set("json", singles(NON_EMPTY_2D + EMPTIES))
+    w.add_set("lonlat", singles(GEO))
+    w.group("is_simple", "bool", "all", lambda a, b: a.is_simple)
+    w.group("normalize", "geom", "all", lambda a, b: a.normalize())
+    for mode in ("valid_output", "pointwise", "keep_collapsed"):
+        for grid in (1.0, 0.1, 2.5):
+            w.group("set_precision", "geom", "all",
+                    lambda a, b, g=grid, m=mode: a.set_precision(g, mode=m),
+                    label=f"set_precision({grid}, {mode})", args={"grid_size": grid, "mode": mode})
+        w.group("set_precision", "geom", "lonlat",
+                lambda a, b, m=mode: a.set_precision(0.01, mode=m),
+                label=f"set_precision(0.01, {mode}) lonlat", args={"grid_size": 0.01, "mode": mode})
+    w.group("get_precision", "float", "all", lambda a, b: a.set_precision(0.5).get_precision(),
+            label="get_precision(after set_precision 0.5)", args={"grid_size": 0.5})
+    w.group("get_precision", "float", "all", lambda a, b: a.get_precision(),
+            label="get_precision(floating)", args={})
+    w.group("to_json", "json", "json", lambda a, b: _json_text(a.to_json()), per_row=True)
+    w.group("to_json", "json", "json", lambda a, b: _json_text(a.to_json(show_bbox=False, drop_id=True)),
+            label="to_json(show_bbox=false, drop_id=true)", args={"show_bbox": False, "drop_id": True}, per_row=True)
+    w.group("to_json", "json", "json", lambda a, b: _json_text(a.to_json()),
+            label="to_json(crs=EPSG:3857)", crs="EPSG:3857", per_row=True)
+    w.group("to_json", "json", "json", lambda a, b: _json_text(a.to_json(to_wgs84=True)),
+            label="to_json(to_wgs84=true)", args={"to_wgs84": True}, crs="EPSG:3857", per_row=True)
+    w.group("to_geo_interface", "json", "json", lambda a, b: _json_text(json.dumps(a.__geo_interface__)),
+            per_row=True)
+    w.dump()
+
+
+# --------------------------------------------------------------------------------------
 # frames: sjoin / sjoin_nearest / dissolve
 # --------------------------------------------------------------------------------------
 def frames():
@@ -848,6 +957,7 @@ def main():
     build_crs()
     build_geodesic()
     build_io()
+    build_parity_i()
     build_frames()
     build_overlay()
     corpus = dict(CORPUS)

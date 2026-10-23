@@ -15,7 +15,7 @@ defmodule GeoFrame.Reference do
   alias GeoFrame.SpatialJoin
 
   @fixtures ~w(measures unary_predicates binary_predicates constructive constructive_e set_ops
-               affine linear_referencing crs geodesic io)
+               affine linear_referencing crs geodesic io parity_i)
   @dir Path.expand("../reference/fixtures", __DIR__)
 
   @type result :: %{
@@ -140,7 +140,8 @@ defmodule GeoFrame.Reference do
   @unary_ops ~w(area length geom_type count_coordinates count_geometries count_interior_rings x y
                 is_valid is_empty is_ring is_closed is_ccw is_valid_reason isna bounds total_bounds
                 area_geodesic length_geodesic centroid convex_hull envelope boundary exterior
-                extract_unique_points reverse representative_point make_valid line_merge interiors)
+                extract_unique_points reverse representative_point make_valid line_merge interiors
+                is_simple normalize)
   @binary_ops ~w(distance relate shortest_line intersects contains within touches crosses overlaps
                  disjoint covers covered_by contains_properly geom_equals geom_equals_identical
                  intersection union difference symmetric_difference)
@@ -242,6 +243,26 @@ defmodule GeoFrame.Reference do
   defp apply_param("constrained_delaunay_triangles", _, a, _),
     do: GeoSeries.constrained_delaunay_triangles(a)
 
+  defp apply_param("set_precision", args, a, _),
+    do: GeoSeries.set_precision(a, args["grid_size"], mode: String.to_atom(args["mode"]))
+
+  defp apply_param("get_precision", %{"grid_size" => grid}, a, _),
+    do: a |> GeoSeries.set_precision(grid) |> GeoSeries.get_precision()
+
+  defp apply_param("get_precision", _, a, _), do: GeoSeries.get_precision(a)
+
+  defp apply_param("to_json", args, a, _) do
+    opts =
+      for key <- ~w(show_bbox drop_id to_wgs84), Map.has_key?(args, key) do
+        {String.to_atom(key), args[key]}
+      end
+
+    GeoSeries.to_json(a, opts)
+  end
+
+  defp apply_param("to_geo_interface", _, a, _),
+    do: a |> GeoSeries.to_geo_interface() |> Jason.encode!()
+
   defp apply_param("to_crs", args, a, _), do: GeoSeries.to_crs(a, args["target"])
   defp apply_param("estimate_utm_crs", _, a, _), do: GeoSeries.estimate_utm_crs(a)
   defp apply_param("to_wkb_hex", _, a, _), do: GeoSeries.to_wkb(a, hex: true)
@@ -278,7 +299,7 @@ defmodule GeoFrame.Reference do
   # Which comparison a geometry group uses.
   @exact_ops ~w(reverse interpolate translate scale rotate skew affine_transform to_crs
                 segmentize remove_repeated_points orient_polygons exterior interiors
-                to_wkt_roundtrip simplify get_geometry centroid shortest_line)
+                to_wkt_roundtrip simplify get_geometry centroid shortest_line normalize)
   defp geom_mode(%{"op" => "buffer"}), do: :buffer
   defp geom_mode(%{"op" => "representative_point"}), do: :representative
 
@@ -287,6 +308,8 @@ defmodule GeoFrame.Reference do
        do: :approx
 
   defp geom_mode(%{"op" => "maximum_inscribed_circle"}), do: :inscribed
+
+  defp geom_mode(%{"op" => "set_precision", "args" => %{"mode" => "pointwise"}}), do: :exact
 
   defp geom_mode(%{"op" => "constrained_delaunay_triangles"}), do: :triangulation
 
@@ -320,6 +343,14 @@ defmodule GeoFrame.Reference do
       end
 
     if ok, do: {:agree, nil}, else: {:differ, {act, e}}
+  end
+
+  defp compare(%{"kind" => "json"}, act, e, _, _) do
+    expected = e && Jason.decode!(e)
+
+    if json_close?(act && Jason.decode!(act), expected),
+      do: {:agree, nil},
+      else: {:differ, {act, expected}}
   end
 
   defp compare(%{"op" => "geojson"}, act, e, _, _) do

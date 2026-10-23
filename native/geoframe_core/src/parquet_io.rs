@@ -334,6 +334,16 @@ fn raw_geo_metadata(builder: &ParquetRecordBatchReaderBuilder<File>) -> Result<V
     serde_json::from_str(raw).map_err(|e| format!("invalid `geo` JSON: {e}"))
 }
 
+/// The `geo` key-value metadata of a GeoParquet file as JSON text, exactly as stored. Fails
+/// when the file cannot be read, is not Parquet, or has no `geo` metadata.
+pub fn geoparquet_metadata(path: &str) -> Result<String, String> {
+    let file = File::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
+    let raw = raw_geo_metadata(&builder).map_err(|e| format!("{path}: {e}"))?;
+    serde_json::to_string(&raw).map_err(|e| e.to_string())
+}
+
 /// Whether the primary column has a covering declaration or a native (non-WKB) encoding.
 fn has_covering_or_native(raw: &Value, primary: &str) -> bool {
     let Some(column) = raw.get("columns").and_then(|c| c.get(primary)) else {

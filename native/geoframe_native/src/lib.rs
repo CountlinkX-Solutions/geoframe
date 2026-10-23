@@ -2,12 +2,13 @@
 //! crate; this layer only converts between BEAM terms and core types.
 
 use geoframe_core::{
-    from_arrow_ipc, gpkg_info, gpkg_layers, read_feather, read_flatgeobuf, read_geojson,
-    read_geojson_str, read_geoparquet_filtered, read_gpkg, read_shapefile, shapefile_info,
-    to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson, write_geoparquet_with,
-    write_gpkg, write_shapefile, BufferOptions, FeatherCompression, GeoColumn, GeometryEncoding,
-    GpkgWriteOptions, GridFeature, GridType, LayerInfo, NearestPairs, Origin, ParquetOptions,
-    Predicate, QueryPredicate, SetOp, TableRead, UnaryOp, VectorRead,
+    from_arrow_ipc, geoparquet_metadata, gpkg_info, gpkg_layers, read_feather, read_flatgeobuf,
+    read_geojson, read_geojson_str, read_geoparquet_filtered, read_gpkg, read_shapefile,
+    shapefile_info, to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson,
+    write_geoparquet_with, write_gpkg, write_shapefile, BufferOptions, FeatherCompression,
+    GeoColumn, GeometryEncoding, GpkgWriteOptions, GridFeature, GridType, LayerInfo, NearestPairs,
+    Origin, ParquetOptions, PrecisionMode, Predicate, QueryPredicate, SetOp, TableRead, UnaryOp,
+    VectorRead, VertexKind, VertexParts,
 };
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
@@ -1003,6 +1004,46 @@ fn crs_equivalent(a: String, b: String) -> bool {
 #[rustler::nif]
 fn crs_is_geographic(crs: String) -> Option<bool> {
     geoframe_core::crs_is_geographic(&crs)
+}
+
+// -- batch I1: simplicity, canonical form, precision, vertex constructors ----------------
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn simple_flags(column: Handle) -> Vec<Option<bool>> {
+    column.0.is_simple()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn self_intersects_flags(column: Handle) -> Vec<Option<bool>> {
+    column.0.self_intersects()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn normalize(column: Handle) -> Result<Handle, String> {
+    column.0.normalize().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn set_precision(column: Handle, grid_size: f64, mode: String) -> Result<Handle, String> {
+    column
+        .0
+        .set_precision(grid_size, PrecisionMode::parse(&mode)?)
+        .map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn from_vertices(
+    kind: String,
+    rows: Vec<Option<VertexParts>>,
+    crs: Option<String>,
+) -> Result<Handle, String> {
+    GeoColumn::from_vertices(VertexKind::parse(&kind)?, &rows, crs.as_deref()).map(wrap)
+}
+
+/// The raw `geo` metadata JSON of a GeoParquet file.
+#[rustler::nif(schedule = "DirtyIo")]
+fn read_geoparquet_metadata(path: String) -> Result<String, String> {
+    geoparquet_metadata(&path)
 }
 
 rustler::init!("Elixir.GeoFrame.Native");
