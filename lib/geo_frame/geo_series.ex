@@ -1438,6 +1438,205 @@ defmodule GeoFrame.GeoSeries do
   end
 
   @doc """
+  Snaps the vertices and segments of each geometry to the vertices of `other`, within
+  `tolerance` (GeoPandas `snap`, GEOS `GeometrySnapper`).
+
+  `other` is a series (paired by position), a one-row series or a WKT string (both broadcast).
+  Each snap point in turn moves the nearest vertex of a line or ring that lies closer than
+  `tolerance` onto itself, and a snap point closer than `tolerance` to a segment is inserted
+  into the nearest one. The result keeps the type of the input; it is not guaranteed to be
+  valid. `tolerance` is one number (GeoPandas also accepts an array-like). Rows that are null
+  on either side, and rows whose work (vertices times snap points) exceeds 50,000,000, are
+  `nil`. The order in which several snap points compete for one vertex follows GEOS in about
+  99 % of random cases (see `docs/parity.md`).
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0)"])
+      iex> s |> GeoFrame.GeoSeries.snap("POINT (5 0.5)", 1) |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(0 0,5 0.5,10 0)"]
+  """
+  @spec snap(t(), other(), number()) :: t()
+  def snap(%__MODULE__{ref: left} = series, other, tolerance) do
+    unless is_number(tolerance) do
+      raise ArgumentError, "tolerance must be a number, got: #{inspect(tolerance)}"
+    end
+
+    left |> Native.snap(other_ref(series, other), tolerance * 1.0) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  The paths two linear geometries share (GeoPandas `shared_paths`): per row a
+  `GEOMETRYCOLLECTION` of two `MULTILINESTRING`s, first the stretches that run the same way in
+  both inputs, then those that run in opposite ways (either can be empty).
+
+  Stretches are split where the overlap starts or ends, at every vertex they pass; a stretch
+  met twice is reported once. Both sides must be lines or multi-lines: any other geometry
+  (Shapely raises) and null rows give `nil`. `other` is a series, a one-row series or WKT, as
+  for `snap/3`.
+
+      iex> a = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 4 0)"])
+      iex> a |> GeoFrame.GeoSeries.shared_paths("LINESTRING (4 0, 1 0)") |> GeoFrame.GeoSeries.to_wkt()
+      ["GEOMETRYCOLLECTION(MULTILINESTRING EMPTY,MULTILINESTRING((1 0,4 0)))"]
+  """
+  @spec shared_paths(t(), other()) :: t()
+  def shared_paths(%__MODULE__{ref: left} = series, other) do
+    left |> Native.shared_paths(other_ref(series, other)) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  Polygons formed by the linework of the whole series (GeoPandas `polygonize`).
+
+  All geometries are used together and only their lines and rings count (points are ignored,
+  null rows skipped). Lines that do not close a polygon are left out. The result has one row
+  per polygon, in no particular order, shells clockwise and holes counter-clockwise like
+  GEOS; a polygon lying inside another's hole is a polygon of its own.
+
+  Options:
+
+    * `:node` - `true` (default) merges the polygons of the input, drops lines inside them and
+      nodes the linework (splits it wherever lines cross or touch) first; `false` takes every
+      line as one edge from its first to its last vertex, so crossings that are not vertices
+      of both lines are ignored.
+    * `:full` - `true` returns `{polygons, cuts, dangles, invalid_rings}`, four series: the
+      polygons, the edges that join two parts of the linework (cut edges), the edges that end
+      in a dead end (dangles), and the rings that cross themselves.
+
+  Raises when the noding needs over 50,000,000 segment pairs. Deviation: the collinear
+  vertices at which merged input polygons met are dropped (see `docs/parity.md`).
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)", "LINESTRING (0 0, 4 4)"])
+      iex> s |> GeoFrame.GeoSeries.polygonize() |> GeoFrame.GeoSeries.size()
+      2
+  """
+  @spec polygonize(t(), keyword()) :: t() | {t(), t(), t(), t()}
+  def polygonize(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, node: true, full: false)
+
+    {polygons, cuts, dangles, invalid} =
+      ref |> Native.polygonize(opts[:node] == true) |> unwrap!()
+
+    polygons = %__MODULE__{ref: polygons}
+
+    if opts[:full] == true do
+      {polygons, %__MODULE__{ref: cuts}, %__MODULE__{ref: dangles}, %__MODULE__{ref: invalid}}
+    else
+      polygons
+    end
+  end
+
+  @doc """
+  The area enclosed by the linework of the whole series, even-odd (GeoPandas `build_area`):
+  polygons as `polygonize/2` finds them, but a ring inside a ring becomes a hole, a ring inside
+  that an island again, and polygons sharing an edge merge. All geometries are used together;
+  the result has one row per polygon (none when the linework encloses nothing).
+
+  Option `:node` as for `polygonize/2`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)", "LINESTRING (2 2, 4 2, 4 4, 2 4, 2 2)"])
+      iex> s |> GeoFrame.GeoSeries.build_area() |> GeoFrame.GeoSeries.area() |> Explorer.Series.to_list()
+      [96.0]
+  """
+  @spec build_area(t(), keyword()) :: t()
+  def build_area(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, node: true)
+    ref |> Native.build_area(opts[:node] == true) |> wrap() |> unwrap!()
+  end
+
+  @max_quad_segs 10_000
+
+  @doc """
+  The line parallel to each line at `distance` (`shapely.offset_curve`): positive distances
+  offset to the left of the line's direction, negative to the right. The result is a
+  `LINESTRING`, a `MULTILINESTRING` when the curve breaks (loops and spirals are cut away
+  where the offset comes closer to the line than `distance`) or `LINESTRING EMPTY`.
+
+  `distance` is a number, or a list or `Explorer.Series` with one entry per row (`nil` nulls
+  the row). Options (Shapely names):
+
+    * `:quad_segs` - segments per quarter circle of round joins, default `8`; like GEOS, never
+      fewer than 8 are drawn. At most `#{@max_quad_segs}`.
+    * `:join_style` - `:round` (default), `:mitre` or `:bevel`, for the outside corners.
+    * `:mitre_limit` - for `:mitre`, the longest mitre as a multiple of the distance, default
+      `5.0`, over 0.
+
+  Lines and multi-lines are offset part by part; a closed line is a line (no join at its
+  start). The rings of a polygon are offset as rings, so a positive distance grows it, and are
+  cut against each other; collections use their lines and polygons, points give an empty line.
+  Deviations from GEOS (see `docs/parity.md`): its input simplification is not applied, the
+  mitred outside offset of a closed line keeps the two pieces GEOS drops, and where the offset
+  of a polygon ring collapses to a line it is dropped only when it is clearly interior.
+
+  Raises when the vertices times `quad_segs` would exceed 10,000,000 (the raw curve is
+  proportional to both); a geometry whose cutting needs over 50,000,000 segment pairs is `nil`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0)"])
+      iex> s |> GeoFrame.GeoSeries.offset_curve(1) |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(0 1,10 1)"]
+  """
+  @spec offset_curve(t(), param(), keyword()) :: t()
+  def offset_curve(%__MODULE__{ref: ref} = series, distance, opts \\ []) do
+    opts = Keyword.validate!(opts, quad_segs: 8, join_style: :round, mitre_limit: 5.0)
+    join = enum!(opts, :join_style, @join_styles)
+    quad_segs = opts[:quad_segs]
+    mitre_limit = opts[:mitre_limit]
+
+    unless is_integer(quad_segs) and quad_segs > 0 and quad_segs <= @max_quad_segs do
+      raise ArgumentError,
+            ":quad_segs must be an integer from 1 to #{@max_quad_segs}, got: #{inspect(quad_segs)}"
+    end
+
+    unless is_number(mitre_limit) and mitre_limit > 0 do
+      raise ArgumentError, ":mitre_limit must be a number over 0, got: #{inspect(mitre_limit)}"
+    end
+
+    distances = param!(distance, size(series), "distance")
+
+    ref
+    |> Native.offset_curve(distances, quad_segs, Atom.to_string(join), mitre_limit * 1.0)
+    |> wrap()
+    |> unwrap!()
+  end
+
+  @doc """
+  The minimum clearance of each geometry (`shapely.minimum_clearance`): the smallest distance
+  by which a vertex could move to make the geometry invalid, found as the least distance
+  between two vertices at different positions or between a vertex and a segment that does not
+  end in it.
+
+  A geometry without such a pair (a point, an empty geometry, one repeated position) reports
+  `:infinity`, as Shapely does; null rows give `nil`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0, 5 0.5)", "POINT (1 1)"])
+      iex> s |> GeoFrame.GeoSeries.minimum_clearance() |> Explorer.Series.to_list()
+      [0.5, :infinity]
+  """
+  @spec minimum_clearance(t()) :: Series.t()
+  def minimum_clearance(%__MODULE__{ref: ref}) do
+    # The core answers f64::MAX (GEOS' DBL_MAX) when no clearance exists.
+    ref
+    |> Native.minimum_clearance()
+    |> Enum.map(fn
+      value when is_float(value) and value > 1.0e300 -> :infinity
+      value -> value
+    end)
+    |> float_series()
+  end
+
+  @doc """
+  The line between the two points that realise `minimum_clearance/1`
+  (`shapely.minimum_clearance_line`); `LINESTRING EMPTY` when no clearance exists, `nil` for
+  null rows. Among equally close pairs the one reported, and the direction of the line, can
+  differ from GEOS.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0, 5 0.5)"])
+      iex> s |> GeoFrame.GeoSeries.minimum_clearance_line() |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(5 0.5,5 0)"]
+  """
+  @spec minimum_clearance_line(t()) :: t()
+  def minimum_clearance_line(%__MODULE__{ref: ref}) do
+    ref |> Native.minimum_clearance_line() |> wrap() |> unwrap!()
+  end
+
+  @doc """
   Joins line parts that meet end to end. A point where exactly two parts end is merged
   through; a junction of three or more is not. Returns a `LineString` when everything forms
   one chain, otherwise a `MultiLineString`. A `LineString` comes back unchanged and a row with

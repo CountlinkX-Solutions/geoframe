@@ -17,10 +17,11 @@ defmodule GeoFrame.ReferenceTest do
   @moduletag :reference
 
   @files ~w(measures unary_predicates binary_predicates constructive constructive_e set_ops
-            affine linear_referencing crs geodesic io parity_i)
+            affine linear_referencing crs geodesic io parity_i parity_j)
   @frame_ops ~w(sjoin sjoin_nearest dissolve union_all)
   @overlay_ops ~w(overlay clip explode intersection_all)
   @collection_ops ~w(make_grid delaunay_triangles voronoi_polygons)
+  @aggregate_ops ~w(polygonize build_area)
 
   {deviations, _} = Code.eval_file(Path.expand("../reference/known_deviations.exs", __DIR__))
   @deviations deviations
@@ -33,7 +34,8 @@ defmodule GeoFrame.ReferenceTest do
   setup_all do
     results =
       Reference.run() ++
-        Reference.run_frames() ++ Reference.run_overlay() ++ Reference.run_collections()
+        Reference.run_frames() ++
+        Reference.run_overlay() ++ Reference.run_collections() ++ Reference.run_aggregates()
 
     if System.get_env("REFERENCE_REPORT"), do: report(results)
     %{results: results}
@@ -71,6 +73,12 @@ defmodule GeoFrame.ReferenceTest do
   for op <- @collection_ops do
     test "collections: #{op}", %{results: results} do
       check(Enum.filter(results, &(&1.file == "collections" and &1.op == unquote(op))))
+    end
+  end
+
+  for op <- @aggregate_ops do
+    test "polygonization: #{op}", %{results: results} do
+      check(Enum.filter(results, &(&1.file == "parity_j_aggregate" and &1.op == unquote(op))))
     end
   end
 

@@ -7,8 +7,8 @@ use geoframe_core::{
     shapefile_info, to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson,
     write_geoparquet_with, write_gpkg, write_shapefile, BufferOptions, FeatherCompression,
     GeoColumn, GeometryEncoding, GpkgWriteOptions, GridFeature, GridType, LayerInfo, NearestPairs,
-    Origin, ParquetOptions, PrecisionMode, Predicate, QueryPredicate, SetOp, TableRead, UnaryOp,
-    VectorRead, VertexKind, VertexParts,
+    OffsetJoin, OffsetParams, Origin, ParquetOptions, PrecisionMode, Predicate, QueryPredicate,
+    SetOp, TableRead, UnaryOp, VectorRead, VertexKind, VertexParts,
 };
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
@@ -1044,6 +1044,61 @@ fn from_vertices(
 #[rustler::nif(schedule = "DirtyIo")]
 fn read_geoparquet_metadata(path: String) -> Result<String, String> {
     geoparquet_metadata(&path)
+}
+
+// -- batch I2: snapping, shared paths, clearance ---------------------------------------
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn snap(left: Handle, right: Handle, tolerance: f64) -> Result<Handle, String> {
+    left.0.snap(&right.0, tolerance).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn shared_paths(left: Handle, right: Handle) -> Result<Handle, String> {
+    left.0.shared_paths(&right.0).map(wrap)
+}
+
+/// Per row: the clearance, `f64::MAX` when none exists (the Elixir side maps it to infinity).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn minimum_clearance(column: Handle) -> Vec<Option<f64>> {
+    column.0.minimum_clearance()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn minimum_clearance_line(column: Handle) -> Result<Handle, String> {
+    column.0.minimum_clearance_line().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn polygonize(column: Handle, node: bool) -> Result<(Handle, Handle, Handle, Handle), String> {
+    let out = column.0.polygonize(node)?;
+    Ok((
+        wrap(out.polygons),
+        wrap(out.cuts),
+        wrap(out.dangles),
+        wrap(out.invalid),
+    ))
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn build_area(column: Handle, node: bool) -> Result<Handle, String> {
+    column.0.build_area(node).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn offset_curve(
+    column: Handle,
+    distances: Vec<Option<f64>>,
+    quad_segs: u32,
+    join_style: String,
+    mitre_limit: f64,
+) -> Result<Handle, String> {
+    let params = OffsetParams {
+        quad_segs,
+        join: OffsetJoin::parse(&join_style)?,
+        mitre_limit,
+    };
+    column.0.offset_curve(&distances, &params).map(wrap)
 }
 
 rustler::init!("Elixir.GeoFrame.Native");

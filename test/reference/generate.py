@@ -231,7 +231,7 @@ def singles(ids):
 NON_EMPTY_2D = [
     k for k, w in CORPUS.items()
     if w is not None and "EMPTY" not in w
-    and not k.startswith(("g_", "e_", "i_"))
+    and not k.startswith(("g_", "e_", "i_", "j_"))
 ]
 EMPTIES = ["pt_empty", "line_empty", "poly_empty", "coll_empty", "null"]
 GEO = [k for k in CORPUS if k.startswith("g_")]
@@ -448,6 +448,35 @@ I_CORPUS = {
     "i_gc_collapsed": "GEOMETRYCOLLECTION (POINT (1.2 1.2), LINESTRING (0 0, 0.1 0.1))",
 }
 CORPUS.update(I_CORPUS)
+
+# Batch I2 corpus: offset curves, snapping, shared paths, clearance and polygonization. The `j_`
+# prefix keeps them out of the shared id lists, so older fixtures are unchanged.
+J_CORPUS = {
+    "j_wave": "LINESTRING (0 0, 2 1, 4 -1, 6 1, 8 -1, 10 0)",
+    "j_hairpin": "LINESTRING (0 0, 10 0, 10 1, 0 1)",
+    "j_hairpin_wide": "LINESTRING (0 0, 10 0, 10 3, 0 3)",
+    "j_spiral": "LINESTRING (0 0, 8 0, 8 6, 2 6, 2 2, 6 2)",
+    "j_zigzag": "LINESTRING (0 0, 5 1, 0 2, 5 3)",
+    "j_u": "LINESTRING (0 0, 0 5, 3 5, 3 0)",
+    "j_loop": "LINESTRING (0 0, 6 0, 6 4, 2 4, 2 -2, 8 -2)",
+    "j_short": "LINESTRING (0 0, 0.3 0.1, 0.6 0, 1 0.4, 1.2 1)",
+    "j_tri_ring": "LINESTRING (0 0, 5 0, 2.5 4, 0 0)",
+    "j_two_lines": "MULTILINESTRING ((0 0, 5 0), (0 3, 5 3))",
+    "j_poly_thin": "POLYGON ((0 0, 10 0, 10 1, 0 1, 0 0))",
+    "j_poly_hole2": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (3 3, 7 3, 7 7, 3 7, 3 3))",
+    "j_overlap_a": "LINESTRING (0 0, 4 0, 8 0)",
+    "j_overlap_b": "LINESTRING (2 0, 10 0)",
+    "j_overlap_rev": "LINESTRING (8 0, 4 0, 0 0)",
+    "j_partial": "LINESTRING (0 0, 4 0, 4 4)",
+    "j_partial2": "LINESTRING (4 4, 4 0, 8 0)",
+    "j_ring_a": "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)",
+    "j_ring_b": "LINESTRING (4 0, 8 0, 8 4, 4 4, 4 0)",
+    "j_mline_share": "MULTILINESTRING ((0 0, 4 0), (4 0, 4 4), (6 6, 7 7))",
+    "j_lonlat_line": "LINESTRING (-80.2 25.7, -80.1 25.75, -80.0 25.7)",
+    "j_cluster": "MULTIPOINT ((0 0), (0.2 0.1), (0.1 0.4), (5 5), (5.3 5.2))",
+    "j_fine_line": "LINESTRING (0 0, 1 0.001, 2 0, 3 0.002, 4 0)",
+}
+CORPUS.update(J_CORPUS)
 
 
 def build_constructive_e():
@@ -734,6 +763,136 @@ def build_parity_i():
 
 
 # --------------------------------------------------------------------------------------
+# batch I2: offset_curve, snap, shared_paths, minimum_clearance(_line), polygonize, build_area
+# --------------------------------------------------------------------------------------
+DBL_MAX = 1.7976931348623157e308
+
+
+def _clearance_value(v):
+    """Shapely says infinity where GEOS (and GeoFrame) say DBL_MAX."""
+    return DBL_MAX if v is not None and math.isinf(float(v)) else v
+
+
+def build_parity_j():
+    w = Writer("parity_j")
+    j_ids = sorted(J_CORPUS)
+    linear = ["line_h", "line_diag", "line_cross", "line_closed", "line_self", "line_dup", "mline",
+              "coll", "pt1", "line_empty", "null"]
+    lines = linear + [i for i in j_ids if i not in ("j_poly_thin", "j_poly_hole2", "j_cluster")]
+    polys = ["sq", "sq_hole", "tri", "ell", "mpoly", "j_poly_thin", "j_poly_hole2"]
+    w.add_set("offset_lines", singles(lines))
+    w.add_set("offset_polys", singles(polys))
+    for join in ("round", "mitre", "bevel"):
+        for d in (0.5, 1.0, 2.0, -0.5, -1.0, -2.0):
+            args = {"distance": d, "join_style": join, "quad_segs": 8}
+            w.group("offset_curve", "geom", "offset_lines",
+                    lambda a, b, d=d, j=join: a.offset_curve(d, quad_segs=8, join_style=j),
+                    label=f"offset_curve({d}, {join})", args=args)
+            w.group("offset_curve", "geom", "offset_polys",
+                    lambda a, b, d=d, j=join: a.offset_curve(d, quad_segs=8, join_style=j),
+                    label=f"offset_curve({d}, {join}) polygons", args=args)
+    for qs in (12, 16):
+        w.group("offset_curve", "geom", "offset_lines",
+                lambda a, b, q=qs: a.offset_curve(1.0, quad_segs=q, join_style="round"),
+                label=f"offset_curve(1.0, round, quad_segs={qs})",
+                args={"distance": 1.0, "join_style": "round", "quad_segs": qs})
+    w.group("offset_curve", "geom", "offset_lines",
+            lambda a, b: a.offset_curve(1.0, quad_segs=8, join_style="mitre", mitre_limit=1.2),
+            label="offset_curve(1.0, mitre, mitre_limit=1.2)",
+            args={"distance": 1.0, "join_style": "mitre", "quad_segs": 8, "mitre_limit": 1.2})
+    w.group("offset_curve", "geom", "offset_lines",
+            lambda a, b: a.offset_curve(0.0, quad_segs=8, join_style="round"),
+            label="offset_curve(0.0)", args={"distance": 0.0, "join_style": "round", "quad_segs": 8})
+    w.add_set("offset_lonlat", singles(["g_line", "g_line_long", "j_lonlat_line"]))
+    w.group("offset_curve", "geom", "offset_lonlat",
+            lambda a, b: a.offset_curve(0.01, quad_segs=8, join_style="round"),
+            label="offset_curve(0.01, round) lonlat",
+            args={"distance": 0.01, "join_style": "round", "quad_segs": 8})
+
+    # snap: every source against every target, three tolerances
+    sources = ["line_h", "line_diag", "line_closed", "line_self", "mline", "sq", "sq_hole", "tri",
+               "ell", "mpoly", "pt1", "mpt", "coll", "j_fine_line", "j_wave", "j_cluster"]
+    targets = ["pt1", "pt2", "pt_edge", "mpt", "line_diag", "line_cross", "sq_inner", "sq_corner",
+               "j_cluster", "j_fine_line", "tri"]
+    w.add_set("snap", pairs(sources, targets) + [("line_h", "line_empty"), ("null", "pt1"), ("sq", "null")])
+    for tol in (0.3, 1.0, 2.5):
+        w.group("snap", "geom", "snap", lambda a, b, t=tol: a.snap(b, t, align=False),
+                label=f"snap({tol})", args={"tolerance": tol})
+
+    shared_ids = ["line_h", "line_diag", "line_cross", "line_closed", "line_self", "line_dup", "mline",
+                  "j_overlap_a", "j_overlap_b", "j_overlap_rev", "j_partial", "j_partial2", "j_ring_a",
+                  "j_ring_b", "j_mline_share", "j_tri_ring", "line_empty", "pt1", "sq", "null"]
+    w.add_set("shared", pairs(shared_ids))
+    w.group("shared_paths", "geom", "shared", lambda a, b: a.shared_paths(b, align=False))
+
+    clearance_ids = NON_EMPTY_2D + j_ids + EMPTIES
+    w.add_set("clearance", singles(clearance_ids))
+    w.group("minimum_clearance", "float", "clearance",
+            lambda a, b: [_clearance_value(v) for v in a.minimum_clearance()])
+    w.group("minimum_clearance_line", "geom", "clearance", lambda a, b: a.minimum_clearance_line())
+    w.dump()
+
+    # polygonize / build_area: whole-series cases
+    cases = []
+    sets = {
+        "ring": ["line_closed"],
+        "cross": ["j_diag_a", "j_diag_b", "j_ring_a"],
+        "adjacent_rings": ["j_ring_a", "j_ring_b"],
+        "nested": ["j_nest_outer", "j_nest_inner"],
+        "triple": ["j_nest_outer", "j_nest_inner", "j_nest_core"],
+        "dangle_cut": ["j_ring_a", "j_cut", "j_dangle", "j_ring_c"],
+        "figure8": ["j_figure8"],
+        "polygons": ["sq_hole", "sq_touch", "sq_far"],
+        "polygon_and_line": ["sq", "j_diag_a", "j_inside_line", "j_outside_line"],
+        "touching": ["j_nest_outer", "j_touch_hole"],
+        "pinch": ["j_nest_outer", "j_pinch"],
+        "grid": ["j_grid_h1", "j_grid_h2", "j_grid_v1", "j_grid_v2", "j_grid_v3"],
+        "dups": ["j_ring_a", "j_dup_a", "j_dup_b"],
+        "points": ["pt1", "mpt"],
+        "empty": ["line_empty", "null"],
+        "collection": ["coll_lines"],
+        "lonlat": ["g_poly", "g_poly_hole", "g_line"],
+        "mixed": ["j_ring_a", "line_h", "line_cross", "pt1"],
+    }
+    extra = {
+        "j_diag_a": "LINESTRING (0 0, 4 4)", "j_diag_b": "LINESTRING (0 4, 4 0)",
+        "j_nest_outer": "LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)",
+        "j_nest_inner": "LINESTRING (2 2, 4 2, 4 4, 2 4, 2 2)",
+        "j_nest_core": "LINESTRING (2.5 2.5, 3.5 2.5, 3.5 3.5, 2.5 3.5, 2.5 2.5)",
+        "j_cut": "LINESTRING (4 2, 6 2)", "j_dangle": "LINESTRING (0 2, 2 2)",
+        "j_ring_c": "LINESTRING (6 2, 8 2, 8 4, 6 4, 6 2)",
+        "j_figure8": "LINESTRING (0 0, 4 4, 4 0, 0 4, 0 0)",
+        "j_inside_line": "LINESTRING (1 1, 3 1)", "j_outside_line": "LINESTRING (5 5, 9 9)",
+        "j_touch_hole": "LINESTRING (0 5, 5 2, 5 8, 0 5)", "j_pinch": "LINESTRING (5 0, 2 4, 8 4, 5 0)",
+        "j_grid_h1": "LINESTRING (0 0, 6 0)", "j_grid_h2": "LINESTRING (0 3, 6 3)",
+        "j_grid_v1": "LINESTRING (0 -1, 0 4)", "j_grid_v2": "LINESTRING (3 -1, 3 4)",
+        "j_grid_v3": "LINESTRING (6 -1, 6 4)",
+        "j_dup_a": "LINESTRING (0 0, 4 0)", "j_dup_b": "LINESTRING (4 0, 0 0)",
+        "coll_lines": "GEOMETRYCOLLECTION (LINESTRING (0 0, 4 0, 4 4), LINESTRING (4 4, 0 4, 0 0))",
+    }
+    CORPUS.update(extra)
+    for name, ids in sets.items():
+        for node in (True, False):
+            g = gpd.GeoSeries([geom(i) for i in ids])
+            polygons, cuts, dangles, invalid = g.polygonize(node=node, full=True)
+            cases.append({
+                "op": "polygonize", "ids": ids, "args": {"node": node},
+                "label": f"polygonize({name}, node={str(node).lower()})",
+                "e": {"polygons": [full(x) for x in polygons], "cuts": [full(x) for x in cuts],
+                      "dangles": [full(x) for x in dangles], "invalid": [full(x) for x in invalid]},
+            })
+            area = g.build_area(node=node)
+            cases.append({
+                "op": "build_area", "ids": ids, "args": {"node": node},
+                "label": f"build_area({name}, node={str(node).lower()})",
+                "e": {"polygons": [full(x) for x in area]},
+            })
+    with open(os.path.join(OUT, "parity_j_aggregate.json"), "w") as f:
+        json.dump({"cases": cases, "extra": extra}, f, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        f.write("\n")
+
+
+# --------------------------------------------------------------------------------------
 # frames: sjoin / sjoin_nearest / dissolve
 # --------------------------------------------------------------------------------------
 def frames():
@@ -958,6 +1117,7 @@ def main():
     build_geodesic()
     build_io()
     build_parity_i()
+    build_parity_j()
     build_frames()
     build_overlay()
     corpus = dict(CORPUS)

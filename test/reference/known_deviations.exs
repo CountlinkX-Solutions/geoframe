@@ -239,5 +239,111 @@
       "set_precision(2.5, valid_output):i_mpoly_sizes",
       "set_precision(2.5, keep_collapsed):i_mpoly_sizes"
     ]
+  },
+  %{
+    reason:
+      "offset_curve of a closed LineString on its outer side (negative distance) with a bevel or mitre join: GEOS keeps the closing bevel at the start vertex (bevel) or drops the two pieces next to it (mitre) because it extracts the curve from the buffer outline, whose round caps meet there; GeoFrame draws the one-sided curve without a join at the start (as GEOS does for round joins).",
+    doc: "docs/parity.md#reference-testing",
+    op: "offset_curve",
+    cases: [
+      "offset_curve(-0.5, bevel):j_ring_a",
+      "offset_curve(-0.5, bevel):j_ring_b",
+      "offset_curve(-0.5, bevel):j_tri_ring",
+      "offset_curve(-0.5, bevel):line_closed",
+      "offset_curve(-0.5, mitre):j_ring_a",
+      "offset_curve(-0.5, mitre):j_ring_b",
+      "offset_curve(-0.5, mitre):j_tri_ring",
+      "offset_curve(-0.5, mitre):line_closed",
+      "offset_curve(-1.0, bevel):j_ring_a",
+      "offset_curve(-1.0, bevel):j_ring_b",
+      "offset_curve(-1.0, bevel):j_tri_ring",
+      "offset_curve(-1.0, bevel):line_closed",
+      "offset_curve(-1.0, mitre):j_ring_a",
+      "offset_curve(-1.0, mitre):j_ring_b",
+      "offset_curve(-1.0, mitre):j_tri_ring",
+      "offset_curve(-1.0, mitre):line_closed",
+      "offset_curve(-2.0, bevel):j_ring_a",
+      "offset_curve(-2.0, bevel):j_ring_b",
+      "offset_curve(-2.0, bevel):j_tri_ring",
+      "offset_curve(-2.0, bevel):line_closed",
+      "offset_curve(-2.0, mitre):j_ring_a",
+      "offset_curve(-2.0, mitre):j_ring_b",
+      "offset_curve(-2.0, mitre):j_tri_ring",
+      "offset_curve(-2.0, mitre):line_closed"
+    ]
+  },
+  %{
+    reason:
+      "offset_curve of a polygon ring whose offset lands exactly on the medial axis (the L-shape and the frame are exactly 2 wide for distance 1): GEOS returns nothing or a different remnant, GeoFrame a short piece.",
+    doc: "docs/parity.md#reference-testing",
+    op: "offset_curve",
+    cases: [
+      "offset_curve(-1.0, mitre) polygons:ell",
+      "offset_curve(-1.0, mitre) polygons:sq_hole"
+    ]
+  },
+  %{
+    reason:
+      "offset_curve with a mitre or bevel join around segments shorter than the distance (and a limited mitre around a hairpin): GEOS cuts the curve against the buffer outline, which has the bevel or mitre shape at the corners, GeoFrame against the disc around each vertex, so the cut lands elsewhere.",
+    doc: "docs/parity.md#reference-testing",
+    op: "offset_curve",
+    cases: [
+      "offset_curve(-1.0, bevel):j_short",
+      "offset_curve(-2.0, bevel):j_short",
+      "offset_curve(1.0, bevel):j_short",
+      "offset_curve(1.0, mitre):j_loop",
+      "offset_curve(1.0, mitre):j_short",
+      "offset_curve(1.0, mitre):j_spiral",
+      "offset_curve(1.0, mitre, mitre_limit=1.2):j_loop",
+      "offset_curve(1.0, mitre, mitre_limit=1.2):j_short",
+      "offset_curve(1.0, mitre, mitre_limit=1.2):j_spiral"
+    ]
+  },
+  %{
+    reason:
+      "snap with several snap points competing for one vertex or segment (a cluster near a ring corner, snap points beyond the end of a line): the order in which GEOS applies them is not documented and GeoFrame reproduces it in about 99 % of random cases; every other case agrees.",
+    doc: "docs/parity.md#reference-testing",
+    op: "snap",
+    cases: [
+      "snap(0.3):ell|j_cluster",
+      "snap(0.3):line_closed|j_cluster",
+      "snap(0.3):mpoly|j_cluster",
+      "snap(0.3):sq_hole|j_cluster",
+      "snap(0.3):sq|j_cluster",
+      "snap(0.3):tri|j_cluster",
+      "snap(1.0):ell|j_cluster",
+      "snap(1.0):line_closed|j_cluster",
+      "snap(1.0):mpoly|j_cluster",
+      "snap(1.0):sq_hole|j_cluster",
+      "snap(1.0):sq|j_cluster",
+      "snap(1.0):tri|j_cluster",
+      "snap(2.5):ell|j_cluster",
+      "snap(2.5):ell|j_fine_line",
+      "snap(2.5):line_closed|j_cluster",
+      "snap(2.5):line_closed|j_fine_line",
+      "snap(2.5):mpoly|j_cluster",
+      "snap(2.5):sq_hole|j_cluster",
+      "snap(2.5):sq_hole|sq_inner",
+      "snap(2.5):sq|j_cluster",
+      "snap(2.5):tri|j_cluster"
+    ]
+  },
+  %{
+    reason:
+      "build_area with node=false on lon/lat polygons whose rings overlap: the symmetric difference of the faces is computed by geo's overlay, which snaps coordinates to a grid of about 1e-9 degrees.",
+    doc: "docs/parity.md#reference-testing",
+    op: "build_area",
+    cases: [
+      "build_area(lonlat, node=false)"
+    ]
+  },
+  %{
+    reason:
+      "polygonize with node=true merges overlapping input polygons with geo's overlay, which snaps coordinates to a grid of about 1e-9 degrees (lon/lat input), so the polygons differ from GEOS' by that much.",
+    doc: "docs/parity.md#reference-testing",
+    op: "polygonize",
+    cases: [
+      "polygonize(lonlat, node=true)"
+    ]
   }
 ]

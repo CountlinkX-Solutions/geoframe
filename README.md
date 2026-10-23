@@ -91,6 +91,9 @@ error (`{:error, message}` or `ArgumentError`) instead. The caps:
 | `segmentize` | 10,000,000 estimated output vertices |
 | `hausdorff_distance` / `frechet_distance` `densify:` | fraction at least `1.0e-4` (10,000 pieces per segment) and 10,000,000 densified vertices in total |
 | `union_groups` | `n_groups` at most the number of ids; ids below `n_groups` |
+| `offset_curve` | `quad_segs` at most 10,000; an estimated 10,000,000 raw vertices (vertices times `2 * quad_segs`) is an error; a geometry whose cutting needs over 50,000,000 segment pairs is `nil`; non-finite distance or coordinates give `nil` |
+| `snap` | vertices times snap points at most 50,000,000 per geometry pair (a row over it is `nil`) |
+| `polygonize` / `build_area` | the noding examines at most 50,000,000 candidate segment pairs (an error beyond that) |
 
 Writers (GeoParquet, Feather, GeoJSON, FlatGeobuf) write to `<path>.tmp-<id>` beside the
 destination and rename it over `path` on success; a failure never removes an existing file.
