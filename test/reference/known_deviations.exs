@@ -345,5 +345,16 @@
     cases: [
       "polygonize(lonlat, node=true)"
     ]
+  },
+  %{
+    reason:
+      "invalid_coverage_edges over a series with a null row: GeoPandas 1.2 drops the null geometry before calling GEOS and pads the result with NaN at the END, so every result after the null is shifted by one row. GeoFrame keeps each result in its row and returns nil for the null one.",
+    doc: "docs/parity.md#batch-i3",
+    op: "invalid_coverage_edges",
+    cases: [
+      "invalid_coverage_edges(null_point_empty, gap_width=0.0)",
+      "invalid_coverage_edges(null_point_empty, gap_width=0.2)",
+      "invalid_coverage_edges(null_point_empty, gap_width=1.0)"
+    ]
   }
 ]

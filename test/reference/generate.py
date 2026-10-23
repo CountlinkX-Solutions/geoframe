@@ -893,6 +893,127 @@ def build_parity_j():
 
 
 # --------------------------------------------------------------------------------------
+# batch I3: is_valid_coverage, invalid_coverage_edges, simplify_coverage (whole-series cases)
+# --------------------------------------------------------------------------------------
+_SQ_A = "POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))"
+_SQ_B = "POLYGON ((2 0, 4 0, 4 2, 2 2, 2 0))"
+_K_DOC = ["POLYGON ((0 0, 1 1.1, 2 0, 1.5 1, 2 2, 0 2, 0 0))", "POLYGON ((2 0, 4 0, 4 2, 2 2, 1.5 1, 2 0))"]
+K_SETS = {
+    "squares": [_SQ_A, _SQ_B],
+    "overlap": [_SQ_A, "POLYGON ((1 0, 3 0, 3 2, 1 2, 1 0))"],
+    "mismatch": ["POLYGON ((0 0, 1 1, 1 0, 0 0))", "POLYGON ((0 0, 0.5 0.5, 1 1, 0 1, 0 0))"],
+    "triangles": ["POLYGON ((0 0, 1 1, 1 0, 0 0))", "POLYGON ((0 0, 1 1, 0 1, 0 0))"],
+    "gap_0.1": [_SQ_A, "POLYGON ((2.1 0, 4 0, 4 2, 2.1 2, 2.1 0))"],
+    "hole_filled": ["POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0), (2 2, 2 4, 4 4, 4 2, 2 2))",
+                    "POLYGON ((2 2, 4 2, 4 4, 2 4, 2 2))"],
+    "hole_island_gap": ["POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0), (2 2, 2 4, 4 4, 4 2, 2 2))",
+                        "POLYGON ((2.1 2.1, 3.9 2.1, 3.9 3.9, 2.1 3.9, 2.1 2.1))"],
+    "t_vertex": [_SQ_A, "POLYGON ((2 0, 4 0, 4 1, 2 1, 2 0))", "POLYGON ((2 1, 4 1, 4 2, 2 2, 2 1))"],
+    "inside": ["POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))", "POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1))"],
+    "corner_touch": [_SQ_A, "POLYGON ((2 2, 4 2, 4 4, 2 4, 2 2))"],
+    "crossing": ["POLYGON ((0 0, 3 0, 3 3, 0 3, 0 0))", "POLYGON ((2 2, 5 2, 5 5, 2 5, 2 2))"],
+    "duplicate": [_SQ_A, _SQ_A],
+    "multi": ["MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((5 5, 6 5, 6 6, 5 5)))",
+              "POLYGON ((1 0, 3 0, 3 2, 1 2, 1 0))", "POLYGON ((6 5, 7 5, 7 6, 6 5))"],
+    "reversed": ["POLYGON ((0 0, 0 2, 2 2, 2 0, 0 0))", _SQ_B],
+    "split_edge": [_SQ_A, "POLYGON ((2 0, 4 0, 4 2, 2 2, 2 1, 2 0))"],
+    "separate_stretches": ["POLYGON ((0 0, 1 0, 2 0, 3 0, 4 0, 5 0, 5 5, 0 5, 0 0))",
+                           "POLYGON ((0.2 -1, 0.8 -1, 0.8 1, 0.2 1, 0.2 -1))",
+                           "POLYGON ((3.2 -1, 3.8 -1, 3.8 1, 3.2 1, 3.2 -1))"],
+    "lonlat": ["POLYGON ((-80.2 25.7, -80.1 25.7, -80.1 25.8, -80.2 25.8, -80.2 25.7))",
+               "POLYGON ((-80.1 25.7, -80.0 25.7, -80.0 25.8, -80.1 25.8, -80.1 25.7))"],
+    "null_point_empty": [_SQ_A, None, "POINT (1 1)", "POLYGON EMPTY", _SQ_B],
+}
+K_SIMPLIFY_SETS = {
+    "doc": _K_DOC,
+    "collinear": ["POLYGON ((0 0, 1 0, 2 0, 2 2, 0 2, 0 0))", "POLYGON ((2 0, 4 0, 4 2, 2 2, 2 1, 2 0))"],
+    "free_ring": ["POLYGON ((0 0, 5 0, 5 1, 4 1.2, 3 1, 2 1.2, 1 1, 0 1, 0 0))"],
+    "hole_filled": ["POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0), (2 2, 2 4, 3 4.3, 4 4, 4 2, 3 1.7, 2 2))",
+                    "POLYGON ((2 2, 3 1.7, 4 2, 4 4, 3 4.3, 2 4, 2 2))"],
+    "three_meet": ["POLYGON ((0 0, 2 0, 2 1, 1 1.2, 0 1, 0 0))", "POLYGON ((2 0, 4 0, 4 1, 3 1.2, 2 1, 2 0))",
+                   "POLYGON ((0 1, 1 1.2, 2 1, 3 1.2, 4 1, 4 3, 0 3, 0 1))"],
+    "multi": ["MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((5 0, 7 0, 7 2, 5 2, 5 0)))",
+              "POLYGON ((2 0, 5 0, 5 2, 4 2.3, 3 1.8, 2 2, 2 0))"],
+    "squares": [_SQ_A, _SQ_B],
+    "corner_touch": [_SQ_A, "POLYGON ((2 2, 4 2, 4 4, 2 4, 2 2))", "POLYGON ((0 2, 2 2, 2 4, 0 4, 0 2))",
+                     "POLYGON ((2 0, 4 0, 4 2, 2 2, 2 0))"],
+    "overlapping_input": [_SQ_A, "POLYGON ((1 0, 3 0, 3 2, 1 2, 1 0))"],
+    "empty_row": [_SQ_A, "POLYGON EMPTY", _SQ_B],
+}
+
+
+def _k_round(g):
+    """Coordinates on a 0.005 grid, so the committed fixture stays small."""
+    return shapely.transform(g, lambda c: (c * 200).round() / 200)
+
+
+def _k_value(g):
+    """A geometry result as WKT; None for a missing one (GeoPandas gives None or NaN)."""
+    if g is None or (isinstance(g, float) and math.isnan(g)):
+        return None
+    return g.wkt
+
+
+def build_parity_k():
+    sys.path.insert(0, HERE)
+    import random as _random
+    import fuzz_coverage
+
+    cases = []
+    sets = {}
+
+    def add(op, name, rows, args, label, expected):
+        sets[name] = rows
+        cases.append({"op": op, "set": name, "args": args, "label": label, "e": expected})
+
+    def series_of(rows):
+        return gpd.GeoSeries([None if r is None else swkt.loads(r) for r in rows])
+
+    def validity(name, rows, gaps):
+        g = series_of(rows)
+        for gap in gaps:
+            args = {"gap_width": gap}
+            add("is_valid_coverage", f"v_{name}", rows, args, f"is_valid_coverage({name}, gap_width={gap})",
+                bool(g.is_valid_coverage(gap_width=gap)))
+            add("invalid_coverage_edges", f"v_{name}", rows, args, f"invalid_coverage_edges({name}, gap_width={gap})",
+                [_k_value(x) for x in g.invalid_coverage_edges(gap_width=gap)])
+
+    def simplification(name, rows, tolerances):
+        g = series_of(rows)
+        for tol in tolerances:
+            for boundary in (True, False):
+                try:
+                    expected = [_k_value(x) for x in g.simplify_coverage(tol, simplify_boundary=boundary)]
+                except shapely.errors.GEOSException:
+                    continue  # GEOS refuses a collapsed ring; GeoFrame keeps it as it is
+                add("simplify_coverage", f"s_{name}", rows, {"tolerance": tol, "simplify_boundary": boundary},
+                    f"simplify_coverage({name}, tolerance={tol}, simplify_boundary={str(boundary).lower()})",
+                    expected)
+
+    for name, rows in K_SETS.items():
+        validity(name, rows, (0.0, 0.2, 1.0))
+    for name, rows in K_SIMPLIFY_SETS.items():
+        simplification(name, rows, (0.0, 0.2, 0.5, 1.0, 2.0))
+
+    _random.seed(2024)
+    for n in range(70):
+        polys = fuzz_coverage.messy_polygons()
+        validity(f"random{n}", [_k_round(p).wkt for p in polys], _random.sample([0.0, 0.0, 0.1, 0.3, 0.6, 1.5], 2))
+    for n in range(50):
+        rows = fuzz_coverage.valid_coverage()
+        simplification(f"coverage{n}", [_k_round(p).wkt for p in rows],
+                       _random.sample([0.0, 0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.5, 3.0], 3))
+        if n % 10 == 0:
+            # the same random input as a coverage that may overlap (GEOS simplifies it anyway)
+            messy = fuzz_coverage.messy_polygons()
+            simplification(f"messy{n}", [_k_round(p).wkt for p in messy], (0.3, 1.0))
+
+    with open(os.path.join(OUT, "parity_k.json"), "w") as f:
+        json.dump({"sets": sets, "cases": cases}, f, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        f.write("\n")
+
+
+# --------------------------------------------------------------------------------------
 # frames: sjoin / sjoin_nearest / dissolve
 # --------------------------------------------------------------------------------------
 def frames():
@@ -1118,6 +1239,7 @@ def main():
     build_io()
     build_parity_i()
     build_parity_j()
+    build_parity_k()
     build_frames()
     build_overlay()
     corpus = dict(CORPUS)
