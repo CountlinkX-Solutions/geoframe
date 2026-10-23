@@ -88,6 +88,42 @@ defmodule GeoFrame.KinoTest do
     end
   end
 
+  describe "Z geometries" do
+    setup do
+      series = GeoSeries.from_wkt!(["POINT Z (10 20 5)", "LINESTRING Z (0 0 1, 1 1 2)", nil])
+
+      %{
+        series: series,
+        gdf: GeoFrame.GeoDataFrame.new(Explorer.DataFrame.new(id: [1, 2, 3]), series)
+      }
+    end
+
+    test "the map draws the 2D projection", %{series: series} do
+      spec = series |> GeoFrame.Kino.maplibre() |> MapLibre.to_spec()
+      features = spec["sources"]["geoframe"]["data"]["features"]
+
+      assert Enum.map(features, & &1["geometry"]["coordinates"]) ==
+               [[10.0, 20.0], [[0.0, 0.0], [1.0, 1.0]]]
+    end
+
+    test "inspect and the table preview keep the Z ordinate", %{series: series, gdf: gdf} do
+      assert inspect(series) =~ "POINT Z(10 20 5)"
+      assert inspect(gdf) =~ "LINESTRING Z(0 0 1,1 1 2)"
+
+      assert gdf
+             |> GeoFrame.GeoDataFrame.preview()
+             |> Explorer.DataFrame.to_columns()
+             |> Map.fetch!("geometry") ==
+               ["POINT Z(10 20 5)", "LINESTRING Z(0 0 1,1 1 2)", nil]
+
+      assert gdf
+             |> GeoFrame.GeoDataFrame.to_explorer(encoding: :wkt)
+             |> Explorer.DataFrame.to_columns()
+             |> Map.fetch!("geometry") ==
+               ["POINT Z(10 20 5)", "LINESTRING Z(0 0 1,1 1 2)", nil]
+    end
+  end
+
   defp restore_env(nil), do: Application.delete_env(:geoframe, :max_map_features)
   defp restore_env(value), do: Application.put_env(:geoframe, :max_map_features, value)
 end

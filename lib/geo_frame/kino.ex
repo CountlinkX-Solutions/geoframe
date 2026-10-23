@@ -16,7 +16,7 @@ if Code.ensure_loaded?(Kino) do
     are filled with an outline, lines are stroked, points are circles. The view is fitted to
     the data's `GeoFrame.GeoSeries.total_bounds/1`. The basemap is MapLibre's demo style, which
     needs internet access in the browser. Coordinates are drawn as stored and must be
-    longitude/latitude.
+    longitude/latitude; Z and M are ignored (the Inspect and Table tabs still show them).
 
     ### Size limit
 
@@ -105,7 +105,7 @@ if Code.ensure_loaded?(Kino) do
       Use it to customise the map (extra layers, another basemap) before calling
       `Kino.MapLibre.new/1`. The GeoJSON source is named `"geoframe"` and the layers are
       `"geoframe-fill"`, `"geoframe-outline"`, `"geoframe-line"` and `"geoframe-circle"`.
-      Features carry geometry only, no properties. The size limit is not applied here.
+      Features carry geometry only, no properties, and are drawn in 2D: Z and M are dropped. The size limit is not applied here.
       """
       @spec maplibre(GeoDataFrame.t() | GeoSeries.t()) :: MapLibre.t()
       def maplibre(frame) do
@@ -151,7 +151,7 @@ if Code.ensure_loaded?(Kino) do
 
       defp feature_collection(geometry) do
         features =
-          for geom <- GeoSeries.to_geojson(geometry), geom != nil do
+          for geom <- geometry |> GeoSeries.force_2d() |> GeoSeries.to_geojson(), geom != nil do
             %{"type" => "Feature", "geometry" => geom, "properties" => %{}}
           end
 
