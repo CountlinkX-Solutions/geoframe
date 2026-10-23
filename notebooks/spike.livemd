@@ -153,6 +153,21 @@ Export to GeoJSON for any other tool:
 GeoFrame.GeoDataFrame.to_geojson(residential) |> Map.fetch!("features") |> hd()
 ```
 
+## Z coordinates
+
+Geometries can carry a Z ordinate (and M). `from_xy/3` takes `z:`, and `get_coordinates/2`
+returns it with `include_z: true`. The map draws the 2D projection; Inspect shows the Z.
+
+```elixir
+peaks = GeoFrame.GeoSeries.from_xy([-80.19, -80.2], [25.77, 25.78], z: [12.5, 30.0], crs: "EPSG:4326")
+
+{GeoFrame.GeoSeries.to_wkt(peaks), GeoFrame.GeoSeries.get_coordinates(peaks, include_z: true)}
+```
+
+```elixir
+peaks
+```
+
 ## Write and read back
 
 ```elixir

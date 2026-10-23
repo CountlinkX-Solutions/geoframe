@@ -30,9 +30,9 @@ defmodule GeoFrame.ParityATest do
       assert GeoSeries.to_wkt(out) == ["POINT(1 4)", nil, nil]
     end
 
-    test "z is accepted, validated and dropped" do
+    test "z builds a POINT Z and is length-checked" do
       out = GeoSeries.from_xy([1], [2], z: [3])
-      assert GeoSeries.to_wkt(out) == ["POINT(1 2)"]
+      assert GeoSeries.to_wkt(out) == ["POINT Z(1 2 3)"]
       assert_raise ArgumentError, fn -> GeoSeries.from_xy([1], [2], z: [3, 4]) end
     end
 

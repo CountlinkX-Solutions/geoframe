@@ -965,6 +965,45 @@ def build_zm_ops():
     w.dump()
 
 
+def build_zm_coords():
+    """Z5: `get_coordinates(include_z, include_m)` and `points_from_xy(x, y, z)`.
+
+    Standalone fixture (`zm_coords.json`, read by `zm_coords_test.exs`); NaN is written as null."""
+    rows = sorted(Z_CORPUS) + sorted(i for i in Z2_CORPUS if not i.startswith(("z2_snap", "z2_ll")))
+    texts = [Z_CORPUS.get(i) or Z2_CORPUS[i] for i in rows]
+    # GeoFrame rejects a collection mixing dimensions (documented in parity.md).
+    texts = [t for t in texts if not (t.startswith("GEOMETRYCOLLECTION (") and " Z (" in t)] + ["POINT (1 2)", "LINESTRING (0 0, 4 4)",
+                                                                  "POINT EMPTY", "LINESTRING Z EMPTY", None]
+    geoms = [None if t is None else swkt.loads(t) for t in texts]
+    series = gpd.GeoSeries(geoms)
+    nn = lambda v: None if math.isnan(v) else v
+
+    def table(df, cols):
+        return {"index": [int(i) for i in df.index], **{c: [nn(float(v)) for v in df[c]] for c in cols}}
+
+    out = {"wkt": texts}
+    out["include_z"] = table(series.get_coordinates(include_z=True), ["x", "y", "z"])
+    out["include_m"] = table(series.get_coordinates(include_m=True), ["x", "y", "m"])
+    out["include_zm"] = table(series.get_coordinates(include_z=True, include_m=True), ["x", "y", "z", "m"])
+    out["plain"] = table(series.get_coordinates(), ["x", "y"])
+    nan = float("nan")
+    cases = [
+        ([1, 2], [3, 4], [5, 6]),
+        ([1.5, -2.25], [0, 10], [nan, 7.5]),
+        ([0], [0], [0]),
+        ([], [], []),
+        ([1, 2, 3], [4, 5, 6], [-1.5, nan, 1e10]),
+    ]
+    out["from_xy"] = [
+        {"x": x, "y": y, "z": [nn(float(v)) for v in z],
+         "wkt": [_norm_wkt(g) for g in gpd.points_from_xy(x, y, z)]}
+        for x, y, z in cases
+    ]
+    with open(os.path.join(OUT, "zm_coords.json"), "w") as f:
+        json.dump(out, f, indent=1)
+        f.write("\n")
+
+
 def build_zm_overlay():
     """Z3: Z/M policy of the interpolating, vertex-copy and overlay operations (full WKT).
 
@@ -1537,6 +1576,7 @@ def main():
     build_zm()
     build_zm_ops()
     build_zm_overlay()
+    build_zm_coords()
     build_frames()
     build_overlay()
     corpus = dict(CORPUS)

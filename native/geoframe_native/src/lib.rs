@@ -414,6 +414,28 @@ fn get_coordinates(column: Handle) -> (Vec<u32>, Vec<f64>, Vec<f64>) {
     column.0.get_coordinates()
 }
 
+/// `(row, x, y, z, m)`; an absent ordinate is `None`.
+type CoordinateTable = (
+    Vec<u32>,
+    Vec<f64>,
+    Vec<f64>,
+    Vec<Option<f64>>,
+    Vec<Option<f64>>,
+);
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn get_coordinates_zm(column: Handle) -> CoordinateTable {
+    // NaN cannot cross the NIF boundary as a float: an absent ordinate is `nil`.
+    let (rows, xs, ys, zs, ms) = column.0.get_coordinates_zm();
+    let present = |values: Vec<f64>| -> Vec<Option<f64>> {
+        values
+            .into_iter()
+            .map(|v| (!v.is_nan()).then_some(v))
+            .collect()
+    };
+    (rows, xs, ys, present(zs), present(ms))
+}
+
 #[rustler::nif(schedule = "DirtyCpu")]
 fn count_geometries(column: Handle) -> Vec<Option<usize>> {
     column.0.count_geometries()

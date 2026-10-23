@@ -85,6 +85,33 @@ columns decode to raw EWKB (parsed in Rust, SRID becomes the CRS):
 Without the types module, select `ST_AsEWKB(geom) AS geom`. Tests tagged `:postgis` need
 `GEOFRAME_POSTGIS_URL` (see Development).
 
+## Z and M coordinates
+
+Geometries can be XY, XYZ, XYM or XYZM (`POINT Z`, `LINESTRING M`, `POLYGON ZM`, ...). A
+column is stored as GeoArrow `geometry`, whose union has a child per dimension, so rows of one
+column may differ; there is no side buffer for Z.
+
+```elixir
+pts = GeoFrame.GeoSeries.from_xy([1, 2], [3, 4], z: [10, 20])   # POINT Z (1 3 10), ...
+GeoFrame.GeoSeries.has_z(pts)                                   # [true, true]
+GeoFrame.GeoSeries.get_coordinates(pts, include_z: true)         # x, y, z columns
+GeoFrame.GeoSeries.force_2d(pts)                                # drops Z and M
+```
+
+* **API**: `has_z`, `has_m`, `z`/`m`, `force_2d`, `force_3d`, `from_xy(z:)` and
+  `get_coordinates(include_z:, include_m:)` (NaN for a vertex without the ordinate).
+* **Operations**: vertex copies and maps keep Z (`translate`, `scale`, `rotate`, `to_crs`,
+  `simplify`, `reverse`, `boundary`, ...); `segmentize`, `interpolate` and the overlay family
+  interpolate it as GEOS does; M survives only pure vertex copies (`reverse`, `normalize`,
+  `boundary`, `remove_repeated_points`, ...), as in Shapely. Operations that build new
+  geometry from scratch (`buffer`, `centroid`, `envelope`, `voronoi_polygons`) return 2D.
+* **I/O**: WKT, WKB, EWKB, GeoParquet, Feather/Arrow, GeoPackage, FlatGeobuf and Shapefile keep
+  Z and M; GeoJSON keeps Z only (RFC 7946); see the table above.
+* **Livebook**: the map draws the 2D projection; Inspect and Table show `Z`/`M` in WKT.
+
+Every claim is checked against GeoPandas 1.2 / Shapely 2.2 fixtures; deviations are listed in
+[docs/parity.md](docs/parity.md#z-and-m).
+
 ## Limits
 
 Inputs that would abort the whole VM (stack overflow or a huge allocation) are rejected with an

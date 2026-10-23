@@ -332,3 +332,41 @@ fn take_concat_and_fill_null_keep_z_and_m() {
     assert_eq!(filled.z()[12], Some(8.0));
     assert_eq!(filled.m()[12], Some(7.0));
 }
+
+// -- get_coordinates_zm ------------------------------------------------------------------
+
+#[test]
+fn coordinates_carry_z_and_m_with_nan_for_absent_ordinates() {
+    let column = col(&[
+        Some("POINT Z (1 2 3)"),
+        Some("LINESTRING (0 0, 1 1)"),
+        None,
+        Some("POINT ZM (1 2 3 4)"),
+        Some("POINT M (1 2 5)"),
+        Some("POINT EMPTY"),
+        Some("POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 0 1))"),
+    ]);
+    let (rows, xs, ys, zs, ms) = column.get_coordinates_zm();
+    assert_eq!(rows, vec![0, 1, 1, 3, 4, 6, 6, 6, 6]);
+    assert_eq!(xs, vec![1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 4.0, 4.0, 0.0]);
+    assert_eq!(ys, vec![2.0, 0.0, 1.0, 2.0, 2.0, 0.0, 0.0, 4.0, 0.0]);
+    let same = |a: &[f64], b: &[f64]| {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(p, q)| p == q || (p.is_nan() && q.is_nan()))
+    };
+    let nan = f64::NAN;
+    assert!(same(&zs, &[3.0, nan, nan, 3.0, nan, 1.0, 2.0, 3.0, 1.0]));
+    assert!(same(&ms, &[nan, nan, nan, 4.0, 5.0, nan, nan, nan, nan]));
+}
+
+#[test]
+fn coordinates_walk_collections_and_multi_geometries() {
+    let column = col(&[Some(
+        "GEOMETRYCOLLECTION Z (POINT Z (1 2 3), MULTILINESTRING Z ((0 0 1, 1 1 2), (2 2 3, 3 3 4)))",
+    )]);
+    let (rows, _, _, zs, _) = column.get_coordinates_zm();
+    assert_eq!(rows.len(), 5);
+    assert_eq!(zs, vec![3.0, 1.0, 2.0, 3.0, 4.0]);
+}

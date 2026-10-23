@@ -338,7 +338,8 @@ defmodule GeoFrame do
   written). `NaN` and infinite floats become `null`; dates, timestamps and categories are
   written as text; binary and nested columns are an error. Rows whose geometry is null (or
   cannot be expressed in GeoJSON, such as an empty point) get `"geometry": null`.
-  Coordinates are 2D. A frame with no rows has no properties, so its columns are lost.
+  Z is written as the third ordinate (RFC 7946 has no M, so M is dropped). A frame with no
+  rows has no properties, so its columns are lost.
 
   Options: `:force` - skip the CRS check (default `false`).
 
@@ -377,7 +378,7 @@ defmodule GeoFrame do
   Integer, float, boolean, string and binary columns keep their width; dates, timestamps
   and categories are written as text, nested columns are an error. The header geometry type
   is the type shared by all rows, or unknown for a mix (geometries are never promoted to
-  multi types). Coordinates are 2D and null geometries are stored as empty ones.
+  multi types). Z and M are kept (the header flags say which) and null geometries are stored as empty ones.
 
   The CRS is stored in the header: `"EPSG:n"` and other `"AUTHORITY:CODE"` strings as
   organisation and code, WKT as WKT, `nil` as no CRS. FlatGeobuf has no CRS84, so
@@ -405,7 +406,7 @@ defmodule GeoFrame do
   present; without a `.dbf` only the geometry is read. Geometry: a polyline with one part is
   a `LineString` and with several a `MultiLineString`; a polygon shape with one outer ring a
   `Polygon` and with several a `MultiPolygon`; null shapes are null geometries; Z and M values
-  are dropped.
+  are kept (`PointZ`, `PolyLineM`, ... read as XYZ, XYM or XYZM).
 
   Attributes follow the dBase types: `C` strings (trailing blanks trimmed; an empty value is
   `nil`, as in GDAL), `N` with no decimals as `s32` (width up to 9) or `s64` (up to 18),
@@ -440,7 +441,7 @@ defmodule GeoFrame do
   A shapefile holds one geometry type. `Polygon` and `MultiPolygon` rows are both polygon
   shapes, `LineString` and `MultiLineString` both polyline shapes; any other mix, or a
   `GeometryCollection`, raises `ArgumentError` (GDAL refuses it too). Null and empty
-  geometries become null shapes; coordinates are 2D; polygon rings are written in the
+  geometries become null shapes; Z and M are written with the Z or M shape types; polygon rings are written in the
   format's orientation (exterior clockwise).
 
   Column types: integers `N(9,0)` (8 to 32 bits) or `N(18,0)` (64 bits and unsigned),
@@ -503,7 +504,7 @@ defmodule GeoFrame do
   `DATE`, `DATETIME`); a frame column named `fid` is an error. Geometry is stored as
   GeoPackageBinary with an envelope. The layer geometry type is the common type of the rows,
   or `GEOMETRY` for a mix; unlike GDAL, single and multi geometries are **not** promoted to
-  multi, so rows read back as written. Coordinates are 2D.
+  multi, so rows read back as written. Z and M are kept (the `z` and `m` flags of the layer are 0, 1 or 2).
 
   The CRS must be an `"AUTHORITY:CODE"` string, `"OGC:CRS84"` (stored as EPSG 4326), PROJJSON
   with an identifier, or WKT. An EPSG code outside the bundled table is stored with the
