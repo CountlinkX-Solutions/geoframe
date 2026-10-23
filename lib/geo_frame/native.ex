@@ -81,6 +81,7 @@ defmodule GeoFrame.Native do
   def count_coordinates(_ref), do: err()
   def from_xy(_x, _y, _crs), do: err()
   def get_coordinates(_ref), do: err()
+  def get_coordinates_zm(_ref), do: err()
   def count_geometries(_ref), do: err()
   def count_interior_rings(_ref), do: err()
   def get_geometry(_ref, _n), do: err()

@@ -145,8 +145,9 @@ defmodule GeoFrame.GeoSeries do
   Options:
 
     * `:crs` - a CRS string such as `"EPSG:4326"`, or `nil` (default).
-    * `:z` - accepted for GeoPandas compatibility and length-checked, but **dropped**:
-      geometry storage is 2D, so the result has no Z.
+    * `:z` - a list or `Explorer.Series` of the same length: the result is `POINT Z`
+      (`nil` or NaN is a NaN Z ordinate, as `points_from_xy(x, y, z)` in GeoPandas). A row
+      whose `x` or `y` is missing stays a null geometry.
 
   Raises `ArgumentError` when the columns differ in length or an option is unknown.
 
@@ -163,13 +164,20 @@ defmodule GeoFrame.GeoSeries do
     opts = Keyword.validate!(opts, crs: nil, z: nil)
     xs = coordinates!(x, :x)
     ys = coordinates!(y, :y)
+    points = xs |> Native.from_xy(ys, opts[:crs]) |> wrap() |> unwrap!()
 
-    if opts[:z] != nil and Kernel.length(coordinates!(opts[:z], :z)) != Kernel.length(xs) do
-      raise ArgumentError, "z must have the same length as x and y"
+    case opts[:z] do
+      nil -> points
+      z -> with_z(points, coordinates!(z, :z), Kernel.length(xs))
     end
-
-    xs |> Native.from_xy(ys, opts[:crs]) |> wrap() |> unwrap!()
   end
+
+  defp with_z(points, zs, size) when Kernel.length(zs) == size do
+    points.ref |> Native.force_3d(zs) |> wrap() |> unwrap!()
+  end
+
+  defp with_z(_points, _zs, _size),
+    do: raise(ArgumentError, "z must have the same length as x and y")
 
   defp coordinates!(%Series{} = series, name),
     do: series |> Series.to_list() |> coordinates!(name)
@@ -1891,16 +1899,24 @@ defmodule GeoFrame.GeoSeries do
   Null and empty geometries contribute no rows. A polygon ring includes its closing vertex,
   so the row count equals the sum of `count_coordinates/1`. Option `:include_index` (default
   `false`) adds a leading `index` column (s64) with the zero-based row position, GeoPandas'
-  index. GeoPandas' `include_z`, `ignore_index` and `index_parts` are not supported (storage
-  is 2D; there is no multi-index).
+  index. GeoPandas' `ignore_index` and `index_parts` are not supported (there is no
+  multi-index).
+
+  Options `:include_z` and `:include_m` (default `false`) append `z` and `m` columns (f64),
+  after `x` and `y`, with NaN for a vertex whose geometry lacks that ordinate (Shapely
+  `get_coordinates`). An XYM geometry therefore has a NaN `z`.
   """
   @spec get_coordinates(t(), keyword()) :: DataFrame.t()
   def get_coordinates(%__MODULE__{ref: ref}, opts \\ []) do
-    opts = Keyword.validate!(opts, include_index: false)
-    {rows, xs, ys} = Native.get_coordinates(ref)
+    opts = Keyword.validate!(opts, include_index: false, include_z: false, include_m: false)
+    {rows, xs, ys, zs, ms} = Native.get_coordinates_zm(ref)
 
-    columns = [{"x", xs}, {"y", ys}]
-    dtypes = [{"x", {:f, 64}}, {"y", {:f, 64}}]
+    columns =
+      [{"x", xs}, {"y", ys}] ++
+        if(opts[:include_z], do: [{"z", nan_for_nil(zs)}], else: []) ++
+        if(opts[:include_m], do: [{"m", nan_for_nil(ms)}], else: [])
+
+    dtypes = Enum.map(columns, fn {name, _values} -> {name, {:f, 64}} end)
 
     if opts[:include_index] do
       DataFrame.new([{"index", rows} | columns], dtypes: [{"index", {:s, 64}} | dtypes])
@@ -1908,6 +1924,8 @@ defmodule GeoFrame.GeoSeries do
       DataFrame.new(columns, dtypes: dtypes)
     end
   end
+
+  defp nan_for_nil(values), do: Enum.map(values, &(&1 || :nan))
 
   @doc """
   Number of parts in each geometry as an s64 series: the members of a multi-part geometry or

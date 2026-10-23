@@ -12,10 +12,14 @@
 //!   geometry (so per member of a collection) by rewriting its ISO WKB, which keeps every
 //!   other ordinate bit for bit.
 
-use geo_traits::{CoordTrait, GeometryCollectionTrait, GeometryTrait, GeometryType, PointTrait};
+use geo_traits::{
+    CoordTrait, GeometryCollectionTrait, GeometryTrait, GeometryType, LineStringTrait,
+    MultiLineStringTrait, MultiPointTrait, MultiPolygonTrait, PointTrait, PolygonTrait,
+};
 use geoarrow_array::builder::GeometryBuilder;
 
 use crate::ewkb::{MAX_NESTING_DEPTH, NESTING_ERROR};
+use crate::zm_io::{vertex, Vertex};
 use crate::GeoColumn;
 
 /// `(has_z, has_m)` of a geometry.
@@ -58,7 +62,66 @@ fn point_ordinates<G: GeometryTrait<T = f64>>(geometry: &G) -> (Option<f64>, Opt
     }
 }
 
+/// Appends every vertex of `geometry` in storage order; empty points contribute nothing.
+fn collect_vertices<G: GeometryTrait<T = f64>>(geometry: &G, out: &mut Vec<Vertex>) {
+    match geometry.as_type() {
+        GeometryType::Point(point) => out.extend(point.coord().map(|c| vertex(&c))),
+        GeometryType::MultiPoint(multi) => {
+            out.extend(multi.points().filter_map(|p| p.coord().map(|c| vertex(&c))));
+        }
+        GeometryType::LineString(line) => out.extend(line.coords().map(|c| vertex(&c))),
+        GeometryType::MultiLineString(multi) => {
+            for line in multi.line_strings() {
+                out.extend(line.coords().map(|c| vertex(&c)));
+            }
+        }
+        GeometryType::Polygon(polygon) => collect_polygon(polygon, out),
+        GeometryType::MultiPolygon(multi) => {
+            for polygon in multi.polygons() {
+                collect_polygon(&polygon, out);
+            }
+        }
+        GeometryType::GeometryCollection(collection) => {
+            for member in collection.geometries() {
+                collect_vertices(&member, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_polygon<P: PolygonTrait<T = f64>>(polygon: &P, out: &mut Vec<Vertex>) {
+    for ring in polygon.exterior().into_iter().chain(polygon.interiors()) {
+        out.extend(ring.coords().map(|c| vertex(&c)));
+    }
+}
+
+/// Columns of [`GeoColumn::get_coordinates_zm`]: row, x, y, z, m.
+pub type CoordinateColumns = (Vec<u32>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>);
+
 impl GeoColumn {
+    /// Every vertex of every non-null, non-empty geometry as `(row, x, y, z, m)` columns, in
+    /// row order, with NaN for an ordinate the geometry lacks (Shapely `get_coordinates`
+    /// with `include_z` and `include_m`).
+    pub fn get_coordinates_zm(&self) -> CoordinateColumns {
+        let mut out = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let per_row = self.map_scalars(|scalar| {
+            let mut found = Vec::new();
+            collect_vertices(scalar, &mut found);
+            found
+        });
+        for (row, found) in per_row.into_iter().enumerate() {
+            for v in found.into_iter().flatten() {
+                out.0.push(row as u32);
+                out.1.push(v.x);
+                out.2.push(v.y);
+                out.3.push(v.z);
+                out.4.push(v.m);
+            }
+        }
+        out
+    }
+
     /// Whether each geometry has a Z ordinate; `false` for null rows.
     pub fn has_z(&self) -> Vec<bool> {
         self.map_scalars(|scalar| dimensions(scalar).0)
