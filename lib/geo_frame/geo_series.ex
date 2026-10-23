@@ -162,6 +162,247 @@ defmodule GeoFrame.GeoSeries do
   @spec centroid(t()) :: t()
   def centroid(%__MODULE__{ref: ref}), do: ref |> Native.centroid() |> wrap() |> unwrap!()
 
+  # -- unary constructive operations ------------------------------------------------------
+
+  @unary_docs [
+    convex_hull: """
+    The smallest convex polygon containing each geometry. Degenerate inputs collapse: one
+    distinct point gives a point, collinear points a line. Empty geometries give `nil`.
+    """,
+    envelope: """
+    The axis-aligned bounding rectangle as a polygon. A point gives a point and a horizontal
+    or vertical line gives a line (the degenerate rectangles). Empty geometries give `nil`.
+    """,
+    boundary: """
+    The topological boundary: a polygon's rings as a line (or multi-line with holes), a line's
+    endpoints as a multi-point (mod-2 rule; empty for closed lines), and an empty collection
+    for points. Geometry collections give `nil` (Shapely raises).
+    """,
+    make_valid: """
+    Repairs invalid polygons and multipolygons (self-intersections, bowties) into valid
+    (multi)polygons, using `geo`'s triangulation-based repair, which differs from GEOS'
+    `make_valid` in vertex detail but not in the area it yields for simple cases. Valid
+    geometries and non-polygons are returned unchanged. A repair that fails gives `nil`.
+    """,
+    representative_point: """
+    A point guaranteed to lie within (or on) each geometry, unlike the centroid of a concave
+    polygon. The point chosen may differ from GEOS' choice. Empty geometries give `nil`.
+    """,
+    exterior: """
+    The exterior ring of each polygon as a line. Every non-polygon row gives `nil`, where
+    GeoPandas raises. Interior rings are not returned.
+    """
+  ]
+
+  for {name, text} <- @unary_docs do
+    native_name = Atom.to_string(name)
+
+    @doc """
+    #{text}
+    Returns a `GeoSeries` with the same CRS. Null rows, and rows the operation is undefined
+    for, are `nil`. Output is 2D: Z and M ordinates are dropped.
+    """
+    @spec unquote(name)(t()) :: t()
+    def unquote(name)(%__MODULE__{ref: ref}) do
+      ref |> Native.unary(unquote(native_name)) |> wrap() |> unwrap!()
+    end
+  end
+
+  @cap_styles ~w(round flat square)a
+  @join_styles ~w(round mitre bevel)a
+
+  @doc """
+  Buffers each geometry by `distance` (a number, in CRS units; negative shrinks polygons and
+  can empty them). The result is a polygon or multipolygon.
+
+  Options (Shapely names):
+
+    * `:cap_style` - `:round` (default), `:flat` or `:square`; the ends of lines.
+    * `:join_style` - `:round` (default), `:mitre` or `:bevel`; corners of lines and of
+      expanded polygons.
+    * `:quad_segs` - segments per quarter circle for round caps and joins, default `16`.
+      The backend clamps the resulting arc step, so values above about 50 or below 2 behave
+      as those bounds.
+    * `:mitre_limit` - for `:mitre` joins, the longest mitre as a multiple of `distance`,
+      default `5.0`, at least `1.0`.
+
+  `single_sided` is not supported. Invalid options raise `ArgumentError`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (0 0)"])
+      iex> [area] = s |> GeoFrame.GeoSeries.buffer(1) |> GeoFrame.GeoSeries.area() |> Explorer.Series.to_list()
+      iex> Float.round(area, 1)
+      3.1
+  """
+  @spec buffer(t(), number(), keyword()) :: t()
+  def buffer(%__MODULE__{ref: ref}, distance, opts \\ []) when is_number(distance) do
+    opts =
+      Keyword.validate!(opts,
+        cap_style: :round,
+        join_style: :round,
+        quad_segs: 16,
+        mitre_limit: 5.0
+      )
+
+    cap = enum!(opts, :cap_style, @cap_styles)
+    join = enum!(opts, :join_style, @join_styles)
+    quad_segs = opts[:quad_segs]
+    mitre_limit = opts[:mitre_limit]
+
+    unless is_integer(quad_segs) and quad_segs > 0,
+      do:
+        raise(ArgumentError, ":quad_segs must be a positive integer, got: #{inspect(quad_segs)}")
+
+    unless is_number(mitre_limit) and mitre_limit >= 1,
+      do: raise(ArgumentError, ":mitre_limit must be a number >= 1, got: #{inspect(mitre_limit)}")
+
+    ref
+    |> Native.buffer(
+      distance * 1.0,
+      Atom.to_string(cap),
+      Atom.to_string(join),
+      quad_segs,
+      mitre_limit * 1.0
+    )
+    |> wrap()
+    |> unwrap!()
+  end
+
+  @doc """
+  Simplifies lines and polygon rings with `tolerance`; points are unchanged.
+
+  Option `:preserve_topology` (default `true`) picks the algorithm and, with it, the meaning
+  of `tolerance`:
+
+    * `true` - Visvalingam-Whyatt with topology checks (`geo`'s `SimplifyVwPreserve`):
+      `tolerance` is a minimum triangle **area** and rings never self-intersect or collapse.
+    * `false` - Ramer-Douglas-Peucker (`geo`'s `Simplify`): `tolerance` is a maximum
+      **distance** from the original, like Shapely's `preserve_topology=False`; output can
+      be invalid.
+
+  Shapely's topology-preserving mode is a distance-based Douglas-Peucker variant, so the
+  same `tolerance` yields different vertices here in the default mode.
+  """
+  @spec simplify(t(), number(), keyword()) :: t()
+  def simplify(%__MODULE__{ref: ref}, tolerance, opts \\ []) when is_number(tolerance) do
+    opts = Keyword.validate!(opts, preserve_topology: true)
+
+    unless is_boolean(opts[:preserve_topology]),
+      do: raise(ArgumentError, ":preserve_topology must be a boolean")
+
+    ref |> Native.simplify(tolerance * 1.0, opts[:preserve_topology]) |> wrap() |> unwrap!()
+  end
+
+  # -- affine transforms ----------------------------------------------------------------
+
+  @doc """
+  Shifts every coordinate by `xoff` and `yoff`. Output is 2D.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1 1)"])
+      iex> s |> GeoFrame.GeoSeries.translate(2, 3) |> GeoFrame.GeoSeries.to_wkt()
+      ["POINT(3 4)"]
+  """
+  @spec translate(t(), number(), number()) :: t()
+  def translate(%__MODULE__{ref: ref}, xoff, yoff) when is_number(xoff) and is_number(yoff) do
+    ref |> Native.translate(xoff * 1.0, yoff * 1.0) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  Scales by `xfact` and `yfact` about `:origin` (negative factors mirror).
+
+  `:origin` is `:center` (default; the centre of each geometry's bounding box, as in
+  GeoPandas), `:centroid`, or an `{x, y}` pair used for every row. Output is 2D.
+  """
+  @spec scale(t(), number(), number(), keyword()) :: t()
+  def scale(%__MODULE__{ref: ref}, xfact, yfact, opts \\ [])
+      when is_number(xfact) and is_number(yfact) do
+    {origin, ox, oy} = origin!(opts)
+    ref |> Native.scale(xfact * 1.0, yfact * 1.0, origin, ox, oy) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  Rotates counter-clockwise by `angle` **degrees** about `:origin`.
+
+  `:origin` accepts the same values as in `scale/4` and defaults to `:center`. Output is 2D.
+  """
+  @spec rotate(t(), number(), keyword()) :: t()
+  def rotate(%__MODULE__{ref: ref}, angle, opts \\ []) when is_number(angle) do
+    {origin, ox, oy} = origin!(opts)
+    ref |> Native.rotate(angle * 1.0, origin, ox, oy) |> wrap() |> unwrap!()
+  end
+
+  defp origin!(opts) do
+    opts = Keyword.validate!(opts, origin: :center)
+
+    case opts[:origin] do
+      :center ->
+        {"center", 0.0, 0.0}
+
+      :centroid ->
+        {"centroid", 0.0, 0.0}
+
+      {x, y} when is_number(x) and is_number(y) ->
+        {"coord", x * 1.0, y * 1.0}
+
+      other ->
+        raise ArgumentError,
+              ":origin must be :center, :centroid or {x, y}, got: #{inspect(other)}"
+    end
+  end
+
+  defp enum!(opts, key, allowed) do
+    value = Keyword.fetch!(opts, key)
+
+    if value in allowed do
+      value
+    else
+      raise ArgumentError,
+            "#{inspect(key)} must be one of #{inspect(allowed)}, got: #{inspect(value)}"
+    end
+  end
+
+  # -- accessors ------------------------------------------------------------------------
+
+  @doc """
+  X coordinate of each point as an f64 series. Non-point geometries, empty points and nulls
+  give `nil` (GeoPandas raises for non-points).
+  """
+  @spec x(t()) :: Series.t()
+  def x(%__MODULE__{ref: ref}), do: ref |> Native.x() |> float_series()
+
+  @doc "Y coordinate of each point; same rules as `x/1`."
+  @spec y(t()) :: Series.t()
+  def y(%__MODULE__{ref: ref}), do: ref |> Native.y() |> float_series()
+
+  @doc """
+  The geometry type name per row, as GeoPandas/Shapely spell it: `"Point"`, `"LineString"`,
+  `"Polygon"`, `"MultiPoint"`, `"MultiLineString"`, `"MultiPolygon"` or
+  `"GeometryCollection"`; `nil` for null rows.
+
+  Note that a one-member `GEOMETRYCOLLECTION` is stored as that member when parsed, so it
+  reports the member's type.
+  """
+  @spec geom_type(t()) :: Series.t()
+  def geom_type(%__MODULE__{ref: ref}) do
+    ref |> Native.geom_type() |> Series.from_list(dtype: :string)
+  end
+
+  @doc "Whether each geometry is empty (such as `POINT EMPTY`); `nil` for null rows."
+  @spec is_empty(t()) :: Series.t()
+  # GeoPandas-compatible name, see is_valid/1.
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+  def is_empty(%__MODULE__{ref: ref}) do
+    Series.from_list(Native.empty_flags(ref), dtype: :boolean)
+  end
+
+  @doc """
+  Number of coordinates in each geometry as an s64 series (a closed ring counts its closing
+  vertex). Empty geometries give `0`; null rows `nil`.
+  """
+  @spec count_coordinates(t()) :: Series.t()
+  def count_coordinates(%__MODULE__{ref: ref}) do
+    ref |> Native.count_coordinates() |> Series.from_list(dtype: {:s, 64})
+  end
+
   # -- binary predicates ----------------------------------------------------------------
 
   @predicate_docs [
