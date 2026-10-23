@@ -189,13 +189,84 @@ defmodule GeoFrame.GeoSeries do
 
   # -- measures -------------------------------------------------------------------------
 
-  @doc "Planar, unsigned area. Zero for points and lines."
-  @spec area(t()) :: Series.t()
-  def area(%__MODULE__{ref: ref}), do: ref |> Native.area() |> float_series()
+  @geodesic_note """
+  Geodesic measures use the WGS 84 ellipsoid (Karney's algorithms). A geographic CRS is read
+  as lon/lat as it is, so one on another datum is still measured on WGS 84; a projected CRS
+  is reprojected to lon/lat first; a series without a CRS raises `ArgumentError`
+  (`set_crs` first).
+  """
 
-  @doc "Planar length: line length, polygon perimeter, zero for points."
-  @spec length(t()) :: Series.t()
-  def length(%__MODULE__{ref: ref}), do: ref |> Native.length() |> float_series()
+  @doc """
+  Unsigned area. Zero for points and lines.
+
+  Option `:method` - `:planar` (default, CRS units squared) or `:geodesic` (square metres,
+  see `area_geodesic/1`).
+  """
+  @spec area(t(), keyword()) :: Series.t()
+  def area(series, opts \\ [])
+
+  def area(%__MODULE__{} = series, opts) do
+    case measure_method!(opts, [:planar, :geodesic]) do
+      :planar -> series.ref |> Native.area() |> float_series()
+      :geodesic -> area_geodesic(series)
+    end
+  end
+
+  @doc """
+  Geodesic, unsigned area in square metres (GeoPolars `area_geodesic`). Holes are
+  subtracted, ring orientation does not matter, points and lines are zero.
+
+  #{@geodesic_note}
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"], crs: "EPSG:4326")
+      iex> [area] = s |> GeoFrame.GeoSeries.area_geodesic() |> Explorer.Series.to_list()
+      iex> round(area / 1.0e9)
+      12
+  """
+  @spec area_geodesic(t()) :: Series.t()
+  def area_geodesic(%__MODULE__{ref: ref}),
+    do: ref |> Native.area_geodesic() |> unwrap!() |> float_series()
+
+  @doc """
+  Length: line length, polygon perimeter, zero for points.
+
+  Option `:method` - `:planar` (default, CRS units) or `:geodesic` (metres, see
+  `length_geodesic/1`).
+  """
+  @spec length(t(), keyword()) :: Series.t()
+  def length(series, opts \\ [])
+
+  def length(%__MODULE__{} = series, opts) do
+    case measure_method!(opts, [:planar, :geodesic]) do
+      :planar -> series.ref |> Native.length() |> float_series()
+      :geodesic -> length_geodesic(series)
+    end
+  end
+
+  @doc """
+  Geodesic length in metres: line length, polygon perimeter (holes included), zero for
+  points.
+
+  #{@geodesic_note}
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 0 1)"], crs: "EPSG:4326")
+      iex> [m] = s |> GeoFrame.GeoSeries.length_geodesic() |> Explorer.Series.to_list()
+      iex> Float.round(m, 1)
+      110574.4
+  """
+  @spec length_geodesic(t()) :: Series.t()
+  def length_geodesic(%__MODULE__{ref: ref}),
+    do: ref |> Native.length_geodesic() |> unwrap!() |> float_series()
+
+  defp measure_method!(opts, allowed) do
+    method = Keyword.get(opts, :method, :planar)
+
+    if method in allowed do
+      method
+    else
+      raise ArgumentError, "method must be one of #{inspect(allowed)}, got: #{inspect(method)}"
+    end
+  end
 
   @doc "Boolean series: whether each geometry is valid per the OGC rules."
   @spec is_valid(t()) :: Series.t()
@@ -1145,24 +1216,49 @@ defmodule GeoFrame.GeoSeries do
   end
 
   @doc """
-  Planar Euclidean distance between each pair, as an f64 series. Zero when they intersect.
+  Distance between each pair, as an f64 series. Zero when they intersect.
 
-  Distances are in CRS units (degrees for `EPSG:4326`); there is no geodesic variant.
+  Option `:method`:
+
+    * `:planar` (default) - Euclidean, in CRS units (degrees for `EPSG:4326`).
+    * `:geodesic` - metres on the WGS 84 ellipsoid. `Point` to `Point` is exact (Karney).
+      For any other pair the nearest points are found *planar, in lon/lat degrees* and the
+      geodesic distance between them is returned: an approximation that can drift at high
+      latitudes or across the antimeridian.
+    * `:haversine` - as `:geodesic` on a sphere of radius 6 371 008.8 m.
+
+  #{@geodesic_note}
+
   Pairing, null and CRS rules are those of `intersects/2`.
   """
-  @spec distance(t(), other()) :: Series.t()
-  def distance(%__MODULE__{ref: left} = series, other) do
-    left |> Native.distance(other_ref(series, other)) |> unwrap!() |> float_series()
+  @spec distance(t(), other(), keyword()) :: Series.t()
+  def distance(%__MODULE__{ref: left} = series, other, opts \\ []) do
+    right = other_ref(series, other)
+
+    case measure_method!(opts, [:planar, :geodesic, :haversine]) do
+      :planar -> left |> Native.distance(right) |> unwrap!() |> float_series()
+      :geodesic -> left |> Native.distance_geodesic(right, false) |> unwrap!() |> float_series()
+      :haversine -> left |> Native.distance_geodesic(right, true) |> unwrap!() |> float_series()
+    end
   end
 
   @doc """
   Whether each pair is within `limit` of each other: `distance(a, b) <= limit` (inclusive).
 
-  Pairing, null and CRS rules are those of `intersects/2`.
+  Option `:method` is that of `distance/3`; with `:geodesic` or `:haversine`, `limit` is in
+  metres. Pairing, null and CRS rules are those of `intersects/2`.
   """
-  @spec dwithin(t(), other(), number()) :: Series.t()
-  def dwithin(%__MODULE__{ref: left} = series, other, limit) when is_number(limit) do
-    left |> Native.dwithin(other_ref(series, other), limit * 1.0) |> boolean_series()
+  @spec dwithin(t(), other(), number(), keyword()) :: Series.t()
+  def dwithin(%__MODULE__{ref: left} = series, other, limit, opts \\ []) when is_number(limit) do
+    case measure_method!(opts, [:planar, :geodesic, :haversine]) do
+      :planar ->
+        left |> Native.dwithin(other_ref(series, other), limit * 1.0) |> boolean_series()
+
+      _geodesic ->
+        series
+        |> distance(other, opts)
+        |> Series.less_equal(limit * 1.0)
+    end
   end
 
   @doc """

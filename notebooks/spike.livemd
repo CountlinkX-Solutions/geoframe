@@ -90,6 +90,17 @@ Areas are now square metres, and lengths metres:
  Explorer.Series.to_list(GeoFrame.GeoDataFrame.length(metric))}
 ```
 
+Without leaving degrees, `area_geodesic/1` measures on the WGS 84 ellipsoid directly, and
+agrees with the UTM area to within a fraction of a percent (`length_geodesic/1` and
+`distance(a, b, method: :geodesic)` do the same for lengths and distances):
+
+```elixir
+geodesic = GeoFrame.GeoDataFrame.geometry(gdf) |> GeoFrame.GeoSeries.area_geodesic()
+utm_area = GeoFrame.GeoDataFrame.area(metric)
+
+{Explorer.Series.to_list(geodesic), Explorer.Series.to_list(utm_area)}
+```
+
 An integer EPSG code works too (here Web Mercator), and a series without a CRS raises, as in
 GeoPandas, so call `set_crs/2` first:
 

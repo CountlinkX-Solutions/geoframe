@@ -90,6 +90,25 @@ fn length(column: Handle) -> Vec<Option<f64>> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn area_geodesic(column: Handle) -> Result<Vec<Option<f64>>, String> {
+    column.0.area_geodesic()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn length_geodesic(column: Handle) -> Result<Vec<Option<f64>>, String> {
+    column.0.length_geodesic()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn distance_geodesic(
+    left: Handle,
+    right: Handle,
+    haversine: bool,
+) -> Result<Vec<Option<f64>>, String> {
+    left.0.distance_geodesic(&right.0, haversine)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn validity(column: Handle) -> Vec<Option<bool>> {
     column.0.is_valid()
 }
