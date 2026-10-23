@@ -31,6 +31,14 @@
 //! (other layers are kept), `append: true` adds rows to it after checking the columns and the
 //! CRS, and creating a missing layer in either mode. A file that exists but is not a
 //! GeoPackage is never overwritten.
+//!
+//! A write that fails leaves no half-made file: the `application_id` and `user_version`
+//! pragmas are set inside the creating transaction, and a file the write itself created is
+//! removed again on error. Appending checks the rows against the layer: a different geometry
+//! type than the layer's declared one (unless it is `GEOMETRY`) or a column whose values do not
+//! fit the declared storage class (integer, real, text, blob; integers fit a real column) is
+//! an error. On read, a `TINYINT`, `SMALLINT` or `MEDIUMINT` column holding a value outside
+//! its declared range is widened to `int64` instead of nulling that value.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -567,16 +575,19 @@ fn table_columns(conn: &Connection, table: &str) -> Result<Vec<Column>, String> 
 struct GeometryColumn {
     name: String,
     srs_id: i64,
+    type_name: String,
 }
 
 fn geometry_column(conn: &Connection, table: &str) -> Result<GeometryColumn, String> {
     conn.query_row(
-        "SELECT column_name, srs_id FROM gpkg_geometry_columns WHERE table_name = ?1",
+        "SELECT column_name, srs_id, geometry_type_name FROM gpkg_geometry_columns \
+         WHERE table_name = ?1",
         [table],
         |r| {
             Ok(GeometryColumn {
                 name: r.get(0)?,
                 srs_id: r.get(1)?,
+                type_name: r.get(2)?,
             })
         },
     )
@@ -756,6 +767,17 @@ fn build_column(declared: &str, values: &[Value]) -> Result<ArrayRef, String> {
         } else {
             Declared::Text
         };
+    }
+    if matches!(kind, Declared::Int8 | Declared::Int16 | Declared::Int32) {
+        // A value outside the declared width would otherwise be nulled; widen instead.
+        let fits = |x: i64| match kind {
+            Declared::Int8 => i8::try_from(x).is_ok(),
+            Declared::Int16 => i16::try_from(x).is_ok(),
+            _ => i32::try_from(x).is_ok(),
+        };
+        if values.iter().filter_map(as_i64).any(|x| !fits(x)) {
+            kind = Declared::Int64;
+        }
     }
     Ok(match kind {
         Declared::Bool => numeric!(BooleanBuilder, |v: &Value| as_f64(v).map(|x| x != 0.0)),
@@ -959,10 +981,17 @@ pub fn write_gpkg(
     layer: &str,
     options: GpkgWriteOptions,
 ) -> Result<Vec<String>, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let existed = Path::new(path).exists();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         write(path, geometry, attributes_ipc, layer, options)
     }))
-    .unwrap_or_else(|_| Err("the GeoPackage encoder failed".to_string()))
+    .unwrap_or_else(|_| Err("the GeoPackage encoder failed".to_string()));
+    if result.is_err() && !existed {
+        // The connection is closed by now; drop the empty or half-made file it created.
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(format!("{path}-journal"));
+    }
+    result
 }
 
 fn write(
@@ -989,18 +1018,17 @@ fn write(
     let fresh = !Path::new(path).exists() || std::fs::metadata(path).is_ok_and(|m| m.len() == 0);
     let mut conn = Connection::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
     register_functions(&conn).map_err(sql_error)?;
-    if fresh {
-        conn.execute_batch(&format!(
-            "PRAGMA application_id = {APPLICATION_ID}; PRAGMA user_version = {USER_VERSION};"
-        ))
-        .map_err(sql_error)?;
-    } else {
+    if !fresh {
         ensure_geopackage(&conn, path)?;
     }
 
     let mut warnings = Vec::new();
     let tx = conn.transaction().map_err(sql_error)?;
     if fresh {
+        tx.execute_batch(&format!(
+            "PRAGMA application_id = {APPLICATION_ID}; PRAGMA user_version = {USER_VERSION};"
+        ))
+        .map_err(sql_error)?;
         tx.execute_batch(INIT_SQL).map_err(sql_error)?;
     }
     tx.execute_batch(EXTENSIONS_SQL).map_err(sql_error)?;
@@ -1024,7 +1052,8 @@ fn write(
 
     let (target, geometry_name, insert_columns) = match (&existing, options.append) {
         (Some(name), true) => {
-            let (geometry_name, columns) = check_append(&tx, name, &table, srs_id, crs.as_deref())?;
+            let (geometry_name, columns) =
+                check_append(&tx, name, &table, geometry, srs_id, crs.as_deref())?;
             (name.clone(), geometry_name, columns)
         }
         (existing, _) => {
@@ -1112,6 +1141,14 @@ fn encode_row_blob(wkb: &[u8], bounds: Option<[f64; 4]>, srs_id: i64) -> Vec<u8>
     }
 }
 
+/// Whether an ISO timestamp already says its offset (`Z`, `+02:00`, `-0500`).
+fn has_utc_offset(text: &str) -> bool {
+    text.ends_with('Z')
+        || text
+            .split_once('T')
+            .is_some_and(|(_, time)| time.contains(['+', '-']))
+}
+
 fn cell_value(table: &Table, column: usize, row: usize) -> Result<Value, String> {
     let text_type = matches!(table.source_types[column], DataType::Timestamp(_, _));
     Ok(match table.cell(column, row) {
@@ -1125,10 +1162,31 @@ fn cell_value(table: &Table, column: usize, row: usize) -> Result<Value, String>
             )
         })?),
         Cell::Float(v) => Value::Real(v),
-        Cell::Str(text) if text_type && !text.ends_with('Z') => Value::Text(format!("{text}Z")),
+        Cell::Str(text) if text_type && !has_utc_offset(text) => Value::Text(format!("{text}Z")),
         Cell::Str(text) => Value::Text(text.to_string()),
         Cell::Bytes(bytes) => Value::Blob(bytes.to_vec()),
     })
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Class {
+    Integer,
+    Real,
+    Text,
+    Blob,
+}
+
+/// The SQLite storage class a declared type stores; `None` when it says nothing.
+fn storage_class(kind: Declared) -> Option<Class> {
+    match kind {
+        Declared::Bool | Declared::Int8 | Declared::Int16 | Declared::Int32 | Declared::Int64 => {
+            Some(Class::Integer)
+        }
+        Declared::Float32 | Declared::Float64 => Some(Class::Real),
+        Declared::Text | Declared::Date | Declared::DateTime => Some(Class::Text),
+        Declared::Blob => Some(Class::Blob),
+        Declared::Unknown => None,
+    }
 }
 
 fn declared_type(data_type: &DataType) -> &'static str {
@@ -1307,10 +1365,24 @@ fn check_append(
     tx: &Connection,
     name: &str,
     table: &Table,
+    new_geometry: &GeoColumn,
     srs_id: i64,
     crs: Option<&str>,
 ) -> Result<(String, Vec<(usize, String)>), String> {
     let geometry = geometry_column(tx, name)?;
+    let layer_type = geometry.type_name.to_ascii_uppercase();
+    let new_type = geometry_type_name(new_geometry);
+    let has_rows = new_geometry
+        .geo_rows()
+        .into_iter()
+        .flatten()
+        .next()
+        .is_some();
+    if has_rows && layer_type != "GEOMETRY" && layer_type != new_type {
+        return Err(format!(
+            "geometry type mismatch: layer {name:?} holds {layer_type} but the frame holds {new_type}"
+        ));
+    }
     let existing_crs = crs_for_srs(tx, geometry.srs_id)?;
     let new_crs = crs_for_srs(tx, srs_id)?;
     if existing_crs != new_crs {
@@ -1331,6 +1403,21 @@ fn check_append(
                     && !is_fid(c, &columns)
             })
             .ok_or_else(|| format!("layer {name:?} has no column {column:?} to append to"))?;
+        let have = storage_class(declared_kind(&found.declared));
+        let want = storage_class(declared_kind(declared_type(&table.source_types[index])));
+        let fits = match (have, want) {
+            (Some(have), Some(want)) => {
+                have == want || (have == Class::Real && want == Class::Integer)
+            }
+            _ => true,
+        };
+        if !fits {
+            return Err(format!(
+                "column {column:?} of layer {name:?} is {} but the frame's column is {}",
+                found.declared,
+                declared_type(&table.source_types[index])
+            ));
+        }
         pairs.push((index, found.name.clone()));
     }
     Ok((geometry.name, pairs))

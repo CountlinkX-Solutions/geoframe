@@ -768,3 +768,136 @@ fn the_sql_helper_functions_agree_with_the_header() {
         .unwrap();
     assert_eq!((minx, maxy), (2.0, 3.0));
 }
+
+// -- hardening ---------------------------------------------------------------------------
+
+#[test]
+fn a_failed_first_write_leaves_no_file_and_a_retry_succeeds() {
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "new.gpkg");
+    let bad = GeoColumn::from_wkt(&[Some("POINT (1 2)")], Some("not-a-crs")).unwrap();
+    let error = write_gpkg(&file, &bad, &id_ipc(1), "pts", WRITE).unwrap_err();
+    assert!(error.contains("CRS"), "{error}");
+    assert!(!std::path::Path::new(&file).exists(), "no half-made file");
+
+    write_gpkg(
+        &file,
+        &sample_points(Some("EPSG:4326")),
+        &id_ipc(3),
+        "pts",
+        WRITE,
+    )
+    .unwrap();
+    assert_eq!(read_gpkg(&file, None).unwrap().vector.geometry.len(), 3);
+}
+
+#[test]
+fn a_failed_write_keeps_an_existing_geopackage_usable() {
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "keep.gpkg");
+    write_gpkg(&file, &sample_points(None), &id_ipc(3), "pts", WRITE).unwrap();
+    let bad = GeoColumn::from_wkt(&[Some("POINT (1 2)")], Some("not-a-crs")).unwrap();
+    assert!(write_gpkg(&file, &bad, &id_ipc(1), "pts", WRITE).is_err());
+    assert_eq!(read_gpkg(&file, None).unwrap().vector.geometry.len(), 3);
+}
+
+#[test]
+fn append_rejects_another_geometry_type() {
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "t.gpkg");
+    write_gpkg(&file, &sample_points(None), &id_ipc(3), "pts", WRITE).unwrap();
+    let lines = GeoColumn::from_wkt(&[Some("LINESTRING (0 0, 1 1)")], None).unwrap();
+    let error = write_gpkg(&file, &lines, &id_ipc(1), "pts", APPEND).unwrap_err();
+    assert!(error.contains("geometry type"), "{error}");
+    assert_eq!(read_gpkg(&file, None).unwrap().vector.geometry.len(), 3);
+
+    // A GEOMETRY layer takes anything; the same type appends fine.
+    let mixed =
+        GeoColumn::from_wkt(&[Some("POINT (1 1)"), Some("LINESTRING (0 0, 1 1)")], None).unwrap();
+    let mixed_file = path(&dir, "m.gpkg");
+    write_gpkg(&mixed_file, &mixed, &id_ipc(2), "m", WRITE).unwrap();
+    write_gpkg(&mixed_file, &lines, &id_ipc(1), "m", APPEND).unwrap();
+    let points = GeoColumn::from_wkt(&[Some("POINT (5 5)")], None).unwrap();
+    write_gpkg(&file, &points, &id_ipc(1), "pts", APPEND).unwrap();
+}
+
+#[test]
+fn append_rejects_incompatible_column_types() {
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "c.gpkg");
+    let one = GeoColumn::from_wkt(&[Some("POINT (1 1)")], None).unwrap();
+    let text = ipc(vec![(
+        "v",
+        Arc::new(StringArray::from(vec!["a"])) as ArrayRef,
+    )]);
+    write_gpkg(&file, &one, &text, "pts", WRITE).unwrap();
+    let number = ipc(vec![("v", Arc::new(Int64Array::from(vec![1])) as ArrayRef)]);
+    let error = write_gpkg(&file, &one, &number, "pts", APPEND).unwrap_err();
+    assert!(error.contains("\"v\""), "{error}");
+
+    let ints = path(&dir, "i.gpkg");
+    write_gpkg(&ints, &one, &number, "pts", WRITE).unwrap();
+    let real = ipc(vec![(
+        "v",
+        Arc::new(Float64Array::from(vec![1.5])) as ArrayRef,
+    )]);
+    assert!(write_gpkg(&ints, &one, &real, "pts", APPEND).is_err());
+    // Integers fit a real column.
+    let reals = path(&dir, "r.gpkg");
+    write_gpkg(&reals, &one, &real, "pts", WRITE).unwrap();
+    write_gpkg(&reals, &one, &number, "pts", APPEND).unwrap();
+    assert_eq!(read_gpkg(&reals, None).unwrap().vector.geometry.len(), 2);
+}
+
+#[test]
+fn timestamps_with_an_offset_round_trip_to_the_same_instant() {
+    use arrow_array::TimestampMicrosecondArray;
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "ts.gpkg");
+    // 2024-01-01T10:00:00Z, shown as 12:00 at +02:00.
+    let instant = 1_704_103_200_000_000_i64;
+    let zoned = TimestampMicrosecondArray::from(vec![Some(instant)]).with_timezone("+02:00");
+    let attrs = ipc(vec![("t", Arc::new(zoned) as ArrayRef)]);
+    let one = GeoColumn::from_wkt(&[Some("POINT (1 1)")], None).unwrap();
+    write_gpkg(&file, &one, &attrs, "pts", WRITE).unwrap();
+    let stored: String = Connection::open(&file)
+        .unwrap()
+        .query_row("SELECT t FROM pts", [], |r| r.get(0))
+        .unwrap();
+    assert!(!stored.ends_with('Z'), "{stored}");
+    let read = read_gpkg(&file, None).unwrap();
+    let (_, a) = column(&read.vector.attributes_ipc, "t");
+    let values = a
+        .as_any()
+        .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
+        .unwrap();
+    assert_eq!(values.iter().collect::<Vec<_>>(), [Some(instant)]);
+}
+
+#[test]
+fn small_integer_columns_widen_instead_of_nulling_out_of_range_values() {
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "w.gpkg");
+    let one = GeoColumn::from_wkt(&[Some("POINT (1 1)"), Some("POINT (2 2)")], None).unwrap();
+    let attrs = ipc(vec![(
+        "n",
+        Arc::new(Int16Array::from(vec![1, 2])) as ArrayRef,
+    )]);
+    let no_index = GpkgWriteOptions {
+        append: false,
+        spatial_index: false,
+    };
+    write_gpkg(&file, &one, &attrs, "pts", no_index).unwrap();
+    let read = read_gpkg(&file, None).unwrap();
+    assert_eq!(column(&read.vector.attributes_ipc, "n").0, DataType::Int16);
+
+    Connection::open(&file)
+        .unwrap()
+        .execute("UPDATE pts SET n = 100000 WHERE fid = 2", [])
+        .unwrap();
+    let read = read_gpkg(&file, None).unwrap();
+    let (t, a) = column(&read.vector.attributes_ipc, "n");
+    assert_eq!(t, DataType::Int64);
+    let values: Vec<Option<i64>> = a.as_primitive::<Int64Type>().iter().collect();
+    assert_eq!(values, [Some(1), Some(100_000)]);
+}
