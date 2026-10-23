@@ -281,7 +281,8 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `dissolve`, `sjoin`, `sjoin_nearest` | no | ✅/🟡 | see §9/§11 | |
 | `clip`, `overlay` | no | `clip/3`, `overlay/3` (also on `GeoFrame`) | ✅ | see §5 |
 | pandas ops (`head`, `tail`, `take`, `select`, `rename`, filter, sort, mutate, `drop_duplicates`, `dropna`, `sample`, `shape`, `dtypes`) | polars | `head`, `tail`, `take`, `slice`, `select`, `discard`, `rename`, `put`, `pull`, `filter`/`filter_with`, `sort_by`/`sort_with`, `mutate`/`mutate_with`, `distinct`, `drop_nil`, `sample`, `shuffle`, `shape`, `n_columns`, `dtypes` | ✅ | wraps Explorer; `filter`/`mutate`/`sort_by` are macros (`require GeoFrame.GeoDataFrame`) whose query sees attribute columns only; geometry follows every row change; `pull(gdf, geometry_column)` returns the GeoSeries, `dtypes` maps it to `:geometry`; GDF-level delegation of geometry methods exists for `area`, `length`, `bounds`, `centroid` only; others via `gdf.geometry` |
-| index/merge/groupby/apply/concat of GDFs | polars | `GeoFrame.concat/1`, `GeoDataFrame.concat_rows/1`, `GeoSeries.concat/1` | 🟡 | row-wise concat done (CRS and geometry column must match); merge/join of GDFs missing (only through Explorer on `.data`) |
+| index/groupby/apply/concat of GDFs | polars | `GeoFrame.concat/1`, `GeoDataFrame.concat_rows/1`, `GeoSeries.concat/1` | 🟡 | row-wise concat done (CRS and geometry column must match); `groupby`/`apply` only through `dissolve` or Explorer on `.data` |
+| `merge` (attribute join) | polars | `GeoDataFrame.join/3`, `GeoFrame.merge/3` | ✅ | `how:` inner/left/right/outer/cross via Explorer; right is a DataFrame or GeoDataFrame (its geometry is dropped, single geometry column); left geometry follows rows, null for right-only rows. Deviations: `:outer` puts left-only rows last (pandas sorts by key) and keeps `k`/`k_right` instead of coalescing; inner/left/right match pandas row order |
 
 ## 13. I/O
 
@@ -419,4 +420,4 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 `plot` (use Kino map), `geocode`/`reverse_geocode`, pandas index alignment (`align=`), `iterfeatures`, Shapely object constructors, persistent `sindex` object, arbitrary-callback `transform`, deprecated `unary_union`.
 
 ---
-Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 138, '🟡': 27, '❌': 22, '⛔': 16}
+Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 139, '🟡': 27, '❌': 22, '⛔': 16}
