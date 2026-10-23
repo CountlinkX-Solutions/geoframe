@@ -627,6 +627,20 @@ defmodule GeoFrame.GeoSeries do
     result
   end
 
+  @doc """
+  Grouped `union_all/1`: `group_ids` assigns each row to a group in `0..n_groups-1`, and the
+  result has one row per group (same CRS).
+
+  Null rows are skipped; a group without non-null rows gives `GEOMETRYCOLLECTION EMPTY`, and
+  a group of incompatible geometry families gives a null row, as `union_all/1` does. Raises
+  `ArgumentError` when `group_ids` has the wrong length or an id is out of range.
+  """
+  @spec union_groups(t(), [non_neg_integer()], non_neg_integer()) :: t()
+  def union_groups(%__MODULE__{ref: ref}, group_ids, n_groups)
+      when is_list(group_ids) and is_integer(n_groups) and n_groups >= 0 do
+    ref |> Native.union_groups(group_ids, n_groups) |> wrap() |> unwrap!()
+  end
+
   defp other_ref(_series, %__MODULE__{ref: ref}), do: ref
 
   defp other_ref(%__MODULE__{} = series, wkt) when is_binary(wkt) do

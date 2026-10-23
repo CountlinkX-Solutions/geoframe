@@ -168,6 +168,11 @@ fn union_all(column: Handle) -> Result<Handle, String> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn union_groups(column: Handle, group_ids: Vec<u32>, n_groups: usize) -> Result<Handle, String> {
+    column.0.union_groups(&group_ids, n_groups).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn unary(column: Handle, name: String) -> Result<Handle, String> {
     let op = UnaryOp::from_name(&name).ok_or_else(|| format!("unknown operation: {name}"))?;
     column.0.unary(op).map(wrap)
