@@ -121,7 +121,7 @@ impl De9im {
 }
 
 /// Runs `f`, turning a panic inside `geo` into `None`.
-fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+pub(crate) fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
     catch_unwind(AssertUnwindSafe(f)).ok()
 }
 
@@ -151,7 +151,7 @@ impl GeoColumn {
 
     /// Applies `pair` to each row pair. When the right side is a single geometry it is turned
     /// into `P` once by `prepare` and each row is evaluated with `against`.
-    fn zip_pairs<T, P>(
+    pub(crate) fn zip_pairs<T, P>(
         &self,
         other: &GeoColumn,
         pair: impl Fn(&Geometry<f64>, &Geometry<f64>) -> Option<T>,
