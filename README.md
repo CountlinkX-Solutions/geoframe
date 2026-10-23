@@ -35,14 +35,22 @@ Row-changing operations (filter, sort, slice, join) compute row indices once and
 
 | Format | Read | Write | Extensions |
 |--------|------|-------|------------|
-| GeoParquet 1.1 | `GeoFrame.read_parquet/2` | `GeoFrame.write_parquet/3` | `.parquet`, `.geoparquet` |
+| GeoParquet 1.0/1.1 | `GeoFrame.read_parquet/2` (`bbox:` filter) | `GeoFrame.write_parquet/3` (compression, row groups, native GeoArrow, covering bbox) | `.parquet`, `.geoparquet` |
 | GeoJSON (RFC 7946) | `GeoFrame.read_geojson/2` | `GeoFrame.write_geojson/3` | `.geojson`, `.json` |
 | FlatGeobuf | `GeoFrame.read_flatgeobuf/2` (optional `bbox:` via the index) | `GeoFrame.write_flatgeobuf/3` | `.fgb` |
+| Feather v2 (Arrow IPC file) | `GeoFrame.read_feather/2` | `GeoFrame.write_feather/3` | `.feather`, `.arrow` |
+| Arrow IPC stream (binary) | `GeoSeries.from_arrow/2`, `GeoDataFrame.from_arrow/2` | `GeoSeries.to_arrow/2`, `GeoDataFrame.to_arrow/2` | n/a (in memory) |
 
 `GeoFrame.read_file/2` and `GeoFrame.write_file/3` choose the format from the extension or
 a `driver:` option. All formats are pure Rust (no GDAL). GeoJSON writes need a lon/lat CRS
 unless `force: true`; FlatGeobuf with its spatial index stores rows in Hilbert order
 (`index: false` keeps row order). Shapefile is not supported yet.
+
+Arrow interchange is IPC bytes (the BEAM has no Arrow C Data Interface binding), with GeoArrow
+extension metadata (`geoarrow.wkb` or native types, CRS as PROJJSON) on the geometry field, so
+GeoPandas, pyarrow, Explorer and ADBC read what GeoFrame writes and the reverse. Feather and
+GeoParquet files written by GeoPandas 1.2 read directly (LZ4/Zstd/Snappy/gzip/brotli, WKB and
+native encodings, covering bbox).
 
 ## Roadmap
 

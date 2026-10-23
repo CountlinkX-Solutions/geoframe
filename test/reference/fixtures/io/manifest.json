@@ -1,0 +1,848 @@
+{
+ "files": {
+  "geoarrow_points.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (0 0)",
+    "POINT (1 1)",
+    null,
+    "POINT (3 3)",
+    "POINT (4 4)"
+   ]
+  },
+  "geoarrow_points_covering.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "covering": true,
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (0 0)",
+    "POINT (1 1)",
+    null,
+    "POINT (3 3)",
+    "POINT (4 4)"
+   ]
+  },
+  "geoarrow_points_interleaved.arrows": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (0 0)",
+    "POINT (1 1)",
+    null,
+    "POINT (3 3)",
+    "POINT (4 4)"
+   ]
+  },
+  "geoarrow_polygons.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "MULTIPOLYGON (((0 0, 4 0, 4 3, 0 3, 0 0)))",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))",
+    null,
+    "MULTIPOLYGON (((5 5, 6 5, 6 6, 5 5)))",
+    "MULTIPOLYGON (((7 7, 9 7, 9 9, 7 7)))"
+   ]
+  },
+  "geoarrow_polygons_separated.arrows": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "MULTIPOLYGON (((0 0, 4 0, 4 3, 0 3, 0 0)))",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))",
+    null,
+    "MULTIPOLYGON (((5 5, 6 5, 6 6, 5 5)))",
+    "MULTIPOLYGON (((7 7, 9 7, 9 9, 7 7)))"
+   ]
+  },
+  "wkb.arrows": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_3857.feather": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:3857",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_3857.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:3857",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_brotli.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_covering.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "covering": true,
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_gzip.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_lz4.feather": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_lz4.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_nocrs.feather": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": null,
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_nocrs.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": null,
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_none.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_snappy.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_uncompressed.feather": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_v1_0_0.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_zstd.feather": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  },
+  "wkb_zstd.parquet": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     null,
+     true,
+     false
+    ],
+    "id": [
+     1,
+     2,
+     3,
+     null,
+     5
+    ],
+    "name": [
+     "a",
+     "b",
+     null,
+     "d",
+     "e"
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    "POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    null,
+    "LINESTRING (0 0, 3 4, 6 4)",
+    "MULTIPOLYGON (((10 10, 11 10, 11 11, 10 10)), ((20 20, 21 20, 21 21, 20 20)))"
+   ]
+  }
+ },
+ "geopandas": "1.2.0",
+ "pyarrow": "26.0.0"
+}

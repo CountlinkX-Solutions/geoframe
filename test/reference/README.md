@@ -11,6 +11,8 @@ geometries. **CI needs no Python**: the reference results are committed as JSON 
 |---|---|
 | `generate.py` | Dev-only generator. Fixed corpus (points, lines, polygons with holes, multi geometries, collections, empties, an invalid bowtie, degenerate cases, touching/overlapping/disjoint pairs, lon/lat geometries near Miami and far apart). Computes every supported operation with GeoPandas/Shapely/pyproj. Deterministic: no randomness, sorted JSON keys, full-precision numbers, 12-decimal WKT. |
 | `fixtures/*.json` | Generated output, one file per category: `measures`, `unary_predicates`, `binary_predicates`, `constructive`, `constructive_e` (batch E: hulls, bounding shapes, inscribed circle, constrained Delaunay), `collections` (batch E: `make_grid`, `delaunay_triangles`, `voronoi_polygons`; each case is a whole series because GeoPandas treats it as one point cloud, and the result is a list of geometries), `set_ops`, `affine`, `linear_referencing`, `crs`, `geodesic`, `io`, `frames` (sjoin, sjoin_nearest, dissolve), `overlay` (frame-level `overlay`, `clip`, `explode`, `intersection_all`; rows are compared column by column, geometries as overlay results), plus `corpus.json` (the geometries and the tool versions). |
+| `generate_io.py` | Dev-only generator of the I/O fixtures (batch G1): small Feather (lz4, zstd, uncompressed), GeoParquet (snappy, zstd, gzip, lz4, brotli, none, covering bbox, native GeoArrow, schema 1.0.0, several CRS) and Arrow IPC stream files written by GeoPandas 1.2 / pyarrow into `fixtures/io/`, plus `fixtures/io/manifest.json` with the expected CRS, WKT and attributes. `test/geo_frame/parity_g1_test.exs` reads them in CI without Python. |
+| `check_geoframe_io.py` | Dev-only cross-check in the other direction: reads files written by GeoFrame with `geopandas.read_feather`, `read_parquet` (including a `bbox=` read on covering files), `GeoDataFrame.from_arrow(pa.ipc.open_stream(...))` and checks CRS (as pyproj), geometry, attributes and the GeoArrow extension metadata. Driven by `scripts/write_io_samples.exs` (writes 25 files with GeoFrame) through `scripts/crosscheck_io.sh`. |
 | `known_deviations.exs` | Machine-readable list of known differences (op, case ids, reason, link to `docs/parity.md#reference-testing`). |
 | `../support/reference.ex` | The comparison engine (test-only module `GeoFrame.Reference`). |
 
@@ -48,6 +50,14 @@ python -m venv ~/.venvs/geopandas-ref
 ~/.venvs/geopandas-ref/bin/pip install geopandas==1.2.0 shapely==2.2.0 pyproj==3.8.0 pyarrow pyogrio
 ~/.venvs/geopandas-ref/bin/python -I test/reference/generate.py
 mix test test/geo_frame/reference_test.exs
+```
+
+I/O fixtures (batch G1) and the GeoFrame-to-GeoPandas cross-check:
+
+```sh
+~/.venvs/geopandas-ref/bin/python -I test/reference/generate_io.py   # fixtures/io/*, deterministic
+mix test test/geo_frame/parity_g1_test.exs
+scripts/crosscheck_io.sh   # GeoFrame writes, GeoPandas reads; set GEOPANDAS_PYTHON to override the venv
 ```
 
 Run twice and the fixtures are byte-identical. A summary table (cases, agree, documented
