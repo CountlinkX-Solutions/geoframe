@@ -31,6 +31,19 @@ GeoFrame fills that gap without forking Explorer:
 Row-changing operations (filter, sort, slice, join) compute row indices once and apply
 `take` to both the attributes and the geometry, keeping them aligned.
 
+## File formats
+
+| Format | Read | Write | Extensions |
+|--------|------|-------|------------|
+| GeoParquet 1.1 | `GeoFrame.read_parquet/2` | `GeoFrame.write_parquet/3` | `.parquet`, `.geoparquet` |
+| GeoJSON (RFC 7946) | `GeoFrame.read_geojson/2` | `GeoFrame.write_geojson/3` | `.geojson`, `.json` |
+| FlatGeobuf | `GeoFrame.read_flatgeobuf/2` (optional `bbox:` via the index) | `GeoFrame.write_flatgeobuf/3` | `.fgb` |
+
+`GeoFrame.read_file/2` and `GeoFrame.write_file/3` choose the format from the extension or
+a `driver:` option. All formats are pure Rust (no GDAL). GeoJSON writes need a lon/lat CRS
+unless `force: true`; FlatGeobuf with its spatial index stores rows in Hilbert order
+(`index: false` keeps row order). Shapefile is not supported yet.
+
 ## Roadmap
 
 | Phase | Scope |
