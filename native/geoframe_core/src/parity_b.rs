@@ -8,6 +8,7 @@ use crate::mixed_ops::{classify, Rel};
 use crate::parity_a::parts;
 use crate::predicates::guarded;
 use crate::set_ops::{lines, overlay_pair, points, polygons};
+use crate::zm_bridge::{Keep, Restore};
 use crate::{GeoColumn, SetOp};
 
 fn empty_collection() -> Geometry<f64> {
@@ -78,7 +79,9 @@ impl GeoColumn {
                 source.push(u32::try_from(i).map_err(|_| "too many rows".to_string())?);
             }
         }
-        Ok((self.rebuild(&rows)?, source))
+        let origin: Vec<usize> = source.iter().map(|&i| i as usize).collect();
+        let parts = self.rebuild_zm(&rows, &origin, &Restore::keep(Keep::Both))?;
+        Ok((parts, source))
     }
 
     /// Shapely's `clip_by_rect`: each row clipped to the rectangle, row by row, empties kept.

@@ -181,14 +181,15 @@ fn nulls_stay_null_and_failures_become_null() {
 }
 
 #[test]
-fn output_is_two_dimensional() {
-    let col = GeoColumn::from_wkt(&[Some("POINT Z (-80 25 7)")], Some("EPSG:4326")).unwrap();
-    let wkt = col.to_crs("EPSG:3857").unwrap().to_wkt().unwrap()[0]
-        .clone()
-        .unwrap();
-    assert!(!wkt.contains('Z'), "{wkt}");
-    let coords = wkt.split_once('(').unwrap().1.trim_end_matches(')');
-    assert_eq!(coords.split_whitespace().count(), 2, "{wkt}");
+fn z_is_kept_and_a_two_dimensional_row_stays_two_dimensional() {
+    let col = GeoColumn::from_wkt(
+        &[Some("POINT Z (-80 25 7)"), Some("POINT (-80 25)")],
+        Some("EPSG:4326"),
+    )
+    .unwrap();
+    let out = col.to_crs("EPSG:3857").unwrap();
+    assert_eq!(out.has_z(), [true, false]);
+    assert_eq!(out.z(), [Some(7.0), None]);
 }
 
 #[test]

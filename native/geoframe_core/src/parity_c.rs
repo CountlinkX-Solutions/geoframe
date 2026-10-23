@@ -584,6 +584,9 @@ impl GeoColumn {
     /// Reverses the vertex order of every line and ring. Parts of a collection keep their
     /// order. Points are unchanged.
     pub fn reverse(&self) -> Result<Self, String> {
+        if self.any_zm() {
+            return self.reverse_vertices();
+        }
         self.map_geometry(|g| Some(map_members(g, &reverse_one)))
     }
 

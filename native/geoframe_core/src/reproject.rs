@@ -142,6 +142,38 @@ fn transform_coord(src: &Proj, dst: &Proj, c: Coord<f64>) -> Result<Coord<f64>, 
     }
 }
 
+/// Like [`transform_coord`] with a height. The height is unchanged (as PROJ leaves it between
+/// two CRSs that are not geocentric and share a datum, which is every pair the bundled table
+/// offers for 2D use); it is transformed only when either CRS is geocentric. A NaN `z` (no Z
+/// ordinate) stays NaN.
+fn transform_coord3(
+    src: &Proj,
+    dst: &Proj,
+    c: Coord<f64>,
+    z: f64,
+) -> Result<(Coord<f64>, f64), String> {
+    if z.is_nan() || !(src.is_geocent() || dst.is_geocent()) {
+        return Ok((transform_coord(src, dst, c)?, z));
+    }
+    let (mut x, mut y) = (c.x, c.y);
+    if src.is_latlong() {
+        x = x.to_radians();
+        y = y.to_radians();
+    }
+    let mut point = (x, y, if z.is_nan() { 0.0 } else { z });
+    proj4rs::transform::transform(src, dst, &mut point).map_err(|e| e.to_string())?;
+    let (mut x, mut y, nz) = point;
+    if dst.is_latlong() {
+        x = x.to_degrees();
+        y = y.to_degrees();
+    }
+    if x.is_finite() && y.is_finite() && nz.is_finite() {
+        Ok((Coord { x, y }, if z.is_nan() { f64::NAN } else { nz }))
+    } else {
+        Err("non-finite result".to_string())
+    }
+}
+
 impl GeoColumn {
     /// Reprojects every coordinate from this column's CRS to `target` and sets `target` as the
     /// CRS. Fails when this column has no CRS or either CRS is unknown. Rows whose transform
@@ -154,21 +186,34 @@ impl GeoColumn {
         if src.label == dst.label {
             return Ok(self.clone());
         }
-        let rows: Vec<Option<Geometry<f64>>> = self
-            .geo_rows()
-            .iter()
-            .map(|row| {
-                row.as_ref().and_then(|g| {
-                    catch_unwind(AssertUnwindSafe(|| {
-                        g.try_map_coords(|c| transform_coord(&src.proj, &dst.proj, c))
-                            .ok()
-                    }))
-                    .ok()
-                    .flatten()
+        let moved = if self.any_zm() {
+            // Z rides along: heights are transformed only where the CRS pair needs it
+            // (geographic 3D to geocentric); otherwise they are unchanged. M is dropped.
+            self.map_vertices(|_, _| {
+                let (src, dst) = (&src.proj, &dst.proj);
+                Some(Box::new(move |x, y, z, _m| {
+                    let c = transform_coord3(src, dst, Coord { x, y }, z)?;
+                    Ok((c.0.x, c.0.y, c.1))
+                }))
+            })?
+        } else {
+            let rows: Vec<Option<Geometry<f64>>> = self
+                .geo_rows()
+                .iter()
+                .map(|row| {
+                    row.as_ref().and_then(|g| {
+                        catch_unwind(AssertUnwindSafe(|| {
+                            g.try_map_coords(|c| transform_coord(&src.proj, &dst.proj, c))
+                                .ok()
+                        }))
+                        .ok()
+                        .flatten()
+                    })
                 })
-            })
-            .collect();
-        Ok(self.rebuild(&rows)?.set_crs(Some(&dst.label)))
+                .collect();
+            self.rebuild(&rows)?
+        };
+        Ok(moved.set_crs(Some(&dst.label)))
     }
 
     /// The WGS 84 UTM CRS (`EPSG:326xx` north, `EPSG:327xx` south) whose zone contains the

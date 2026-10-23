@@ -5,11 +5,10 @@
 //! nulls that row, as does a null geometry. Slice lengths must equal the column length.
 //! Scalar `translate`/`scale`/`rotate` stay in `unary.rs` as the fast path.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
-
-use geo::{AffineOps, AffineTransform, Geometry, MapCoords};
+use geo::{AffineTransform, Geometry, MapCoords};
 
 use crate::reproject::crs_is_geographic;
+use crate::zm_bridge::Affine3;
 use crate::{GeoColumn, Origin};
 
 fn check_len(name: &str, got: usize, want: usize) -> Result<(), String> {
@@ -28,21 +27,7 @@ impl GeoColumn {
         &self,
         make: impl Fn(usize, &Geometry<f64>) -> Option<AffineTransform<f64>>,
     ) -> Result<Self, String> {
-        let rows: Vec<Option<Geometry<f64>>> = self
-            .geo_rows()
-            .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                row.as_ref().and_then(|g| {
-                    catch_unwind(AssertUnwindSafe(|| {
-                        make(i, g).map(|t| g.affine_transform(&t))
-                    }))
-                    .ok()
-                    .flatten()
-                })
-            })
-            .collect();
-        self.rebuild(&rows)
+        self.affine3_rows(|i, g| make(i, g).map(Affine3::flat))
     }
 
     /// Per-row [`GeoColumn::translate`].
@@ -111,6 +96,15 @@ impl GeoColumn {
         let [a, b, d, e, xoff, yoff] = *matrix;
         let transform = AffineTransform::new(a, b, xoff, d, e, yoff);
         self.affine_rows(|_, _| Some(transform))
+    }
+
+    /// Applies Shapely's 3D matrix `[a, b, c, d, e, f, g, h, i, xoff, yoff, zoff]`:
+    /// `x' = a x + b y + c z + xoff`, `y' = d x + e y + f z + yoff`,
+    /// `z' = g x + h y + i z + zoff`. Geometries without Z use `a, b, d, e, xoff, yoff` only;
+    /// M is dropped.
+    pub fn affine_transform3(&self, matrix: &[f64; 12]) -> Result<Self, String> {
+        let transform = Affine3::from_matrix(matrix);
+        self.affine3_rows(|_, _| Some(transform))
     }
 
     /// Wraps every x into `[-180, 180)` (so `180` becomes `-180`). Geometries are not split at

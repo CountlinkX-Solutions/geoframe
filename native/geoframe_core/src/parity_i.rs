@@ -49,6 +49,7 @@ use rstar::{RTree, AABB};
 
 use crate::parity_a::normalize as to_stored;
 use crate::predicates::guarded;
+use crate::zm_bridge::{Keep, Restore};
 use crate::GeoColumn;
 
 // -- is_simple ----------------------------------------------------------------------------
@@ -422,7 +423,7 @@ impl GeoColumn {
     /// The GEOS canonical form of every geometry; see the module documentation. Null rows stay
     /// null.
     pub fn normalize(&self) -> Result<Self, String> {
-        self.map_geometry(|g| Some(canonical(g)))
+        self.map_geometry_zm(Keep::Both, |g| Some(canonical(g)))
     }
 }
 
@@ -644,7 +645,20 @@ impl GeoColumn {
             return Err(format!("grid_size {grid_size} is too small"));
         }
         let grid = Grid { scale };
-        self.map_geometry(|g| {
+        // GEOS keeps Z on every mode and M except pointwise; a snapped vertex keeps the
+        // ordinates of the input vertex that was snapped onto it.
+        let keep = if mode == PrecisionMode::Pointwise {
+            Keep::Z
+        } else {
+            Keep::Both
+        };
+        let index = |c: Coord<f64>| grid.coord(c);
+        let restore = Restore {
+            keep,
+            index: &index,
+            reference: None,
+        };
+        self.map_geometry_restoring(&restore, |g| {
             let snapped = match mode {
                 PrecisionMode::Pointwise => to_stored(g).map_coords(|c| grid.coord(c)),
                 PrecisionMode::ValidOutput => grid.reduce(g, false),

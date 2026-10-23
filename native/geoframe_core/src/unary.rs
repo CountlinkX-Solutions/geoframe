@@ -10,13 +10,14 @@
 
 use geo::algorithm::buffer::{BufferStyle, LineCap, LineJoin};
 use geo::{
-    AffineOps, AffineTransform, BoundingRect, Buffer, Centroid, ConvexHull, Coord, CoordsIter,
-    Geometry, GeometryCollection, InteriorPoint, LineString, MakeValid, MultiLineString,
-    MultiPoint, MultiPolygon, Point, Polygon, Simplify, SimplifyVwPreserve, Validation,
+    AffineTransform, BoundingRect, Buffer, Centroid, ConvexHull, Coord, CoordsIter, Geometry,
+    GeometryCollection, InteriorPoint, LineString, MakeValid, MultiLineString, MultiPoint,
+    MultiPolygon, Point, Polygon, Simplify, SimplifyVwPreserve, Validation,
 };
 use geo_traits::{GeometryTrait, GeometryType};
 use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 
+use crate::zm_bridge::{Affine3, Keep};
 use crate::GeoColumn;
 
 /// Parameterless constructive operations.
@@ -132,12 +133,14 @@ impl GeoColumn {
     /// topology checks (`SimplifyVwPreserve`; `tolerance` is a triangle *area*), otherwise
     /// Ramer-Douglas-Peucker (`Simplify`; `tolerance` is a *distance*). Points are unchanged.
     pub fn simplify(&self, tolerance: f64, preserve_topology: bool) -> Result<Self, String> {
-        self.map_geometry(|g| Some(simplify_geometry(g, tolerance, preserve_topology)))
+        self.map_geometry_zm(Keep::Z, |g| {
+            Some(simplify_geometry(g, tolerance, preserve_topology))
+        })
     }
 
     /// Applies a parameterless constructive operation.
     pub fn unary(&self, op: UnaryOp) -> Result<Self, String> {
-        self.map_geometry(|g| match op {
+        let apply = |g: &Geometry<f64>| match op {
             UnaryOp::ConvexHull => convex_hull(g),
             UnaryOp::Envelope => envelope(g),
             UnaryOp::Boundary => boundary(g),
@@ -149,28 +152,53 @@ impl GeoColumn {
                 }
                 _ => None,
             },
-        })
+        };
+        // Boundary and exterior only copy vertices, so they keep Z and M (as GEOS does).
+        match op {
+            UnaryOp::Boundary | UnaryOp::Exterior => self.map_geometry_zm(Keep::Both, apply),
+            _ => self.map_geometry(apply),
+        }
     }
 
-    /// Shifts every coordinate by `(xoff, yoff)`.
+    /// Shifts every coordinate by `(xoff, yoff)`; Z is kept.
     pub fn translate(&self, xoff: f64, yoff: f64) -> Result<Self, String> {
-        let transform = AffineTransform::translate(xoff, yoff);
-        self.map_geometry(|g| Some(g.affine_transform(&transform)))
+        self.translate3(xoff, yoff, 0.0)
     }
 
-    /// Scales about `origin`; negative factors mirror.
+    /// Shifts every coordinate by `(xoff, yoff)` and every Z by `zoff`. M is dropped.
+    pub fn translate3(&self, xoff: f64, yoff: f64, zoff: f64) -> Result<Self, String> {
+        let transform = Affine3::with_z(AffineTransform::translate(xoff, yoff), 1.0, zoff);
+        self.affine3_rows(|_, _| Some(transform))
+    }
+
+    /// Scales about `origin`; negative factors mirror. Z is kept.
     pub fn scale(&self, xfact: f64, yfact: f64, origin: &Origin) -> Result<Self, String> {
-        self.map_geometry(|g| {
+        self.scale3(xfact, yfact, 1.0, origin)
+    }
+
+    /// Scales x, y about `origin` and Z by `zfact` about zero (Shapely's origin has z = 0).
+    pub fn scale3(
+        &self,
+        xfact: f64,
+        yfact: f64,
+        zfact: f64,
+        origin: &Origin,
+    ) -> Result<Self, String> {
+        self.affine3_rows(|_, g| {
             let at = origin.resolve(g)?;
-            Some(g.affine_transform(&AffineTransform::scale(xfact, yfact, at)))
+            Some(Affine3::with_z(
+                AffineTransform::scale(xfact, yfact, at),
+                zfact,
+                0.0,
+            ))
         })
     }
 
-    /// Rotates counter-clockwise by `degrees` about `origin`.
+    /// Rotates counter-clockwise by `degrees` about `origin`; Z is kept.
     pub fn rotate(&self, degrees: f64, origin: &Origin) -> Result<Self, String> {
-        self.map_geometry(|g| {
+        self.affine3_rows(|_, g| {
             let at = origin.resolve(g)?;
-            Some(g.affine_transform(&AffineTransform::rotate(degrees, at)))
+            Some(Affine3::flat(AffineTransform::rotate(degrees, at)))
         })
     }
 
