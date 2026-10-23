@@ -457,3 +457,39 @@ fn binary_ops_and_concat_accept_equivalent_crs_labels() {
     assert!(b.predicate(&other, crate::Predicate::Intersects).is_err());
     assert!(GeoColumn::concat(&[&a, &other]).is_err());
 }
+
+// -- 10. point dedup is not quadratic -------------------------------------------------------
+
+fn multipoint(points: impl Iterator<Item = (i64, i64)>) -> String {
+    let body: Vec<String> = points.map(|(x, y)| format!("({x} {y})")).collect();
+    format!("MULTIPOINT ({})", body.join(", "))
+}
+
+#[test]
+fn point_union_dedups_in_linear_time_and_keeps_first_seen_order() {
+    let n = 150_000i64;
+    // Every point twice (second half repeats the first), so dedup has real work to do.
+    let a = col(&[Some(&multipoint((0..n).map(|i| (i, -i))))]);
+    let b = col(&[Some(&multipoint((0..n).map(|i| (n - 1 - i, -(n - 1 - i)))))]);
+    let started = std::time::Instant::now();
+    let out = a.set_op(&b, crate::SetOp::Union).unwrap();
+    assert!(started.elapsed().as_secs() < 10, "{:?}", started.elapsed());
+    let wkt = out.to_wkt().unwrap()[0].clone().unwrap();
+    assert_eq!(wkt.matches(',').count() + 1, n as usize);
+    assert!(
+        wkt.starts_with("MULTIPOINT((0 0),(1 -1),(2 -2)")
+            || wkt.starts_with("MULTIPOINT (0 0, 1 -1, 2 -2"),
+        "{}",
+        &wkt[..60]
+    );
+}
+
+#[test]
+fn point_dedup_treats_negative_zero_as_zero() {
+    let a = col(&[Some("MULTIPOINT ((0 0), (1 1))")]);
+    let b = col(&[Some("MULTIPOINT ((-0 -0), (2 2))")]);
+    let wkt = a.set_op(&b, crate::SetOp::Union).unwrap().to_wkt().unwrap()[0]
+        .clone()
+        .unwrap();
+    assert_eq!(wkt.matches(',').count() + 1, 3, "{wkt}");
+}

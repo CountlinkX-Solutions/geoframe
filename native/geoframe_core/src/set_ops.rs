@@ -40,6 +40,8 @@ use geo::{
     MultiPolygon, Point, Polygon,
 };
 
+use std::collections::HashSet;
+
 use crate::mixed_ops::{self, Empty, Parts};
 use crate::predicates::guarded;
 use crate::GeoColumn;
@@ -113,15 +115,19 @@ pub(crate) fn points(pts: Vec<Point<f64>>) -> Geometry<f64> {
     }
 }
 
-/// Removes repeated points, keeping first occurrences (exact coordinate equality).
+/// Hash key for exact coordinate equality: the bit patterns, with `-0.0` folded into `0.0`
+/// (they compare equal). `None` for NaN, which equals nothing (not even itself).
+fn point_key(p: &Point<f64>) -> Option<(u64, u64)> {
+    let bits = |v: f64| (v + 0.0).to_bits();
+    (!p.x().is_nan() && !p.y().is_nan()).then(|| (bits(p.x()), bits(p.y())))
+}
+
+/// Removes repeated points, keeping first occurrences (exact coordinate equality). Linear time.
 fn dedup_points(pts: Vec<Point<f64>>) -> Vec<Point<f64>> {
-    let mut out: Vec<Point<f64>> = Vec::with_capacity(pts.len());
-    for p in pts {
-        if !out.contains(&p) {
-            out.push(p);
-        }
-    }
-    out
+    let mut seen = HashSet::with_capacity(pts.len());
+    pts.into_iter()
+        .filter(|p| point_key(p).is_none_or(|key| seen.insert(key)))
+        .collect()
 }
 
 /// Points of `pts` that do (`keep = true`) or do not intersect `other`.
@@ -168,10 +174,14 @@ pub(crate) fn overlay_pair(
             Difference => filter_points(&x, b, false),
             Union => points(dedup_points([x, y].concat())),
             SymmetricDifference => {
+                let keys = |pts: &[Point<f64>]| -> HashSet<(u64, u64)> {
+                    pts.iter().filter_map(point_key).collect()
+                };
+                let (in_x, in_y) = (keys(&x), keys(&y));
                 let mut out = x.clone();
-                out.retain(|p| !y.contains(p));
+                out.retain(|p| point_key(p).is_none_or(|k| !in_y.contains(&k)));
                 let mut rest = y.clone();
-                rest.retain(|p| !x.contains(p));
+                rest.retain(|p| point_key(p).is_none_or(|k| !in_x.contains(&k)));
                 points(dedup_points([out, rest].concat()))
             }
         }),
