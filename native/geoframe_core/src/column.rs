@@ -180,6 +180,13 @@ impl GeoColumn {
             .collect())
     }
 
+    /// GeoJSON geometry objects as JSON text, one per row; `None` for null rows and rows `geo`
+    /// cannot represent (the same policy as the measures). GeoJSON has no CRS member
+    /// (RFC 7946), so coordinates are emitted as stored.
+    pub fn to_geojson(&self) -> Vec<Option<String>> {
+        self.map_geo(|g| Some(geojson::Geometry::from(g).to_string()))
+    }
+
     /// Per-row `geo` geometry; `None` for null rows and rows `geo` cannot represent.
     fn geo_rows(&self) -> Vec<Option<Geometry<f64>>> {
         (0..self.len())
