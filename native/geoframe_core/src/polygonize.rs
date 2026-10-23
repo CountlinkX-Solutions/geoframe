@@ -595,7 +595,7 @@ fn edges_of(rows: &[Geometry<f64>], node: bool) -> Result<Vec<Vec<C>>, String> {
 
 fn column_of(template: &GeoColumn, rows: Vec<Geometry<f64>>) -> Result<GeoColumn, String> {
     let rows: Vec<Option<Geometry<f64>>> = rows.into_iter().map(Some).collect();
-    template.rebuild(&rows)
+    template.rebuild_merged(&rows)
 }
 
 fn lines_column(template: &GeoColumn, lines: Vec<Vec<C>>) -> Result<GeoColumn, String> {

@@ -37,6 +37,7 @@ mod sindex;
 mod unary;
 mod zm;
 mod zm_bridge;
+mod zm_overlay;
 
 pub use arrow_io::{
     from_arrow_ipc, read_feather, to_arrow_ipc, write_feather, FeatherCompression,
@@ -125,5 +126,7 @@ mod tests;
 mod unary_tests;
 #[cfg(test)]
 mod zm_ops_tests;
+#[cfg(test)]
+mod zm_overlay_tests;
 #[cfg(test)]
 mod zm_tests;

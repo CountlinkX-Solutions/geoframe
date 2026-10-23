@@ -31,7 +31,7 @@ pub(crate) fn dimensions<G: GeometryTrait<T = f64>>(geometry: &G) -> (bool, bool
     flags(geometry.dim())
 }
 
-fn flags(dim: geo_traits::Dimensions) -> (bool, bool) {
+pub(crate) fn flags(dim: geo_traits::Dimensions) -> (bool, bool) {
     use geo_traits::Dimensions::{Unknown, Xy, Xym, Xyz, Xyzm};
     match dim {
         Xy | Unknown(0..=2) => (false, false),

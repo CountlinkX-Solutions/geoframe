@@ -261,7 +261,7 @@ impl GeoColumn {
             |scalar| scalar.clone(),
             |scalar, row| guarded(|| overlay_pair(row, scalar, op)).flatten(),
         )?;
-        self.rebuild(&rows)
+        self.rebuild_overlay(other, &rows, op == SetOp::Intersection)
     }
 
     /// The union of every non-null row as a one-row column with the same CRS. Polygonal rows
@@ -269,9 +269,10 @@ impl GeoColumn {
     /// with identical lines removed. A mix of families (or any collection) gives a null row,
     /// and no non-null rows give `GEOMETRYCOLLECTION EMPTY`.
     pub fn union_all(&self) -> Result<GeoColumn, String> {
-        let result =
-            guarded(|| union_all_rows(self.geo_rows().into_iter().flatten().collect())).flatten();
-        self.rebuild(&[result])
+        let rows = self.geo_rows();
+        let members: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].is_some()).collect();
+        let result = guarded(|| union_all_rows(rows.into_iter().flatten().collect())).flatten();
+        self.rebuild_united(&[result], &[members])
     }
 
     /// Grouped [`union_all`](Self::union_all): row `i` belongs to group `group_ids[i]`
@@ -298,14 +299,18 @@ impl GeoColumn {
             return Err(format!("group id {id} out of range for {n_groups} groups"));
         }
         let mut buckets: Vec<Vec<Geometry<f64>>> = vec![Vec::new(); n_groups];
-        for (geom, &id) in self.geo_rows().into_iter().zip(group_ids) {
-            buckets[id as usize].extend(geom);
+        let mut members: Vec<Vec<usize>> = vec![Vec::new(); n_groups];
+        for (i, (geom, &id)) in self.geo_rows().into_iter().zip(group_ids).enumerate() {
+            if let Some(geom) = geom {
+                buckets[id as usize].push(geom);
+                members[id as usize].push(i);
+            }
         }
         let rows: Vec<Option<Geometry<f64>>> = buckets
             .into_iter()
             .map(|rows| guarded(|| union_all_rows(rows)).flatten())
             .collect();
-        self.rebuild(&rows)
+        self.rebuild_united(&rows, &members)
     }
 }
 

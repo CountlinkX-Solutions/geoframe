@@ -18,6 +18,7 @@ use geo_traits::{GeometryTrait, GeometryType};
 use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 
 use crate::zm_bridge::{Affine3, Keep};
+use crate::zm_overlay::z_only;
 use crate::GeoColumn;
 
 /// Parameterless constructive operations.
@@ -119,6 +120,13 @@ impl Origin {
     }
 }
 
+fn is_linear(g: &Geometry<f64>) -> bool {
+    matches!(
+        g,
+        Geometry::Line(_) | Geometry::LineString(_) | Geometry::MultiLineString(_)
+    )
+}
+
 impl GeoColumn {
     /// Buffers every geometry by `distance` (negative shrinks polygons).
     pub fn buffer(&self, distance: f64, options: &BufferOptions) -> Result<Self, String> {
@@ -157,6 +165,16 @@ impl GeoColumn {
         match op {
             UnaryOp::Boundary => self.map_geometry_zm(Keep::BothUnlessEmpty, apply),
             UnaryOp::Exterior => self.map_geometry_zm(Keep::Both, apply),
+            UnaryOp::ConvexHull => self.map_geometry_model(z_only, apply),
+            // A valid geometry comes back unchanged (M included); repairing drops M and
+            // averages the Z of the two segments at a new node.
+            UnaryOp::MakeValid => {
+                self.map_geometry_model(|g, (z, m)| (z, m && g.is_valid()), apply)
+            }
+            // GEOS picks a vertex of a line; for points and areas the point is new (2D).
+            UnaryOp::RepresentativePoint => {
+                self.map_geometry_model(|g, (z, _)| (z && is_linear(g), false), apply)
+            }
             _ => self.map_geometry(apply),
         }
     }

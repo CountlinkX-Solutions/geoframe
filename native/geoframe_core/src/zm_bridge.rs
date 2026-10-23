@@ -196,6 +196,24 @@ impl Writer<'_> {
     }
 }
 
+/// Writes `geometry` with the given dimensions to `builder`; `ordinates` gives `(z, m)` of each
+/// vertex (the one not in `dims` is ignored).
+pub(crate) fn push_zm(
+    builder: &mut GeometryBuilder,
+    geometry: &Geometry<f64>,
+    (z, m): (bool, bool),
+    ordinates: &dyn Fn(Coord<f64>) -> (f64, f64),
+) -> Result<(), String> {
+    let mut writer = Writer {
+        out: Vec::new(),
+        z,
+        m,
+        ordinates,
+    };
+    writer.geometry(geometry);
+    GeoColumn::push_wkb(builder, Some(writer.out))
+}
+
 // -- affine transforms with Z ---------------------------------------------------------------------
 
 /// A 3D affine transform: the 2D part acts on `(x, y)`; the rest is Shapely's 12-number form
