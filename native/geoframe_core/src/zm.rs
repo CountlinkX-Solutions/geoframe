@@ -208,7 +208,12 @@ fn node(
             .ok_or_else(|| "truncated WKB".to_string())?;
         let block = take(bytes, pos, len)?;
         for coord in block.chunks_exact(width * 8) {
-            let values: Vec<f64> = coord.chunks_exact(8).map(f64_at).collect();
+            let values: Vec<f64> = coord
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|raw| f64_at(raw))
+                .collect();
             let mut push = |value: f64| {
                 out.extend_from_slice(&if little {
                     value.to_le_bytes()
