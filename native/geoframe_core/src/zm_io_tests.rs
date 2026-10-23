@@ -844,3 +844,245 @@ mod gpkg {
         assert_eq!(all.has_z(), [true, true, false]);
     }
 }
+
+// -- GeoParquet and Arrow -----------------------------------------------------------------
+
+mod parquet {
+    use super::*;
+    use crate::{
+        from_arrow_ipc, geoparquet_metadata, read_feather, read_geoparquet,
+        read_geoparquet_filtered, to_arrow_ipc, write_feather, write_geoparquet_with,
+        FeatherCompression, GeometryEncoding, ParquetOptions,
+    };
+
+    fn options(encoding: GeometryEncoding) -> ParquetOptions {
+        ParquetOptions {
+            geometry_encoding: encoding,
+            ..ParquetOptions::default()
+        }
+    }
+
+    fn write(dir: &TempDir, name: &str, g: &GeoColumn, options: &ParquetOptions) -> String {
+        let file = path(dir, name);
+        write_geoparquet_with(&file, g, "geometry", &no_attributes(g.len()), options).unwrap();
+        file
+    }
+
+    fn types(file: &str) -> Vec<String> {
+        let meta: serde_json::Value =
+            serde_json::from_str(&geoparquet_metadata(file).unwrap()).unwrap();
+        let mut types: Vec<String> = meta["columns"]["geometry"]["geometry_types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap().to_string())
+            .collect();
+        types.sort();
+        types
+    }
+
+    #[test]
+    fn wkb_geometry_types_carry_the_dimension_suffix() {
+        let dir = TempDir::new().unwrap();
+        for (name, rows, expected) in [
+            ("plain", vec![Some("POINT (1 2)")], vec!["Point"]),
+            (
+                "z",
+                vec![Some("POINT Z (1 2 3)"), Some("POINT Z (4 5 6)")],
+                vec!["Point Z"],
+            ),
+            (
+                "m",
+                vec![Some("LINESTRING M (0 0 1, 1 1 2)")],
+                vec!["LineString M"],
+            ),
+            (
+                "zm",
+                vec![Some("POLYGON ZM ((0 0 1 5, 4 0 2 6, 4 4 3 7, 0 0 1 5))")],
+                vec!["Polygon ZM"],
+            ),
+            (
+                "mixed",
+                vec![Some("POINT Z (1 2 3)"), Some("POINT (4 5)"), None],
+                vec!["Point", "Point Z"],
+            ),
+            (
+                "multi",
+                vec![
+                    Some("POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 0 1))"),
+                    Some("MULTIPOLYGON Z (((0 0 1, 4 0 2, 4 4 3, 0 0 1)))"),
+                ],
+                vec!["MultiPolygon Z", "Polygon Z"],
+            ),
+        ] {
+            let g = col(&rows);
+            let file = write(
+                &dir,
+                &format!("{name}.parquet"),
+                &g,
+                &options(GeometryEncoding::Wkb),
+            );
+            assert_eq!(types(&file), expected, "{name}");
+            let back = read_geoparquet(&file, None).unwrap().geometry;
+            assert_eq!(wkt(&back), wkt(&g), "{name}");
+        }
+    }
+
+    #[test]
+    fn native_encodings_store_z_and_m() {
+        let dir = TempDir::new().unwrap();
+        for (name, rows, expected) in [
+            (
+                "pz",
+                vec![Some("POINT Z (1 2 3)"), None, Some("POINT Z (4 5 6)")],
+                "Point Z",
+            ),
+            ("pm", vec![Some("POINT M (1 2 3)")], "Point M"),
+            ("pzm", vec![Some("POINT ZM (1 2 3 4)")], "Point ZM"),
+            (
+                "lz",
+                vec![Some("LINESTRING Z (0 0 1, 1 1 2)")],
+                "LineString Z",
+            ),
+            (
+                "gz",
+                vec![Some("POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 0 1))")],
+                "Polygon Z",
+            ),
+            (
+                "mpz",
+                vec![Some("MULTIPOINT Z ((0 0 1), (1 1 2))")],
+                "MultiPoint Z",
+            ),
+            (
+                "mlz",
+                vec![Some("MULTILINESTRING Z ((0 0 1, 1 1 2), (2 2 3, 3 3 4))")],
+                "MultiLineString Z",
+            ),
+            (
+                "mgz",
+                vec![Some("MULTIPOLYGON Z (((0 0 1, 4 0 2, 4 4 3, 0 0 1)))")],
+                "MultiPolygon Z",
+            ),
+        ] {
+            let g = col(&rows);
+            let file = write(
+                &dir,
+                &format!("{name}.parquet"),
+                &g,
+                &options(GeometryEncoding::GeoArrow),
+            );
+            assert_eq!(types(&file), [expected], "{name}");
+            let back = read_geoparquet(&file, None).unwrap().geometry;
+            assert_eq!(wkt(&back), wkt(&g), "{name}");
+        }
+    }
+
+    #[test]
+    fn single_and_multi_geometries_with_z_are_promoted_together() {
+        let dir = TempDir::new().unwrap();
+        for (name, rows, expected) in [
+            (
+                "poly",
+                vec![
+                    Some("POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 0 1), (1 1 5, 2 1 5, 2 2 5, 1 1 5))"),
+                    Some("MULTIPOLYGON Z (((0 0 1, 4 0 2, 4 4 3, 0 0 1)), ((9 9 7, 9 8 7, 8 8 7, 9 9 7)))"),
+                    None,
+                ],
+                vec![
+                    Some("MULTIPOLYGON Z(((0 0 1,4 0 2,4 4 3,0 0 1),(1 1 5,2 1 5,2 2 5,1 1 5)))"),
+                    Some("MULTIPOLYGON Z(((0 0 1,4 0 2,4 4 3,0 0 1)),((9 9 7,9 8 7,8 8 7,9 9 7)))"),
+                    None,
+                ],
+            ),
+            (
+                "line",
+                vec![Some("LINESTRING ZM (0 0 1 2, 1 1 2 3)"), Some("MULTILINESTRING ZM ((2 2 3 4, 3 3 4 5))")],
+                vec![
+                    Some("MULTILINESTRING ZM((0 0 1 2,1 1 2 3))"),
+                    Some("MULTILINESTRING ZM((2 2 3 4,3 3 4 5))"),
+                ],
+            ),
+            (
+                "point",
+                vec![Some("POINT M (1 2 3)"), Some("MULTIPOINT M ((4 5 6), (7 8 9))")],
+                vec![Some("MULTIPOINT M((1 2 3))"), Some("MULTIPOINT M((4 5 6),(7 8 9))")],
+            ),
+        ] {
+            let g = col(&rows);
+            let file = write(&dir, &format!("{name}.parquet"), &g, &options(GeometryEncoding::GeoArrow));
+            let back = read_geoparquet(&file, None).unwrap().geometry;
+            assert_eq!(wkt(&back).iter().map(|s| s.as_deref().map(|t| t.replace(' ', ""))).collect::<Vec<_>>(),
+                       expected.iter().map(|s| s.map(|t: &str| t.replace(' ', ""))).collect::<Vec<_>>(), "{name}");
+        }
+    }
+
+    #[test]
+    fn native_encoding_still_needs_one_dimension() {
+        let g = col(&[Some("POINT Z (1 2 3)"), Some("POINT (4 5)")]);
+        let dir = TempDir::new().unwrap();
+        let file = path(&dir, "bad.parquet");
+        let result = write_geoparquet_with(
+            &file,
+            &g,
+            "geometry",
+            &no_attributes(2),
+            &options(GeometryEncoding::GeoArrow),
+        );
+        assert!(result.unwrap_err().contains("dimension"));
+    }
+
+    #[test]
+    fn the_covering_bbox_stays_two_dimensional() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[Some("POINT Z (1 2 30)"), Some("POINT Z (50 60 7)")]);
+        for encoding in [GeometryEncoding::Wkb, GeometryEncoding::GeoArrow] {
+            let o = ParquetOptions {
+                covering_bbox: true,
+                row_group_size: Some(1),
+                ..options(encoding)
+            };
+            let file = write(&dir, "cov.parquet", &g, &o);
+            let meta: serde_json::Value =
+                serde_json::from_str(&geoparquet_metadata(&file).unwrap()).unwrap();
+            assert_eq!(
+                meta["columns"]["geometry"]["bbox"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                4
+            );
+            let hit =
+                read_geoparquet_filtered(&file, None, Some([40.0, 40.0, 60.0, 70.0])).unwrap();
+            assert_eq!(hit.geometry.z(), [Some(7.0)]);
+        }
+    }
+
+    #[test]
+    fn arrow_files_and_streams_store_native_z() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[Some("LINESTRING ZM (0 0 1 5, 1 1 2 6)"), None]);
+        let file = path(&dir, "z.feather");
+        write_feather(
+            &file,
+            &g,
+            "geometry",
+            &no_attributes(2),
+            GeometryEncoding::GeoArrow,
+            FeatherCompression::Uncompressed,
+        )
+        .unwrap();
+        let back = read_feather(&file, None, None).unwrap();
+        assert_eq!(wkt(&back.geometry), wkt(&g));
+
+        let bytes = to_arrow_ipc(
+            &g,
+            "geometry",
+            &no_attributes(2),
+            GeometryEncoding::GeoArrow,
+        )
+        .unwrap();
+        let stream = from_arrow_ipc(&bytes, None, None).unwrap();
+        assert_eq!(wkt(&stream.geometry), wkt(&g));
+    }
+}
