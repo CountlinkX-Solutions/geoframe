@@ -15,7 +15,7 @@ defmodule GeoFrame.Reference do
   alias GeoFrame.SpatialJoin
 
   @fixtures ~w(measures unary_predicates binary_predicates constructive constructive_e set_ops
-               affine linear_referencing crs geodesic io parity_i parity_j zm)
+               affine linear_referencing crs geodesic io parity_i parity_j zm zm_ops)
   @dir Path.expand("../reference/fixtures", __DIR__)
   # GEOS' DBL_MAX, which stands for "no clearance" in the fixtures.
   @dbl_max 1.797_693_134_862_315_7e308
@@ -210,10 +210,15 @@ defmodule GeoFrame.Reference do
   defp apply_param("get_geometry", args, a, _), do: GeoSeries.get_geometry(a, args["n"])
   defp apply_param("shortest_line", _, a, b), do: GeoSeries.shortest_line(a, b)
 
-  defp apply_param("translate", args, a, _), do: GeoSeries.translate(a, args["x"], args["y"])
+  defp apply_param("translate", args, a, _),
+    do: GeoSeries.translate(a, args["x"], args["y"], zoff: args["z"] || 0)
 
   defp apply_param("scale", args, a, _),
-    do: GeoSeries.scale(a, args["x"], args["y"], origin: origin(args["origin"]))
+    do:
+      GeoSeries.scale(a, args["x"], args["y"],
+        origin: origin(args["origin"]),
+        zfact: args["zfact"] || 1
+      )
 
   defp apply_param("rotate", args, a, _),
     do: GeoSeries.rotate(a, args["angle"], origin: origin(args["origin"]))
@@ -245,8 +250,10 @@ defmodule GeoFrame.Reference do
   defp apply_param("constrained_delaunay_triangles", _, a, _),
     do: GeoSeries.constrained_delaunay_triangles(a)
 
-  defp apply_param("set_precision", args, a, _),
-    do: GeoSeries.set_precision(a, args["grid_size"], mode: String.to_atom(args["mode"]))
+  defp apply_param("set_precision", args, a, _) do
+    precise = GeoSeries.set_precision(a, args["grid_size"], mode: String.to_atom(args["mode"]))
+    if args["normalize"], do: GeoSeries.normalize(precise), else: precise
+  end
 
   defp apply_param("get_precision", %{"grid_size" => grid}, a, _),
     do: a |> GeoSeries.set_precision(grid) |> GeoSeries.get_precision()
@@ -402,9 +409,66 @@ defmodule GeoFrame.Reference do
     if json_close?(act, expected), do: {:agree, nil}, else: {:differ, {act, expected}}
   end
 
+  # Z/M geometries as WKT text: same text around the numbers, numbers close (NaN equals NaN).
+  defp compare(%{"kind" => "zm"} = group, act, e, _, _) do
+    {rtol, atol} = tolerance(group)
+
+    if zm_close?(act && squeeze(act), e && squeeze(e), rtol, atol),
+      do: {:agree, nil},
+      else: {:differ, {act, e}}
+  end
+
   defp compare(_group, act, e, _, _) do
     if act == e, do: {:agree, nil}, else: {:differ, {act, e}}
   end
+
+  @number ~r/-?(?:\d+\.?\d*(?:e[-+]?\d+)?|nan|inf)/i
+
+  defp squeeze(text), do: String.replace(text, ~r/\s*([(),])\s*/, "\\1")
+
+  defp zm_close?(nil, nil, _, _), do: true
+  defp zm_close?(nil, _, _, _), do: false
+  defp zm_close?(_, nil, _, _), do: false
+
+  defp zm_close?(act, e, rtol, atol) do
+    shape = &String.replace(&1, @number, "#")
+
+    numbers = fn text ->
+      @number |> Regex.scan(text) |> List.flatten() |> Enum.map(&zm_number/1)
+    end
+
+    shape.(act) == shape.(e) and
+      act
+      |> numbers.()
+      |> Enum.zip(numbers.(e))
+      |> Enum.all?(fn {x, y} -> zm_equal?(x, y, rtol, atol) end)
+  end
+
+  defp zm_number(text) do
+    case String.downcase(text) do
+      "nan" ->
+        :nan
+
+      "-nan" ->
+        :nan
+
+      "inf" ->
+        :inf
+
+      "-inf" ->
+        :ninf
+
+      _ ->
+        text
+        |> then(&if(String.contains?(&1, [".", "e", "E"]), do: &1, else: &1 <> ".0"))
+        |> String.to_float()
+    end
+  end
+
+  defp zm_equal?(x, y, rtol, atol) when is_float(x) and is_float(y),
+    do: numbers_close?(x, y, rtol, atol)
+
+  defp zm_equal?(x, y, _, _), do: x == y
 
   defp numbers_close?(nil, nil, _, _), do: true
   defp numbers_close?(nil, _, _, _), do: false

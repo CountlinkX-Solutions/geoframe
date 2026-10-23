@@ -155,7 +155,8 @@ impl GeoColumn {
         };
         // Boundary and exterior only copy vertices, so they keep Z and M (as GEOS does).
         match op {
-            UnaryOp::Boundary | UnaryOp::Exterior => self.map_geometry_zm(Keep::Both, apply),
+            UnaryOp::Boundary => self.map_geometry_zm(Keep::BothUnlessEmpty, apply),
+            UnaryOp::Exterior => self.map_geometry_zm(Keep::Both, apply),
             _ => self.map_geometry(apply),
         }
     }

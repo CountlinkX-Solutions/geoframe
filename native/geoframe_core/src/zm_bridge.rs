@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use geo::{AffineOps, AffineTransform, Coord, Geometry, LineString, Polygon};
+use geo::{AffineOps, AffineTransform, Coord, CoordsIter, Geometry, LineString, Polygon};
 use geoarrow_array::builder::GeometryBuilder;
 
 use crate::zm::{dimensions, rewrite, Edit, VertexFn};
@@ -30,6 +30,8 @@ use crate::GeoColumn;
 pub(crate) enum Keep {
     /// Z and M, as the input had them.
     Both,
+    /// Z and M, except that an empty result is 2D (GEOS `boundary` of a closed line or a point).
+    BothUnlessEmpty,
     /// Z only; M is dropped.
     Z,
 }
@@ -37,7 +39,7 @@ pub(crate) enum Keep {
 impl Keep {
     fn apply(self, (z, m): (bool, bool)) -> (bool, bool) {
         match self {
-            Self::Both => (z, m),
+            Self::Both | Self::BothUnlessEmpty => (z, m),
             Self::Z => (z, false),
         }
     }
@@ -398,7 +400,10 @@ impl GeoColumn {
             let src = source[k];
             let in_dims = dims.get(src).copied().flatten().unwrap_or((false, false));
             let (z, m) = restore.keep.apply(in_dims);
-            let (Some(geometry), true) = (row, z || m) else {
+            let empty = |g: &Geometry<f64>| g.coords_count() == 0;
+            let carries = (z || m)
+                && !(restore.keep == Keep::BothUnlessEmpty && row.as_ref().is_some_and(empty));
+            let (Some(geometry), true) = (row, carries) else {
                 builder
                     .push_geometry(row.as_ref())
                     .map_err(|e| e.to_string())?;

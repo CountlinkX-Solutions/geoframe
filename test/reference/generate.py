@@ -151,6 +151,37 @@ Z_CORPUS = {
 }
 CORPUS.update(Z_CORPUS)
 
+# Z/M corpus for the constructive operations (Z2): vertex-rich lines and rings so that
+# simplify, set_precision, snap and normalize have vertices to drop, move and reorder, plus
+# lon/lat points with heights for to_crs.
+Z2_CORPUS = {
+    "z2_line_z": "LINESTRING Z (0.12 0.34 1, 1.26 1.01 2, 2.49 0.51 3, 3.3 2.9 4)",
+    "z2_line_m": "LINESTRING M (0.12 0.34 1, 1.26 1.01 2, 2.49 0.51 3, 3.3 2.9 4)",
+    "z2_line_zm": "LINESTRING ZM (0.12 0.34 1 10, 1.26 1.01 2 20, 2.49 0.51 3 30, 3.3 2.9 4 40)",
+    "z2_zigzag_z": "LINESTRING Z (0 0 1, 5 0.01 2, 10 0 3, 10 10 4, 10.01 20 5, 10 30 6)",
+    "z2_zigzag_m": "LINESTRING M (0 0 1, 5 0.01 2, 10 0 3, 10 10 4, 10.01 20 5, 10 30 6)",
+    "z2_zigzag_zm": "LINESTRING ZM (0 0 1 7, 5 0.01 2 8, 10 0 3 9, 10 10 4 6, 10.01 20 5 5, 10 30 6 4)",
+    "z2_poly_hole_z": "POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 4 4, 0 0 1), (1 1 5, 2 1 6, 2 2 7, 1 1 5))",
+    "z2_poly_cw_z": "POLYGON Z ((4 4 3, 4 0 2, 0 0 1, 0 4 4, 4 4 3))",
+    "z2_poly_cw_zm": "POLYGON ZM ((4 4 3 3, 4 0 2 2, 0 0 1 1, 0 4 4 4, 4 4 3 3))",
+    "z2_poly_off_grid_z": "POLYGON Z ((0.12 0.07 1, 4.26 0.51 2, 4.49 4.3 3, 0.3 4.1 4, 0.12 0.07 1))",
+    "z2_mpt_unsorted_z": "MULTIPOINT Z ((5 5 1), (0 0 2), (3 1 3))",
+    "z2_snap_ref_z": "POINT Z (1.1 1 9)",
+    "z2_snap_ref_2d": "POINT (1.1 1)",
+    "z2_snap_ref_m": "POINT M (1.1 1 9)",
+    "z2_snap_ref_line_z": "LINESTRING Z (1 1 7, 2.5 0.5 8)",
+    "z2_snap_dup_z": "LINESTRING Z (0 0 1, 1 1 2)",
+    "z2_snap_dup_ref": "POINT Z (1 1 99)",
+    "z2_ll_pt_2d": "POINT (-80 25)",
+    "z2_ll_pt_z": "POINT Z (-80 25 100)",
+    "z2_ll_pt_zm": "POINT ZM (-80 25 100 5)",
+    "z2_ll_pt_m": "POINT M (-80 25 5)",
+    "z2_ll_line_z": "LINESTRING Z (-80 25 1, -81 26 2)",
+    "z2_ll_poly_z": "POLYGON Z ((-80 25 1, -79 25 2, -79 26 3, -80 25 1))",
+    "z2_ll_mpt_zm": "MULTIPOINT ZM ((-80 25 1 2), (-81 26 3 4))",
+}
+CORPUS.update(Z2_CORPUS)
+
 
 def geom(cid):
     w = CORPUS[cid]
@@ -189,6 +220,9 @@ def conv(kind, v):
         return full(v)
     if kind == "floats":
         return [num(x) for x in v]
+    if kind == "zm":
+        # GeoFrame has no LinearRing type: `exterior` is a LineString.
+        return _norm_wkt(v).replace("LINEARRING", "LINESTRING")
     raise ValueError(kind)
 
 
@@ -267,7 +301,7 @@ def singles(ids):
 NON_EMPTY_2D = [
     k for k, w in CORPUS.items()
     if w is not None and "EMPTY" not in w
-    and not k.startswith(("g_", "e_", "i_", "j_", "z_"))
+    and not k.startswith(("g_", "e_", "i_", "j_", "z_", "z2_"))
 ]
 EMPTIES = ["pt_empty", "line_empty", "poly_empty", "coll_empty", "null"]
 GEO = [k for k in CORPUS if k.startswith("g_")]
@@ -836,6 +870,63 @@ def build_zm():
     w.dump()
 
 
+def build_zm_ops():
+    """Z2: which constructive operations keep Z and M, compared as full WKT (NaN included)."""
+    w = Writer("zm_ops")
+    base = sorted(Z_CORPUS) + sorted(i for i in Z2_CORPUS if not i.startswith(("z2_snap", "z2_ll")))
+    controls = _ZM_CONTROLS + ["null"]
+    w.add_set("all", singles(base + controls))
+    zm = lambda label, op, fn, **args: w.group(op, "zm", "all", fn, label=label, args=args)
+    zm("translate(2.5,-3,zoff=3)", "translate", lambda a, b: a.translate(2.5, -3.0, 3.0),
+       x=2.5, y=-3.0, z=3.0)
+    zm("translate(2.5,-3)", "translate", lambda a, b: a.translate(2.5, -3.0), x=2.5, y=-3.0, z=0.0)
+    zm("scale(2,0.5,zfact=4,(0,0))", "scale", lambda a, b: a.scale(2.0, 0.5, 4.0, origin=(0, 0)),
+       x=2.0, y=0.5, zfact=4.0, origin=[0, 0])
+    zm("scale(2,0.5,zfact=3,center)", "scale", lambda a, b: a.scale(2.0, 0.5, 3.0),
+       x=2.0, y=0.5, zfact=3.0, origin="center")
+    zm("scale(-1,3,centroid)", "scale", lambda a, b: a.scale(-1.0, 3.0, origin="centroid"),
+       x=-1.0, y=3.0, zfact=1.0, origin="centroid")
+    zm("rotate(30,center)", "rotate", lambda a, b: a.rotate(30), angle=30, origin="center")
+    zm("rotate(90,(0,0))", "rotate", lambda a, b: a.rotate(90, origin=(0, 0)), angle=90, origin=[0, 0])
+    zm("skew(20,10,center)", "skew", lambda a, b: a.skew(20, 10), xs=20, ys=10, origin="center")
+    m6 = [1.5, 0.25, -0.5, 2.0, 3.0, -1.0]
+    zm("affine_transform(6)", "affine_transform", lambda a, b: a.affine_transform(m6), matrix=m6)
+    m12 = [1.5, 0.25, 0.5, -0.5, 2.0, 0.25, 0.1, 0.2, 2.0, 3.0, -1.0, 5.0]
+    zm("affine_transform(12)", "affine_transform", lambda a, b: a.affine_transform(m12), matrix=m12)
+    zm("reverse", "reverse", lambda a, b: a.reverse())
+    zm("normalize", "normalize", lambda a, b: a.normalize())
+    zm("boundary", "boundary", lambda a, b: a.boundary)
+    zm("exterior", "exterior", lambda a, b: gpd.GeoSeries(shapely.get_exterior_ring(a.values)))
+    zm("get_geometry(0)", "get_geometry", lambda a, b: a.get_geometry(0), n=0)
+    zm("get_geometry(1)", "get_geometry", lambda a, b: a.get_geometry(1), n=1)
+    zm("simplify(1.0, preserve_topology=false)", "simplify",
+       lambda a, b: a.simplify(1.0, preserve_topology=False), tolerance=1.0, preserve_topology=False)
+    for mode in ("valid_output", "pointwise", "keep_collapsed"):
+        for grid in (0.5, 1.0):
+            # GEOS starts and winds rings differently from GeoFrame (a 2D difference the
+            # topological reference comparison hides); `normalize` makes the text comparable.
+            zm(f"set_precision({grid}, {mode})", "set_precision",
+               lambda a, b, g=grid, m=mode: a.set_precision(g, mode=m).normalize(),
+               grid_size=grid, mode=mode, normalize=True)
+
+    lines = ["z2_line_z", "z2_line_m", "z2_line_zm", "z2_zigzag_z", "z2_poly_hole_z", "line_h"]
+    refs = ["z2_snap_ref_z", "z2_snap_ref_2d", "z2_snap_ref_m", "z2_snap_ref_line_z"]
+    w.add_set("snap", pairs(lines, refs) + [("z2_snap_dup_z", "z2_snap_dup_ref"), ("null", "z2_snap_ref_z")])
+    for tol in (0.3, 0.6):
+        w.group("snap", "zm", "snap", lambda a, b, t=tol: a.snap(b, t, align=False),
+                label=f"snap({tol})", args={"tolerance": tol})
+
+    geo = ["z2_ll_pt_z", "z2_ll_pt_zm", "z2_ll_pt_m", "z2_ll_line_z", "z2_ll_poly_z", "z2_ll_mpt_zm",
+           "z2_ll_pt_2d"]
+    w.add_set("geo", singles(geo))
+    for target in ("EPSG:3857", "EPSG:32617"):
+        w.group("to_crs", "zm", "geo", lambda a, b, t=target: a.to_crs(t), label=f"to_crs(4326->{target})",
+                args={"target": target}, crs="EPSG:4326")
+    w.group("to_crs", "zm", "geo", lambda a, b: a.to_crs("EPSG:4978"), label="to_crs(4979->4978)",
+            args={"target": "EPSG:4978"}, crs="EPSG:4979")
+    w.dump()
+
+
 # --------------------------------------------------------------------------------------
 # batch I2: offset_curve, snap, shared_paths, minimum_clearance(_line), polygonize, build_area
 # --------------------------------------------------------------------------------------
@@ -1315,6 +1406,7 @@ def main():
     build_parity_j()
     build_parity_k()
     build_zm()
+    build_zm_ops()
     build_frames()
     build_overlay()
     corpus = dict(CORPUS)

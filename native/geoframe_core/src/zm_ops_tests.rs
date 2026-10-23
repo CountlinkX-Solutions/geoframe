@@ -246,6 +246,15 @@ fn boundary_exterior_interiors_and_parts_keep_z_and_m() {
 }
 
 #[test]
+fn boundary_with_no_points_is_two_dimensional() {
+    let closed = one("LINESTRING Z (0 0 1, 1 0 2, 1 1 3, 0 0 1)")
+        .unary(UnaryOp::Boundary)
+        .unwrap();
+    assert_eq!(closed.has_z(), [false]);
+    assert_wkt(&closed, &[Some("MULTIPOINT EMPTY")]);
+}
+
+#[test]
 fn simplify_keeps_the_z_of_surviving_vertices_and_drops_m() {
     let line = "LINESTRING Z (0 0 1, 5 0.01 2, 10 0 3, 10 10 4)";
     check(
