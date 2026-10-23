@@ -77,6 +77,44 @@ CORPUS = {
     "g_poly_far": "POLYGON ((10 10, 11 10, 11 11, 10 11, 10 10))",
 }
 
+# Batch E corpus: point sets and shapes for hulls, bounding shapes and triangulations. The `e_`
+# prefix keeps them out of the shared id lists above, so older fixtures are unchanged.
+def _ring_points():
+    pts = []
+    for i in range(12):
+        a = i * math.pi / 6
+        for r in (10.0, 6.0):
+            pts.append("(%s %s)" % (round(r * math.cos(a), 3), round(r * math.sin(a), 3)))
+    return "MULTIPOINT (" + ", ".join(pts) + ")"
+
+
+def _star():
+    pts = []
+    for i in range(10):
+        a = i * math.pi / 5 + math.pi / 2
+        r = 10.0 if i % 2 == 0 else 4.0
+        pts.append((round(r * math.cos(a), 3), round(r * math.sin(a), 3)))
+    pts.append(pts[0])
+    return "POLYGON ((" + ", ".join("%s %s" % p for p in pts) + "))"
+
+
+E_CORPUS = {
+    "e_scatter": "MULTIPOINT ((1 1), (4 7), (9 2), (12 9), (15 4), (7 12), (3 14), (11 14), (18 11), (8 6), (13 7), (5 3), (16 15), (2 9))",
+    "e_ring": _ring_points(),
+    "e_cluster": "MULTIPOINT ((0 0), (1 0.5), (0.5 1.2), (1.5 1), (30 30), (31 30.5), (30.5 31.2), (31.5 31))",
+    "e_collinear": "MULTIPOINT ((0 0), (1 1), (2 2), (3 3))",
+    "e_dups": "MULTIPOINT ((0 0), (0 0), (4 1), (2 5), (4 1), (6 6))",
+    "e_grid3": "MULTIPOINT ((0 0), (2 0), (4 0), (0 2), (2 2), (4 2), (0 4), (2 4), (4 4))",
+    "e_star": _star(),
+    "e_u": "POLYGON ((0 0, 9 0, 9 9, 6 9, 6 3, 3 3, 3 9, 0 9, 0 0))",
+    "e_donut": "POLYGON ((0 0, 12 0, 12 12, 0 12, 0 0), (3 3, 9 3, 9 9, 3 9, 3 3))",
+    "e_sliver": "POLYGON ((0 0, 10 1, 10 1.5, 0 0.4, 0 0))",
+    "e_zigzag": "LINESTRING (0 0, 2 3, 4 0, 6 3, 8 0, 10 3)",
+    "e_obtuse": "POLYGON ((0 0, 10 1, 5 2, 0 0))",
+    "e_mpoly_far": "MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((10 10, 13 10, 13 12, 10 12, 10 10)))",
+}
+CORPUS.update(E_CORPUS)
+
 
 def geom(cid):
     w = CORPUS[cid]
@@ -191,7 +229,8 @@ def singles(ids):
 
 
 NON_EMPTY_2D = [
-    k for k, w in CORPUS.items() if w is not None and "EMPTY" not in w and not k.startswith("g_")
+    k for k, w in CORPUS.items()
+    if w is not None and "EMPTY" not in w and not k.startswith("g_") and not k.startswith("e_")
 ]
 EMPTIES = ["pt_empty", "line_empty", "poly_empty", "coll_empty", "null"]
 GEO = [k for k in CORPUS if k.startswith("g_")]
@@ -334,6 +373,120 @@ def build_constructive():
     w.add_set("sl", pairs(["pt1", "pt2", "line_h", "line_diag", "sq", "sq_far", "tri"]))
     w.group("shortest_line", "geom", "sl", lambda a, b: gpd.GeoSeries(shapely.shortest_line(a.values, b.values)))
     w.dump()
+
+
+# --------------------------------------------------------------------------------------
+# batch E: constructive geometry
+# --------------------------------------------------------------------------------------
+BIG_EXTEND = "POLYGON ((-30 -30, 40 -30, 40 40, -30 40, -30 -30))"
+PART_EXTEND = "POLYGON ((-1 -1, 12 -1, 12 1, -1 1, -1 -1))"
+
+
+def build_constructive_e():
+    w = Writer("constructive_e")
+    base = ["pt1", "mpt", "line_h", "line_diag", "line_cross", "line_closed", "line_self", "mline", "sq",
+            "sq_hole", "tri", "ell", "sq_cw", "mpoly", "coll", "bowtie", "poly_flat", "line_zero"]
+    e_ids = sorted(E_CORPUS)
+    w.add_set("hull", singles(base + e_ids + EMPTIES))
+    w.add_set("poly", singles(["sq", "sq_hole", "tri", "ell", "sq_cw", "mpoly", "poly_flat", "bowtie", "pt1", "line_h", "coll"]
+                              + ["e_star", "e_u", "e_donut", "e_sliver", "e_obtuse", "e_mpoly_far"] + EMPTIES))
+    for ratio in (0.0, 0.3, 1.0):
+        for holes in (False, True):
+            w.group("concave_hull", "geom", "hull",
+                    lambda a, b, r=ratio, h=holes: a.concave_hull(ratio=r, allow_holes=h),
+                    label=f"concave_hull(ratio={ratio}, allow_holes={str(holes).lower()})",
+                    args={"ratio": ratio, "allow_holes": holes})
+    w.group("minimum_rotated_rectangle", "geom", "hull", lambda a, b: a.minimum_rotated_rectangle())
+    w.group("minimum_bounding_circle", "geom", "hull", lambda a, b: a.minimum_bounding_circle())
+    w.group("minimum_bounding_radius", "float", "hull", lambda a, b: a.minimum_bounding_radius())
+    w.group("maximum_inscribed_circle", "geom", "poly", lambda a, b: a.maximum_inscribed_circle())
+    w.group("maximum_inscribed_circle", "geom", "poly", lambda a, b: a.maximum_inscribed_circle(tolerance=0.01),
+            label="maximum_inscribed_circle(tolerance=0.01)", args={"tolerance": 0.01})
+    w.group("constrained_delaunay_triangles", "geom", "poly", lambda a, b: a.constrained_delaunay_triangles())
+    w.dump()
+
+
+# --------------------------------------------------------------------------------------
+# batch E: make_grid, delaunay_triangles and voronoi_polygons. GeoPandas treats the whole series
+# as one point cloud (and make_grid reads its total bounds), so a case is a whole series and
+# its result a list of geometries of a different length.
+# --------------------------------------------------------------------------------------
+def build_collections():
+    cases = []
+    cloud_ids = [["pt1"], ["mpt"], ["sq"], ["sq_hole"], ["tri"], ["ell"], ["mpoly"], ["line_diag"], ["coll"],
+                 ["pt1", "pt2", "pt_far"], ["pt1", "pt2", "pt_edge", "pt_far"], ["sq", "sq_far"],
+                 ["pt_empty", "pt1", "pt2", "pt_far"], ["pt_empty"], ["poly_empty"],
+                 ["g_miami", "g_fll", "g_london", "g_nyc"]] + [[i] for i in sorted(E_CORPUS)]
+    variants = [
+        ("delaunay_triangles", {}),
+        ("delaunay_triangles", {"only_edges": True}),
+        ("delaunay_triangles", {"tolerance": 1.5}),
+        ("voronoi_polygons", {}),
+        ("voronoi_polygons", {"only_edges": True}),
+        ("voronoi_polygons", {"tolerance": 1.5}),
+        ("voronoi_polygons", {"extend_to": BIG_EXTEND}),
+        ("voronoi_polygons", {"extend_to": PART_EXTEND}),
+    ]
+    for ids in cloud_ids:
+        for op, args in variants:
+            kwargs = dict(args)
+            if "extend_to" in kwargs:
+                kwargs["extend_to"] = swkt.loads(kwargs["extend_to"])
+            try:
+                out = getattr(series(ids), op)(**kwargs)
+                expected = [full(g) for g in out]
+            except Exception:
+                continue
+            tag = ",".join(f"{k}={'big' if v == BIG_EXTEND else 'partial' if v == PART_EXTEND else str(v).lower()}"
+                           for k, v in sorted(args.items()))
+            cases.append({"op": op, "ids": ids, "args": args, "e": expected,
+                          "label": f"{op}({tag}; {'+'.join(ids)})"})
+    cases += build_grid_cases()
+    with open(os.path.join(OUT, "collections.json"), "w") as f:
+        json.dump({"cases": cases}, f, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        f.write("\n")
+
+
+def build_grid_cases():
+    inputs = {
+        "sq": ["sq"],
+        "ell": ["ell"],
+        "tri": ["tri"],
+        "pair": ["sq", "sq_far"],
+        "mpoly": ["mpoly"],
+        "donut": ["e_donut"],
+        "star": ["e_star"],
+        "lonlat": ["g_poly", "g_poly_hole"],
+    }
+    cases = []
+    for name, ids in inputs.items():
+        for gtype in ("square", "hexagon"):
+            for ftype in ("polygons", "centers", "corners"):
+                for size, flat, inter, off in ((2.0, False, True, None), (3.0, True, False, None),
+                                              (2.5, False, True, [1.0, 1.5]), (1.0, True, True, None)):
+                    if name == "lonlat":
+                        size = size / 10.0
+                        off = None if off is None else [-81.0, 24.0]
+                    if gtype == "square" and flat:
+                        continue
+                    kwargs = dict(cell_size=size, grid_type=gtype, feature_type=ftype, intersect=inter, flat_topped=flat)
+                    if off is not None:
+                        kwargs["offset"] = tuple(off)
+                    try:
+                        out = list(series(ids).make_grid(**kwargs))
+                        expected = [full(g) for g in out]
+                    except Exception:
+                        continue
+                    cases.append({
+                        "op": "make_grid",
+                        "ids": ids,
+                        "args": {"cell_size": size, "grid_type": gtype, "feature_type": ftype,
+                                 "intersect": inter, "flat_topped": flat, "offset": off},
+                        "label": f"make_grid({name}, {gtype}, {ftype}, size={size}, flat={str(flat).lower()}, "
+                                 f"intersect={str(inter).lower()}, offset={'none' if off is None else 'set'})",
+                        "e": expected,
+                    })
+    return cases
 
 
 # --------------------------------------------------------------------------------------
@@ -687,6 +840,8 @@ def main():
     build_unary_predicates()
     build_binary_predicates()
     build_constructive()
+    build_constructive_e()
+    build_collections()
     build_set_ops()
     build_affine()
     build_linear_referencing()

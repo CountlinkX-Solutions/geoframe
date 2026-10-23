@@ -157,5 +157,73 @@
       "within:sq_corner|bowtie",
       "within:sq_touch|bowtie"
     ]
+  },
+  %{
+    reason:
+      "Concave hull of near-symmetric points (the two rings of e_ring, rounded to 3 decimals): many Delaunay edges have exactly equal length, and the order in which GEOS erodes tied border triangles is not reproducible. All other cases (including the other E point sets) agree.",
+    doc: "docs/parity.md#batch-e-constructive-geometry",
+    op: "concave_hull",
+    cases: [
+      "concave_hull(ratio=0.0, allow_holes=false):e_ring",
+      "concave_hull(ratio=0.0, allow_holes=true):e_ring"
+    ]
+  },
+  %{
+    reason:
+      "A triangle (and any shape whose hull has several equal-area edge-aligned rectangles, such as the symmetric mpoly and e_star) has more than one minimum-area rotated rectangle; geo and GEOS break the tie differently. The rectangle has the same area either way.",
+    doc: "docs/parity.md#batch-e-constructive-geometry",
+    op: "minimum_rotated_rectangle",
+    cases: [
+      "minimum_rotated_rectangle:line_closed",
+      "minimum_rotated_rectangle:tri",
+      "minimum_rotated_rectangle:mpoly",
+      "minimum_rotated_rectangle:e_star"
+    ]
+  },
+  %{
+    reason:
+      "minimum_bounding_circle of the degenerate line LINESTRING (1 1, 1 1): GEOS returns POLYGON EMPTY, GeoFrame the point (zero radius), as for a point.",
+    doc: "docs/parity.md#batch-e-constructive-geometry",
+    op: "minimum_bounding_circle",
+    cases: ["minimum_bounding_circle:line_zero"]
+  },
+  %{
+    reason:
+      "maximum_inscribed_circle of an invalid (self-intersecting bowtie) polygon: GEOS returns a degenerate zero-length line at the pinch point, GeoFrame searches the signed distance to the boundary rings.",
+    doc: "docs/parity.md#batch-e-constructive-geometry",
+    op: "maximum_inscribed_circle",
+    cases: [
+      "maximum_inscribed_circle:bowtie",
+      "maximum_inscribed_circle(tolerance=0.01):bowtie"
+    ]
+  },
+  %{
+    reason:
+      "Vertex snapping with a tolerance: GeoFrame merges vertices closer than the tolerance to an already kept vertex (visited in lexicographic order); GEOS merges a new vertex only with the endpoints of the triangle edge it lands on, so for clustered input the kept vertices differ.",
+    doc: "docs/parity.md#batch-e-constructive-geometry",
+    op: "delaunay_triangles",
+    cases: ["delaunay_triangles(tolerance=1.5; e_sliver)"]
+  },
+  %{
+    reason:
+      "Vertex snapping with a tolerance: GeoFrame merges vertices closer than the tolerance to an already kept vertex (visited in lexicographic order); GEOS merges a new vertex only with the endpoints of the triangle edge it lands on, so for clustered input the kept vertices differ.",
+    doc: "docs/parity.md#batch-e-constructive-geometry",
+    op: "voronoi_polygons",
+    cases: [
+      "voronoi_polygons(tolerance=1.5; pt1+pt2+pt_edge+pt_far)",
+      "voronoi_polygons(tolerance=1.5; e_cluster)",
+      "voronoi_polygons(tolerance=1.5; e_collinear)",
+      "voronoi_polygons(tolerance=1.5; e_sliver)"
+    ]
+  },
+  %{
+    reason:
+      "Voronoi sides of near-cocircular sites (e_ring and e_star are rounded to 3 decimals): the Delaunay edge between four almost cocircular sites is chosen by exact predicates in spade and by floating-point ones in GEOS, which flips a very short Voronoi side. The cells agree.",
+    doc: "docs/parity.md#batch-e-constructive-geometry",
+    op: "voronoi_polygons",
+    cases: [
+      "voronoi_polygons(only_edges=true; e_ring)",
+      "voronoi_polygons(only_edges=true; e_star)"
+    ]
   }
 ]

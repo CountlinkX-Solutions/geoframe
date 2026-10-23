@@ -14,8 +14,8 @@ defmodule GeoFrame.Reference do
   alias GeoFrame.GeoSeries
   alias GeoFrame.SpatialJoin
 
-  @fixtures ~w(measures unary_predicates binary_predicates constructive set_ops affine
-               linear_referencing crs geodesic io)
+  @fixtures ~w(measures unary_predicates binary_predicates constructive constructive_e set_ops
+               affine linear_referencing crs geodesic io)
   @dir Path.expand("../reference/fixtures", __DIR__)
 
   @type result :: %{
@@ -227,6 +227,21 @@ defmodule GeoFrame.Reference do
   defp apply_param("project", args, a, b),
     do: GeoSeries.project(a, b, normalized: args["normalized"] == true)
 
+  defp apply_param("concave_hull", args, a, _),
+    do: GeoSeries.concave_hull(a, ratio: args["ratio"], allow_holes: args["allow_holes"])
+
+  defp apply_param("minimum_rotated_rectangle", _, a, _),
+    do: GeoSeries.minimum_rotated_rectangle(a)
+
+  defp apply_param("minimum_bounding_circle", _, a, _), do: GeoSeries.minimum_bounding_circle(a)
+  defp apply_param("minimum_bounding_radius", _, a, _), do: GeoSeries.minimum_bounding_radius(a)
+
+  defp apply_param("maximum_inscribed_circle", args, a, _),
+    do: GeoSeries.maximum_inscribed_circle(a, tolerance: args["tolerance"])
+
+  defp apply_param("constrained_delaunay_triangles", _, a, _),
+    do: GeoSeries.constrained_delaunay_triangles(a)
+
   defp apply_param("to_crs", args, a, _), do: GeoSeries.to_crs(a, args["target"])
   defp apply_param("estimate_utm_crs", _, a, _), do: GeoSeries.estimate_utm_crs(a)
   defp apply_param("to_wkb_hex", _, a, _), do: GeoSeries.to_wkb(a, hex: true)
@@ -266,6 +281,14 @@ defmodule GeoFrame.Reference do
                 to_wkt_roundtrip simplify get_geometry centroid shortest_line)
   defp geom_mode(%{"op" => "buffer"}), do: :buffer
   defp geom_mode(%{"op" => "representative_point"}), do: :representative
+
+  defp geom_mode(%{"op" => op})
+       when op in ~w(concave_hull minimum_rotated_rectangle minimum_bounding_circle),
+       do: :approx
+
+  defp geom_mode(%{"op" => "maximum_inscribed_circle"}), do: :inscribed
+
+  defp geom_mode(%{"op" => "constrained_delaunay_triangles"}), do: :triangulation
 
   defp geom_mode(%{"op" => op})
        when op in ~w(intersection union difference symmetric_difference clip_by_rect),
@@ -370,6 +393,57 @@ defmodule GeoFrame.Reference do
     verdict(GeoSeries.geom_equals_exact(actual, expected, tol), wkt, e)
   end
 
+  # Same shape up to floating-point noise and vertex order: topologically equal, or within 1e-9
+  # by Hausdorff distance and area.
+  defp compare_mode(:approx, _group, actual, expected, _a, _crs, wkt, e) do
+    case GeoSeries.geom_equals(actual, expected) |> Series.to_list() do
+      [true] -> {:agree, nil}
+      _ -> if near?(actual, expected, 1.0e-9), do: {:agree, :noise}, else: {:differ, {wkt, e}}
+    end
+  end
+
+  # The inscribed circle is a search result: the center is only guaranteed within the
+  # tolerance of the optimum, so the radius is compared with that tolerance and the center must
+  # lie in the input.
+  defp compare_mode(:inscribed, group, actual, expected, a_wkt, crs, wkt, e) do
+    [al] = actual |> GeoSeries.length() |> Series.to_list()
+    [el] = expected |> GeoSeries.length() |> Series.to_list()
+    input = GeoSeries.from_wkt!([a_wkt], crs: crs)
+    [x0, y0, x1, y1] = input |> GeoSeries.total_bounds() |> Tuple.to_list()
+    tol = group["args"]["tolerance"] || max(x1 - x0, y1 - y0) / 1000
+    center = GeoSeries.interpolate(actual, 0.0)
+
+    cond do
+      match?({:agree, _}, compare_mode(:approx, group, actual, expected, a_wkt, crs, wkt, e)) ->
+        {:agree, nil}
+
+      abs(al - el) <= tol + 1.0e-9 and
+          GeoSeries.covers(input, center) |> Series.to_list() == [true] ->
+        {:agree, :within_tolerance}
+
+      true ->
+        {:differ, {wkt, e}}
+    end
+  end
+
+  # Constrained triangulations of a polygon: the same set of triangles, or (cocircular vertices
+  # allow two triangulations) the same number of triangles covering the same area.
+  defp compare_mode(:triangulation, _group, _actual, _expected, _a, _crs, wkt, e) do
+    got = triangle_keys(wkt)
+    want = triangle_keys(e)
+
+    cond do
+      got == want ->
+        {:agree, nil}
+
+      length(got) == length(want) and same_union?(parts_of(wkt), parts_of(e)) ->
+        {:agree, :cocircular}
+
+      true ->
+        {:differ, {wkt, e}}
+    end
+  end
+
   defp compare_mode(:buffer, _group, actual, expected, _a, _crs, wkt, e) do
     [aa] = actual |> GeoSeries.area() |> Series.to_list()
     [ea] = expected |> GeoSeries.area() |> Series.to_list()
@@ -389,6 +463,23 @@ defmodule GeoFrame.Reference do
       _ -> {:differ, {wkt, e}}
     end
   end
+
+  defp near?(actual, expected, tol) do
+    [aa] = actual |> GeoSeries.area() |> Series.to_list()
+    [ea] = expected |> GeoSeries.area() |> Series.to_list()
+    [hd] = actual |> GeoSeries.hausdorff_distance(expected) |> Series.to_list()
+
+    is_number(aa) and is_number(ea) and is_number(hd) and hd <= tol and
+      abs(aa - ea) <= tol * (1.0 + abs(ea))
+  end
+
+  defp parts_of(wkt) do
+    {parts, _} = [wkt] |> GeoSeries.from_wkt!() |> GeoSeries.explode()
+    GeoSeries.to_wkt(parts)
+  end
+
+  # One sorted, rounded vertex list per triangle of a collection.
+  defp triangle_keys(wkt), do: wkt |> parts_of() |> Enum.map(&triangle_key/1) |> Enum.sort()
 
   defp close?(actual, expected) do
     [aa] = actual |> GeoSeries.area() |> Series.to_list()
@@ -471,6 +562,162 @@ defmodule GeoFrame.Reference do
   end
 
   # -- frames: overlay / clip / explode / intersection_all -----------------------------------
+
+  @doc """
+  Evaluates the whole-series fixtures: `make_grid`, `delaunay_triangles` and `voronoi_polygons`.
+  GeoPandas treats the series as one point cloud and returns a series of another length, so each
+  case compares a list of geometries.
+  """
+  @spec run_collections() :: [result()]
+  def run_collections do
+    corpus = corpus()
+
+    for c <- read("collections")["cases"] do
+      series = GeoSeries.from_wkt!(Enum.map(c["ids"], &corpus[&1]))
+
+      {status, detail} =
+        try do
+          got = c["op"] |> collection_op(series, c["args"]) |> GeoSeries.to_wkt()
+          compare_collection(c["op"], c["args"], got, c["e"])
+        rescue
+          e -> {:differ, {:raised, Exception.message(e)}}
+        end
+
+      %{
+        file: "collections",
+        op: c["op"],
+        label: c["label"],
+        id: c["label"],
+        status: status,
+        nullish: false,
+        detail: detail
+      }
+    end
+  end
+
+  defp collection_op("make_grid", series, args) do
+    GeoSeries.make_grid(series, args["cell_size"],
+      grid_type: String.to_atom(args["grid_type"]),
+      feature_type: String.to_atom(args["feature_type"]),
+      intersect: args["intersect"],
+      flat_topped: args["flat_topped"],
+      offset: args["offset"] && List.to_tuple(args["offset"])
+    )
+  end
+
+  defp collection_op("delaunay_triangles", series, args) do
+    GeoSeries.delaunay_triangles(series,
+      tolerance: args["tolerance"] || 0.0,
+      only_edges: args["only_edges"] == true
+    )
+  end
+
+  defp collection_op("voronoi_polygons", series, args) do
+    GeoSeries.voronoi_polygons(series,
+      tolerance: args["tolerance"] || 0.0,
+      extend_to: args["extend_to"],
+      only_edges: args["only_edges"] == true
+    )
+  end
+
+  # make_grid: same length, same order, vertex for vertex.
+  defp compare_collection("make_grid", _args, got, want) when length(got) != length(want),
+    do: {:differ, {:count, length(got), length(want)}}
+
+  defp compare_collection("make_grid", _args, got, want) do
+    got
+    |> Enum.zip(want)
+    |> Enum.with_index()
+    |> Enum.find(fn {{g, w}, _} -> not grid_cell_close?(g, w) end)
+    |> case do
+      nil -> {:agree, nil}
+      {{g, w}, i} -> {:differ, {i, g, w}}
+    end
+  end
+
+  # Triangles: the same set (order is not specified); failing that, with cocircular points two
+  # triangulations are valid, so the same number of triangles covering the same area.
+  defp compare_collection("delaunay_triangles", %{"only_edges" => true}, got, want) do
+    got_keys = edge_keys(got)
+    want_keys = edge_keys(want)
+    extra_got = got_keys -- want_keys
+    extra_want = want_keys -- got_keys
+
+    cond do
+      extra_got == [] and extra_want == [] -> {:agree, nil}
+      flips_only?(extra_got, extra_want) -> {:agree, :cocircular}
+      true -> {:differ, {:edges, extra_got, extra_want}}
+    end
+  end
+
+  defp compare_collection("delaunay_triangles", _args, got, want) do
+    cond do
+      Enum.sort(Enum.map(got, &triangle_key/1)) == Enum.sort(Enum.map(want, &triangle_key/1)) ->
+        {:agree, nil}
+
+      length(got) == length(want) and same_union?(got, want) ->
+        {:agree, :cocircular}
+
+      true ->
+        {:differ, {:triangles, got, want}}
+    end
+  end
+
+  # Voronoi: every expected cell or side has a counterpart within 1e-9, and the counts agree.
+  defp compare_collection("voronoi_polygons", _args, got, want) do
+    if length(got) == length(want) and Enum.all?(want, &has_close_match?(got, &1)),
+      do: {:agree, nil},
+      else: {:differ, {:cells, got, want}}
+  end
+
+  defp has_close_match?(got, wkt) do
+    got
+    |> GeoSeries.from_wkt!()
+    |> GeoSeries.hausdorff_distance(wkt)
+    |> Series.to_list()
+    |> Enum.any?(&(is_number(&1) and &1 <= 1.0e-9))
+  end
+
+  defp grid_cell_close?(got, want) do
+    GeoSeries.geom_equals_exact(GeoSeries.from_wkt!([got]), GeoSeries.from_wkt!([want]), 1.0e-9)
+    |> Series.to_list() == [true]
+  end
+
+  # Two valid triangulations of the same points differ only by flipped diagonals: each edge one
+  # has and the other lacks is properly crossed by an edge of the other.
+  defp flips_only?(extra_got, extra_want) do
+    length(extra_got) == length(extra_want) and
+      Enum.all?(extra_got, fn [a, b] ->
+        Enum.any?(extra_want, fn [c, d] -> properly_cross?(a, b, c, d) end)
+      end)
+  end
+
+  defp properly_cross?(a, b, c, d) do
+    orient = fn [px, py], [qx, qy], [rx, ry] -> (qx - px) * (ry - py) - (qy - py) * (rx - px) end
+    d1 = orient.(a, b, c)
+    d2 = orient.(a, b, d)
+    d3 = orient.(c, d, a)
+    d4 = orient.(c, d, b)
+    d1 * d2 < 0 and d3 * d4 < 0
+  end
+
+  defp edge_keys(wkts),
+    do: wkts |> Enum.map(&coordinate_pairs/1) |> Enum.map(&Enum.sort/1) |> Enum.sort()
+
+  defp triangle_key(wkt), do: wkt |> coordinate_pairs() |> Enum.uniq() |> Enum.sort()
+
+  defp coordinate_pairs(wkt) do
+    ~r/-?\d+(?:\.\d+)?(?:e-?\d+)?/
+    |> Regex.scan(wkt)
+    |> List.flatten()
+    |> Enum.map(&(&1 |> Float.parse() |> elem(0) |> Float.round(9) |> Kernel.+(0.0)))
+    |> Enum.chunk_every(2)
+  end
+
+  defp same_union?(a, b) do
+    union = fn wkts -> wkts |> GeoSeries.from_wkt!() |> GeoSeries.union_all() end
+    GeoSeries.geom_equals(union.(a), union.(b)) |> Series.to_list() == [true]
+  end
 
   @doc "Evaluates the overlay, clip, explode and intersection_all fixtures."
   @spec run_overlay() :: [result()]
