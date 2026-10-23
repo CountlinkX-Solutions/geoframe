@@ -2,8 +2,8 @@
 //! crate; this layer only converts between BEAM terms and core types.
 
 use geoframe_core::{
-    read_geoparquet, write_geoparquet, BufferOptions, GeoColumn, Origin, Predicate, QueryPredicate,
-    SetOp, UnaryOp,
+    read_geoparquet, write_geoparquet, BufferOptions, GeoColumn, NearestPairs, Origin, Predicate,
+    QueryPredicate, SetOp, UnaryOp,
 };
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
@@ -139,6 +139,16 @@ fn sindex_query(
 ) -> Result<(Vec<u32>, Vec<u32>), String> {
     let predicate = QueryPredicate::from_name(&name, distance)?;
     left.0.query_pairs(&right.0, predicate)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn sindex_nearest(
+    left: Handle,
+    right: Handle,
+    max_distance: Option<f64>,
+    exclusive: bool,
+) -> Result<NearestPairs, String> {
+    left.0.nearest_pairs(&right.0, max_distance, exclusive)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]

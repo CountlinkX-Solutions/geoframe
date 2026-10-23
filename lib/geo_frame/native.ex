@@ -23,6 +23,7 @@ defmodule GeoFrame.Native do
   def distance(_left, _right), do: err()
   def dwithin(_left, _right, _limit), do: err()
   def sindex_query(_left, _right, _name, _distance), do: err()
+  def sindex_nearest(_left, _right, _max_distance, _exclusive), do: err()
   def relate(_left, _right), do: err()
   def set_op(_left, _right, _name), do: err()
   def union_all(_ref), do: err()
