@@ -18,6 +18,8 @@ defmodule GeoFrame.Native do
   def bounds(_ref), do: err()
   def total_bounds(_ref), do: err()
   def centroid(_ref), do: err()
+  def read_parquet(_path, _columns), do: err()
+  def write_parquet(_ref, _geometry_column, _attributes_ipc, _path), do: err()
 
   defp err, do: :erlang.nif_error(:nif_not_loaded)
 end

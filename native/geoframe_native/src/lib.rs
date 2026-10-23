@@ -1,7 +1,7 @@
 //! Thin Rustler wrapper around `geoframe_core`. All logic and its tests live in the core
 //! crate; this layer only converts between BEAM terms and core types.
 
-use geoframe_core::GeoColumn;
+use geoframe_core::{read_geoparquet, write_geoparquet, GeoColumn};
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
 /// Resource handle for a GeoArrow geometry column living in Rust memory.
@@ -103,6 +103,39 @@ fn total_bounds(column: Handle) -> Option<(f64, f64, f64, f64)> {
 #[rustler::nif(schedule = "DirtyCpu")]
 fn centroid(column: Handle) -> Result<Handle, String> {
     column.0.centroid().map(wrap)
+}
+
+/// Reads a GeoParquet file. Returns `{geometry, geometry_column, attributes_ipc}` where the
+/// attributes are an Arrow IPC stream (one copy; Explorer has no zero-copy NIF access).
+#[rustler::nif(schedule = "DirtyIo")]
+fn read_parquet<'a>(
+    env: Env<'a>,
+    path: String,
+    columns: Option<Vec<String>>,
+) -> Result<(Handle, String, Binary<'a>), String> {
+    let read = read_geoparquet(&path, columns.as_deref())?;
+    let mut ipc = OwnedBinary::new(read.attributes_ipc.len());
+    ipc.as_mut_slice().copy_from_slice(&read.attributes_ipc);
+    Ok((
+        wrap(read.geometry),
+        read.geometry_column,
+        Binary::from_owned(ipc, env),
+    ))
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn write_parquet(
+    column: Handle,
+    geometry_column: String,
+    attributes_ipc: Binary,
+    path: String,
+) -> Result<(), String> {
+    write_geoparquet(
+        &path,
+        &column.0,
+        &geometry_column,
+        attributes_ipc.as_slice(),
+    )
 }
 
 rustler::init!("Elixir.GeoFrame.Native");

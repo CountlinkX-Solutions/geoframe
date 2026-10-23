@@ -37,9 +37,22 @@ pub struct GeoColumn {
     array: GeometryArray,
 }
 
+/// Parses `text` as a PROJJSON object, if it is one.
+fn as_projjson(text: &str) -> Option<serde_json::Value> {
+    if !text.trim_start().starts_with('{') {
+        return None;
+    }
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .filter(serde_json::Value::is_object)
+}
+
 fn metadata_for(crs: Option<&str>) -> Arc<Metadata> {
     let crs = match crs {
         None => Crs::default(),
+        Some(value) if as_projjson(value).is_some() => {
+            Crs::from_projjson(as_projjson(value).unwrap())
+        }
         Some(value) if value.contains(':') => Crs::from_authority_code(value.to_string()),
         Some(value) => Crs::from_unknown_crs_type(value.to_string()),
     };
@@ -90,6 +103,11 @@ impl GeoColumn {
             })
             .collect::<Result<Vec<_>, String>>()?;
         Self::from_geometries(&parsed, crs)
+    }
+
+    /// The underlying GeoArrow array.
+    pub fn geometry_array(&self) -> &GeometryArray {
+        &self.array
     }
 
     /// Number of rows, nulls included.
