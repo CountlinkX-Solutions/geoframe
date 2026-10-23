@@ -34,10 +34,7 @@ use std::fs::File;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow_ipc::reader::StreamReader;
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Schema};
-use arrow_select::concat::concat_batches;
 use geoarrow_array::array::from_arrow_array;
 use geoarrow_array::cast::to_wkb;
 use geoarrow_array::{GeoArrowArray, IntoArrow};
@@ -53,6 +50,7 @@ use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 use serde_json::{json, Value};
 
+use crate::attributes::{decode_attributes, ipc_from_batches};
 use crate::GeoColumn;
 
 const CRS84: &str = "OGC:CRS84";
@@ -163,20 +161,16 @@ fn attributes_to_ipc(
         .map(|&i| schema.field(i).as_ref().clone())
         .collect();
     let projected = Arc::new(Schema::new(fields));
-    let mut out = Vec::new();
-    {
-        let mut writer = StreamWriter::try_new(&mut out, &projected).map_err(|e| e.to_string())?;
-        for batch in batches {
+    let projected_batches = batches
+        .iter()
+        .map(|batch| {
             let columns: Vec<ArrayRef> = indices.iter().map(|&i| batch.column(i).clone()).collect();
             let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-            let projected_batch =
-                RecordBatch::try_new_with_options(projected.clone(), columns, &options)
-                    .map_err(|e| e.to_string())?;
-            writer.write(&projected_batch).map_err(|e| e.to_string())?;
-        }
-        writer.finish().map_err(|e| e.to_string())?;
-    }
-    Ok(out)
+            RecordBatch::try_new_with_options(projected.clone(), columns, &options)
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    ipc_from_batches(&projected, &projected_batches)
 }
 
 /// The CRS of the primary column as our string form, applying GeoParquet 1.1 semantics to
@@ -250,36 +244,12 @@ fn combine(
     geometry_column: &str,
     attributes_ipc: &[u8],
 ) -> Result<RecordBatch, String> {
-    let reader = StreamReader::try_new(attributes_ipc, None)
-        .map_err(|e| format!("invalid attribute data: {e}"))?;
-    let schema = reader.schema();
-    let batches = reader
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("invalid attribute data: {e}"))?;
-
-    if schema.index_of(geometry_column).is_ok() {
+    let (mut fields, mut columns) = decode_attributes(attributes_ipc, geometry.len())?;
+    if fields.iter().any(|f| f.name() == geometry_column) {
         return Err(format!(
             "attributes already have a column named {geometry_column:?}"
         ));
     }
-    let rows = geometry.len();
-    let (mut fields, mut columns): (Vec<Field>, Vec<ArrayRef>) = if schema.fields().is_empty() {
-        (Vec::new(), Vec::new())
-    } else {
-        let attributes = concat_batches(&schema, &batches)
-            .map_err(|e| format!("invalid attribute data: {e}"))?;
-        if attributes.num_rows() != rows {
-            return Err(format!(
-                "attributes have {} rows but geometry has {rows} rows",
-                attributes.num_rows()
-            ));
-        }
-        (
-            schema.fields().iter().map(|f| f.as_ref().clone()).collect(),
-            attributes.columns().to_vec(),
-        )
-    };
-
     let array = geometry.geometry_array();
     fields.push(array.extension_type().to_field(geometry_column, true));
     columns.push(array.to_array_ref());

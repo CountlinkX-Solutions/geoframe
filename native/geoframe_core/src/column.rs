@@ -61,6 +61,30 @@ fn metadata_for(crs: Option<&str>) -> Arc<Metadata> {
     Arc::new(Metadata::new(crs, None))
 }
 
+/// Incremental [`GeoColumn`] construction for readers that produce one geometry at a time and
+/// cannot hold them all (a streaming reader's geometries borrow the current record).
+pub(crate) struct ColumnBuilder(GeometryBuilder);
+
+impl ColumnBuilder {
+    pub fn new(crs: Option<&str>) -> Self {
+        Self(GeometryBuilder::new(GeometryType::new(metadata_for(crs))))
+    }
+
+    /// Appends one row; `None` is a null geometry.
+    pub fn push(
+        &mut self,
+        geometry: Option<&impl geo_traits::GeometryTrait<T = f64>>,
+    ) -> Result<(), String> {
+        self.0.push_geometry(geometry).map_err(|e| e.to_string())
+    }
+
+    pub fn finish(self) -> GeoColumn {
+        GeoColumn {
+            array: self.0.finish(),
+        }
+    }
+}
+
 impl GeoColumn {
     fn from_geometries(
         geoms: &[Option<impl geo_traits::GeometryTrait<T = f64>>],

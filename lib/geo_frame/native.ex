@@ -43,6 +43,10 @@ defmodule GeoFrame.Native do
   def count_coordinates(_ref), do: err()
   def read_parquet(_path, _columns), do: err()
   def write_parquet(_ref, _geometry_column, _attributes_ipc, _path), do: err()
+  def read_geojson_file(_path), do: err()
+  def write_geojson_file(_ref, _attributes_ipc, _path, _force), do: err()
+  def read_flatgeobuf_file(_path, _bbox), do: err()
+  def write_flatgeobuf_file(_ref, _attributes_ipc, _path, _layer_name, _index), do: err()
 
   defp err, do: :erlang.nif_error(:nif_not_loaded)
 end

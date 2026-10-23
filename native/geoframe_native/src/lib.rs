@@ -2,8 +2,9 @@
 //! crate; this layer only converts between BEAM terms and core types.
 
 use geoframe_core::{
-    read_geoparquet, write_geoparquet, BufferOptions, GeoColumn, NearestPairs, Origin, Predicate,
-    QueryPredicate, SetOp, UnaryOp,
+    read_flatgeobuf, read_geojson, read_geoparquet, write_flatgeobuf, write_geojson,
+    write_geoparquet, BufferOptions, GeoColumn, NearestPairs, Origin, Predicate, QueryPredicate,
+    SetOp, UnaryOp, VectorRead,
 };
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
@@ -285,13 +286,8 @@ fn read_parquet<'a>(
     columns: Option<Vec<String>>,
 ) -> Result<(Handle, String, Binary<'a>), String> {
     let read = read_geoparquet(&path, columns.as_deref())?;
-    let mut ipc = OwnedBinary::new(read.attributes_ipc.len());
-    ipc.as_mut_slice().copy_from_slice(&read.attributes_ipc);
-    Ok((
-        wrap(read.geometry),
-        read.geometry_column,
-        Binary::from_owned(ipc, env),
-    ))
+    let ipc = binary(env, &read.attributes_ipc);
+    Ok((wrap(read.geometry), read.geometry_column, ipc))
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
@@ -306,6 +302,61 @@ fn write_parquet(
         &column.0,
         &geometry_column,
         attributes_ipc.as_slice(),
+    )
+}
+
+fn binary<'a>(env: Env<'a>, bytes: &[u8]) -> Binary<'a> {
+    let mut owned = OwnedBinary::new(bytes.len());
+    owned.as_mut_slice().copy_from_slice(bytes);
+    Binary::from_owned(owned, env)
+}
+
+fn vector_read<'a>(env: Env<'a>, read: VectorRead) -> (Handle, Binary<'a>) {
+    let ipc = binary(env, &read.attributes_ipc);
+    (wrap(read.geometry), ipc)
+}
+
+/// Reads a GeoJSON file. Returns `{geometry, attributes_ipc}`.
+#[rustler::nif(schedule = "DirtyIo")]
+fn read_geojson_file<'a>(env: Env<'a>, path: String) -> Result<(Handle, Binary<'a>), String> {
+    read_geojson(&path).map(|read| vector_read(env, read))
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn write_geojson_file(
+    column: Handle,
+    attributes_ipc: Binary,
+    path: String,
+    force: bool,
+) -> Result<(), String> {
+    write_geojson(&path, &column.0, attributes_ipc.as_slice(), force)
+}
+
+/// Reads a FlatGeobuf file, optionally restricted to a bounding box via the file's index.
+#[rustler::nif(schedule = "DirtyIo")]
+fn read_flatgeobuf_file<'a>(
+    env: Env<'a>,
+    path: String,
+    bbox: Option<(f64, f64, f64, f64)>,
+) -> Result<(Handle, Binary<'a>), String> {
+    let bbox = bbox.map(|(a, b, c, d)| [a, b, c, d]);
+    read_flatgeobuf(&path, bbox).map(|read| vector_read(env, read))
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn write_flatgeobuf_file(
+    column: Handle,
+    attributes_ipc: Binary,
+    path: String,
+    layer_name: String,
+    index: bool,
+) -> Result<(), String> {
+    write_flatgeobuf(
+        &path,
+        &column.0,
+        attributes_ipc.as_slice(),
+        &layer_name,
+        index,
     )
 }
 
