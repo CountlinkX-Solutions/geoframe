@@ -1,0 +1,81 @@
+.app {
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: #f0f5f9;
+  border: 1px solid #e1e8f0;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.field.wide {
+  flex: 3 1 320px;
+}
+
+.field.hidden {
+  display: none;
+}
+
+label,
+.label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #445668;
+}
+
+.input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 0.875rem;
+  color: #445668;
+  background: #fff;
+  border: 1px solid #cad5e0;
+  border-radius: 8px;
+}
+
+.input:focus {
+  outline: none;
+  border-color: #3e64ff;
+  box-shadow: 0 0 0 2px rgba(62, 100, 255, 0.2);
+}
+
+.input.invalid {
+  border-color: #ff6b6b;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  font-size: 0.875rem;
+  color: #445668;
+  cursor: pointer;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #627e99;
+}
