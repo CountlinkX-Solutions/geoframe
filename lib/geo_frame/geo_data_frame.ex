@@ -341,6 +341,59 @@ defmodule GeoFrame.GeoDataFrame do
         "concat_rows expects a non-empty list of GeoDataFrames, got: #{inspect(other)}"
       )
 
+  @doc """
+  Splits multi-part geometries and collections into one row per part, like
+  `GeoDataFrame.explode`. The attributes of a row are repeated for each of its parts.
+
+  `GeoSeries.explode/2` explains which geometries have parts: rows whose geometry is null or an
+  empty multi-geometry disappear.
+
+  pandas keeps the source row in the index (a MultiIndex of source row and part number when
+  `index_parts=True`). A frame has no index, so the same information becomes plain columns,
+  placed first:
+
+    * `index` - the zero-based position of the source row (`s64`); omitted with
+      `ignore_index: true`;
+    * `part` - the zero-based number of the part within its source row; only with
+      `index_parts: true`, whatever `ignore_index` says.
+
+  Options: `:index_parts` (default `false`), `:ignore_index` (default `false`). Raises
+  `ArgumentError` if an attribute is already called `index` or `part` and the column would be
+  added.
+  """
+  @spec explode(t(), keyword()) :: t()
+  def explode(%__MODULE__{data: data, geometry: geometry} = gdf, opts \\ []) do
+    opts = Keyword.validate!(opts, index_parts: false, ignore_index: false)
+    {parts, positions, numbers} = GeoSeries.explode(geometry, index_parts: true)
+
+    added =
+      if(opts[:ignore_index], do: [], else: [{"index", positions}]) ++
+        if(opts[:index_parts], do: [{"part", numbers}], else: [])
+
+    taken = if has_columns?(data), do: DataFrame.slice(data, positions), else: data
+    clashes = Enum.filter(added, fn {name, _} -> name in DataFrame.names(taken) end)
+
+    if clashes != [] do
+      raise ArgumentError,
+            "explode would add a column named #{inspect(elem(hd(clashes), 0))}, which already " <>
+              "exists (rename it first)"
+    end
+
+    columns =
+      Enum.map(added, fn {name, values} -> {name, Series.from_list(values, dtype: {:s, 64})} end) ++
+        Enum.map(DataFrame.names(taken), &{&1, DataFrame.pull(taken, &1)})
+
+    %{gdf | data: DataFrame.new(columns), geometry: parts}
+  end
+
+  @doc "Clips to a mask; see `GeoFrame.Overlay.clip/3`."
+  @spec clip(t(), term(), keyword()) :: t()
+  defdelegate clip(gdf, mask, opts \\ []), to: GeoFrame.Overlay
+
+  @doc "Spatial overlay with another frame; see `GeoFrame.Overlay.overlay/3`."
+  @spec overlay(t(), t(), keyword()) :: t()
+  defdelegate overlay(df1, df2, opts \\ []), to: GeoFrame.Overlay
+
   @doc "Spatial join; see `GeoFrame.SpatialJoin.sjoin/3`."
   @spec sjoin(t(), t(), keyword()) :: t()
   defdelegate sjoin(left, right, opts \\ []), to: GeoFrame.SpatialJoin
