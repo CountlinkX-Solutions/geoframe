@@ -273,7 +273,7 @@ fn check_densify_budget(columns: &[&GeoColumn], pieces: Option<usize>) -> Result
 fn sub_segments(densify: Option<f64>) -> Result<Option<usize>, String> {
     match densify {
         None => Ok(None),
-        Some(f) if f.is_finite() && f >= MIN_DENSIFY && f <= 1.0 => {
+        Some(f) if (MIN_DENSIFY..=1.0).contains(&f) => {
             Ok(Some((1.0 / f).round() as usize))
         }
         Some(f) => Err(format!(
