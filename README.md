@@ -94,6 +94,8 @@ error (`{:error, message}` or `ArgumentError`) instead. The caps:
 | `offset_curve` | `quad_segs` at most 10,000; an estimated 10,000,000 raw vertices (vertices times `2 * quad_segs`) is an error; a geometry whose cutting needs over 50,000,000 segment pairs is `nil`; non-finite distance or coordinates give `nil` |
 | `snap` | vertices times snap points at most 50,000,000 per geometry pair (a row over it is `nil`) |
 | `polygonize` / `build_area` | the noding examines at most 50,000,000 candidate segment pairs (an error beyond that) |
+| `is_valid_coverage` / `invalid_coverage_edges` | candidate segment pairs plus point-in-polygon steps at most 50,000,000 per call (an error beyond that); `gap_width` must be finite; rows with non-finite coordinates are `nil` |
+| `simplify_coverage` | at most 10,000,000 vertices and 50,000,000 vertex-in-triangle checks (an error beyond that); `tolerance` must be finite; rows with non-finite coordinates are `nil` |
 
 Writers (GeoParquet, Feather, GeoJSON, FlatGeobuf) write to `<path>.tmp-<id>` beside the
 destination and rename it over `path` on success; a failure never removes an existing file.
