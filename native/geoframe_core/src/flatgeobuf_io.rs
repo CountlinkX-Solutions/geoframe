@@ -38,7 +38,7 @@
 //! CRS; WKT text is stored as WKT. Anything else (such as PROJJSON) is rejected.
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -110,7 +110,102 @@ impl PropertyProcessor for Slots {
     }
 }
 
+/// Checks a file before the `flatgeobuf` reader sees it, because the crate allocates
+/// `u32 size + 4` bytes for every feature *before* checking the file holds them (a crafted
+/// `FF FF FF FF` aborts the BEAM with a 4 GiB allocation). The check reads the header, skips
+/// the index and walks the feature stream with seeks only, requiring each feature to fit in
+/// the file. A bounding-box read is rejected unless the index node size is 16 (the crate's
+/// `select_bbox` assumes it) and every index offset must land on a feature boundary.
+pub(crate) fn prevalidate(path: &str, bbox: Option<[f64; 4]>) -> Result<(), String> {
+    let file = File::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
+    let file_len = file
+        .metadata()
+        .map_err(|e| format!("cannot read {path}: {e}"))?
+        .len();
+    let mut input = BufReader::new(file);
+    let (count, node_size) = {
+        let reader = FgbReader::open(&mut input)
+            .map_err(|e| format!("cannot read {path} as FlatGeobuf: {e}"))?;
+        let header = reader.header();
+        (header.features_count(), header.index_node_size())
+    };
+    if count == 0 {
+        return Ok(());
+    }
+    let io_err = |e: std::io::Error| format!("cannot read {path}: {e}");
+    let truncated = || format!("{path} is truncated or has a corrupt feature size");
+    // Every feature takes at least its 4-byte size prefix.
+    if count > file_len / 4 {
+        return Err(truncated());
+    }
+    let index_start = input.stream_position().map_err(io_err)?;
+    let index_size = if node_size == 0 {
+        0
+    } else if node_size == 1 {
+        return Err(format!("{path} has an unsupported index node size 1"));
+    } else {
+        flatgeobuf::packed_r_tree::PackedRTree::index_size(count as usize, node_size) as u64
+    };
+    let features_start = index_start
+        .checked_add(index_size)
+        .filter(|&start| start <= file_len)
+        .ok_or_else(truncated)?;
+
+    let mut allowed: Option<Vec<usize>> = None;
+    if let Some([min_x, min_y, max_x, max_y]) = bbox {
+        if node_size != 0 && node_size != flatgeobuf::packed_r_tree::PackedRTree::DEFAULT_NODE_SIZE
+        {
+            return Err(format!(
+                "{path} has index node size {node_size}; bbox reads support only 16"
+            ));
+        }
+        if node_size != 0 {
+            let hits = flatgeobuf::packed_r_tree::PackedRTree::stream_search(
+                &mut input,
+                count as usize,
+                node_size,
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+            )
+            .map_err(|e| format!("cannot read {path}: {e}"))?;
+            allowed = Some(hits.into_iter().map(|h| h.offset).collect());
+        }
+    }
+    input
+        .seek(SeekFrom::Start(features_start))
+        .map_err(io_err)?;
+
+    let mut starts: Vec<usize> = Vec::new();
+    let mut pos = features_start;
+    for _ in 0..count {
+        if allowed.is_some() {
+            starts.push((pos - features_start) as usize);
+        }
+        let mut prefix = [0u8; 4];
+        input.read_exact(&mut prefix).map_err(|_| truncated())?;
+        let size = u64::from(u32::from_le_bytes(prefix));
+        let next = pos
+            .checked_add(4 + size)
+            .filter(|&next| next <= file_len)
+            .ok_or_else(truncated)?;
+        input
+            .seek_relative(i64::try_from(size).map_err(|_| truncated())?)
+            .map_err(io_err)?;
+        pos = next;
+    }
+    if let Some(offsets) = allowed {
+        // `starts` is increasing by construction.
+        if offsets.iter().any(|o| starts.binary_search(o).is_err()) {
+            return Err(format!("{path} has a corrupt spatial index"));
+        }
+    }
+    Ok(())
+}
+
 fn read(path: &str, bbox: Option<[f64; 4]>) -> Result<VectorRead, String> {
+    prevalidate(path, bbox)?;
     let file = File::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
     let reader = FgbReader::open(BufReader::new(file))
         .map_err(|e| format!("cannot read {path} as FlatGeobuf: {e}"))?;
@@ -265,9 +360,10 @@ pub fn write_flatgeobuf(
     }))
     .unwrap_or_else(|_| Err("FlatGeobuf encoder failed".to_string()))?;
 
-    std::fs::write(path, outcome).map_err(|e| {
-        let _ = std::fs::remove_file(path);
-        format!("cannot write {path}: {e}")
+    crate::atomic::write_atomic(path, |mut file| {
+        use std::io::Write;
+        file.write_all(&outcome)
+            .map_err(|e| format!("cannot write {path}: {e}"))
     })
 }
 

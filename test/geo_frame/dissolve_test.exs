@@ -92,6 +92,26 @@ defmodule GeoFrame.DissolveTest do
     end
   end
 
+  test "first and last skip nulls per group, like pandas" do
+    gdf =
+      GeoDataFrame.new(
+        DataFrame.new(
+          key: ["a", "a", "a", "b", "b", "c"],
+          v: [nil, 2, 3, nil, nil, 1],
+          w: [1, nil, nil, nil, nil, nil]
+        ),
+        GeoSeries.from_wkt!(Enum.map(0..5, &square(&1 * 3, 0)))
+      )
+
+    first = GeoDataFrame.dissolve(gdf, by: "key", aggfunc: :first)
+    assert col(first, "v") == [2, nil, 1]
+    assert col(first, "w") == [1, nil, nil]
+
+    last = GeoDataFrame.dissolve(gdf, by: "key", aggfunc: :last)
+    assert col(last, "v") == [3, nil, 1]
+    assert col(last, "w") == [1, nil, nil]
+  end
+
   test "dropna true drops null keys, false keeps a null group" do
     gdf =
       GeoDataFrame.new(

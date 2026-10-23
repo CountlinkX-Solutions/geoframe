@@ -778,6 +778,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "crs-definitions",
+ "flatbuffers 24.12.23",
  "flatgeobuf",
  "geo",
  "geo-traits",

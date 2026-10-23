@@ -77,6 +77,28 @@ Without the types module, select `ST_AsEWKB(geom) AS geom`. Tests tagged `:postg
 
 ## Limits
 
+Inputs that would abort the whole VM (stack overflow or a huge allocation) are rejected with an
+error (`{:error, message}` or `ArgumentError`) instead. The caps:
+
+| Area | Limit |
+|------|-------|
+| WKT text | parenthesis nesting depth 64 |
+| WKB / EWKB | collection nesting depth 64 (the `wkb` reader itself stops at 128) |
+| FlatGeobuf read | every feature must fit in the file; `bbox:` reads need index node size 16 |
+| `make_grid` | 10,000,000 cells (square and hexagon) |
+| `sample_points` | 10,000,000 samples in total per call (a scalar size counts once per row) |
+| `maximum_inscribed_circle` | seed cells are enlarged until at most 5,000,000 fit; refinement is also capped at 5,000,000 cells |
+| `segmentize` | 10,000,000 estimated output vertices |
+| `hausdorff_distance` / `frechet_distance` `densify:` | fraction at least `1.0e-4` (10,000 pieces per segment) and 10,000,000 densified vertices in total |
+| `union_groups` | `n_groups` at most the number of ids; ids below `n_groups` |
+
+Writers (GeoParquet, Feather, GeoJSON, FlatGeobuf) write to `<path>.tmp-<id>` beside the
+destination and rename it over `path` on success; a failure never removes an existing file.
+CRS labels that differ only by case, or `OGC:CRS84` against `EPSG:4326`, are compatible for
+binary operations, joins, overlay and `concat`.
+
+Shapefile and zip input/output:
+
 - Zip archives (zipped Shapefiles): a member may decompress to at most 2 GiB (`MAX_ZIP_MEMBER_BYTES`); larger members are an error.
 - dBase tables (`.dbf`): a table may expand to at most 2^28 cells (records times fields), and its header must be consistent
   (record length covers the fields, header length covers the descriptors); inconsistent or amplifying headers are an error.

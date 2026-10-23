@@ -996,6 +996,11 @@ fn geographic(column: Handle) -> Option<bool> {
 }
 
 #[rustler::nif]
+fn crs_equivalent(a: String, b: String) -> bool {
+    geoframe_core::crs_equivalent(&a, &b)
+}
+
+#[rustler::nif]
 fn crs_is_geographic(crs: String) -> Option<bool> {
     geoframe_core::crs_is_geographic(&crs)
 }

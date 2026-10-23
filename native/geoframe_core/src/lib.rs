@@ -3,6 +3,7 @@
 
 mod affine;
 mod arrow_io;
+mod atomic;
 mod attributes;
 pub(crate) mod column;
 mod crs_wkt;
@@ -48,7 +49,7 @@ pub use parquet_io::{
     GeoParquetRead, ParquetOptions,
 };
 pub use predicates::Predicate;
-pub use reproject::{crs_is_geographic, normalize_crs};
+pub use reproject::{crs_equivalent, crs_is_geographic, normalize_crs};
 pub use set_ops::SetOp;
 pub use shapefile_io::{read_shapefile, shapefile_info, write_shapefile};
 pub use sindex::{NearestPairs, QueryPredicate};
@@ -64,6 +65,8 @@ mod flatgeobuf_tests;
 mod geojson_tests;
 #[cfg(test)]
 mod gpkg_tests;
+#[cfg(test)]
+mod hardening_tests;
 #[cfg(test)]
 mod io_g1_tests;
 #[cfg(test)]

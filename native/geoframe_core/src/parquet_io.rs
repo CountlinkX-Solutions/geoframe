@@ -396,20 +396,18 @@ pub fn write_geoparquet_with(
         version: options.schema_version.clone(),
     };
     let encoded = encode_table(geometry, geometry_column, attributes_ipc, &encode)?;
-    let result = write_batch(path, &encoded.batch, &encoded.geo, props);
-    if result.is_err() {
-        let _ = std::fs::remove_file(path);
-    }
-    result
+    crate::atomic::write_atomic(path, |file| {
+        write_batch(path, file, &encoded.batch, &encoded.geo, props)
+    })
 }
 
 fn write_batch(
     path: &str,
+    file: File,
     batch: &RecordBatch,
     geo: &Value,
     props: WriterProperties,
 ) -> Result<(), String> {
-    let file = File::create(path).map_err(|e| format!("cannot create {path}: {e}"))?;
     let schema: Arc<Schema> = batch.schema();
     let mut writer = ArrowWriter::try_new(file, schema, Some(props))
         .map_err(|e| format!("cannot write {path}: {e}"))?;

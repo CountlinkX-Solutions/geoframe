@@ -32,3 +32,4 @@ rusqlite = { version = "0.40", features = ["bundled", "functions"] }
 
 [dev-dependencies]
 tempfile = "3"
+flatbuffers = "24.12.23"
