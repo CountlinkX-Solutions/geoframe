@@ -1482,6 +1482,61 @@ defmodule GeoFrame.GeoSeries do
     left |> Native.shared_paths(other_ref(series, other)) |> wrap() |> unwrap!()
   end
 
+  @max_quad_segs 10_000
+
+  @doc """
+  The line parallel to each line at `distance` (`shapely.offset_curve`): positive distances
+  offset to the left of the line's direction, negative to the right. The result is a
+  `LINESTRING`, a `MULTILINESTRING` when the curve breaks (loops and spirals are cut away
+  where the offset comes closer to the line than `distance`) or `LINESTRING EMPTY`.
+
+  `distance` is a number, or a list or `Explorer.Series` with one entry per row (`nil` nulls
+  the row). Options (Shapely names):
+
+    * `:quad_segs` - segments per quarter circle of round joins, default `8`; like GEOS, never
+      fewer than 8 are drawn. At most `#{@max_quad_segs}`.
+    * `:join_style` - `:round` (default), `:mitre` or `:bevel`, for the outside corners.
+    * `:mitre_limit` - for `:mitre`, the longest mitre as a multiple of the distance, default
+      `5.0`, over 0.
+
+  Lines and multi-lines are offset part by part; a closed line is a line (no join at its
+  start). The rings of a polygon are offset as rings, so a positive distance grows it, and are
+  cut against each other; collections use their lines and polygons, points give an empty line.
+  Deviations from GEOS (see `docs/parity.md`): its input simplification is not applied, the
+  mitred outside offset of a closed line keeps the two pieces GEOS drops, and where the offset
+  of a polygon ring collapses to a line it is dropped only when it is clearly interior.
+
+  Raises when the vertices times `quad_segs` would exceed 10,000,000 (the raw curve is
+  proportional to both); a geometry whose cutting needs over 50,000,000 segment pairs is `nil`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0)"])
+      iex> s |> GeoFrame.GeoSeries.offset_curve(1) |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(0 1,10 1)"]
+  """
+  @spec offset_curve(t(), param(), keyword()) :: t()
+  def offset_curve(%__MODULE__{ref: ref} = series, distance, opts \\ []) do
+    opts = Keyword.validate!(opts, quad_segs: 8, join_style: :round, mitre_limit: 5.0)
+    join = enum!(opts, :join_style, @join_styles)
+    quad_segs = opts[:quad_segs]
+    mitre_limit = opts[:mitre_limit]
+
+    unless is_integer(quad_segs) and quad_segs > 0 and quad_segs <= @max_quad_segs do
+      raise ArgumentError,
+            ":quad_segs must be an integer from 1 to #{@max_quad_segs}, got: #{inspect(quad_segs)}"
+    end
+
+    unless is_number(mitre_limit) and mitre_limit > 0 do
+      raise ArgumentError, ":mitre_limit must be a number over 0, got: #{inspect(mitre_limit)}"
+    end
+
+    distances = param!(distance, size(series), "distance")
+
+    ref
+    |> Native.offset_curve(distances, quad_segs, Atom.to_string(join), mitre_limit * 1.0)
+    |> wrap()
+    |> unwrap!()
+  end
+
   @doc """
   The minimum clearance of each geometry (`shapely.minimum_clearance`): the smallest distance
   by which a vertex could move to make the geometry invalid, found as the least distance

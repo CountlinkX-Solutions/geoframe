@@ -59,7 +59,7 @@ fn same(a: Coord<f64>, b: Coord<f64>) -> bool {
     a.x == b.x && a.y == b.y
 }
 
-fn dist(a: Coord<f64>, b: Coord<f64>) -> f64 {
+pub(crate) fn dist(a: Coord<f64>, b: Coord<f64>) -> f64 {
     let (dx, dy) = (a.x - b.x, a.y - b.y);
     (dx * dx + dy * dy).sqrt()
 }
@@ -75,7 +75,7 @@ fn projection(p: Coord<f64>, a: Coord<f64>, b: Coord<f64>) -> f64 {
 }
 
 /// `Distance::pointToSegment` of JTS/GEOS.
-fn point_segment_distance(p: Coord<f64>, a: Coord<f64>, b: Coord<f64>) -> f64 {
+pub(crate) fn point_segment_distance(p: Coord<f64>, a: Coord<f64>, b: Coord<f64>) -> f64 {
     if same(a, b) {
         return dist(p, a);
     }

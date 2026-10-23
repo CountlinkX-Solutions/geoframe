@@ -106,6 +106,7 @@ defmodule GeoFrame.Native do
   def shared_paths(_left, _right), do: err()
   def minimum_clearance(_ref), do: err()
   def minimum_clearance_line(_ref), do: err()
+  def offset_curve(_ref, _distances, _quad_segs, _join_style, _mitre_limit), do: err()
   def fill_null(_ref, _fill), do: err()
   def closed_flags(_ref), do: err()
   def ring_flags(_ref), do: err()

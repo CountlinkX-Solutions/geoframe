@@ -7,8 +7,8 @@ use geoframe_core::{
     shapefile_info, to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson,
     write_geoparquet_with, write_gpkg, write_shapefile, BufferOptions, FeatherCompression,
     GeoColumn, GeometryEncoding, GpkgWriteOptions, GridFeature, GridType, LayerInfo, NearestPairs,
-    Origin, ParquetOptions, PrecisionMode, Predicate, QueryPredicate, SetOp, TableRead, UnaryOp,
-    VectorRead, VertexKind, VertexParts,
+    OffsetJoin, OffsetParams, Origin, ParquetOptions, PrecisionMode, Predicate, QueryPredicate,
+    SetOp, TableRead, UnaryOp, VectorRead, VertexKind, VertexParts,
 };
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
@@ -1067,6 +1067,22 @@ fn minimum_clearance(column: Handle) -> Vec<Option<f64>> {
 #[rustler::nif(schedule = "DirtyCpu")]
 fn minimum_clearance_line(column: Handle) -> Result<Handle, String> {
     column.0.minimum_clearance_line().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn offset_curve(
+    column: Handle,
+    distances: Vec<Option<f64>>,
+    quad_segs: u32,
+    join_style: String,
+    mitre_limit: f64,
+) -> Result<Handle, String> {
+    let params = OffsetParams {
+        quad_segs,
+        join: OffsetJoin::parse(&join_style)?,
+        mitre_limit,
+    };
+    column.0.offset_curve(&distances, &params).map(wrap)
 }
 
 rustler::init!("Elixir.GeoFrame.Native");

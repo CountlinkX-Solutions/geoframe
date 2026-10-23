@@ -105,4 +105,114 @@ defmodule GeoFrame.ParityJTest do
 
     defp canon_n(wkt), do: [wkt] |> s() |> GeoSeries.normalize() |> GeoSeries.to_wkt() |> hd()
   end
+
+  describe "offset_curve/3" do
+    test "offsets to the left for positive and to the right for negative distances" do
+      series = s(["LINESTRING (0 0, 10 0)", "LINESTRING (0 0, 10 0)"])
+
+      assert series |> GeoSeries.offset_curve(1) |> GeoSeries.to_wkt() ==
+               ["LINESTRING(0 1,10 1)", "LINESTRING(0 1,10 1)"]
+
+      assert series |> GeoSeries.offset_curve(-2) |> GeoSeries.to_wkt() ==
+               ["LINESTRING(0 -2,10 -2)", "LINESTRING(0 -2,10 -2)"]
+    end
+
+    test "takes a distance per row and keeps nulls and the CRS" do
+      series = s(["LINESTRING (0 0, 10 0)", nil, "LINESTRING (0 0, 10 0)"], crs: "EPSG:3857")
+      result = GeoSeries.offset_curve(series, [1, 1, nil])
+
+      assert GeoSeries.to_wkt(result) == ["LINESTRING(0 1,10 1)", nil, nil]
+      assert GeoSeries.crs(result) == "EPSG:3857"
+
+      by_series = GeoSeries.offset_curve(series, Series.from_list([2.0, 2.0, 3.0]))
+      assert GeoSeries.to_wkt(by_series) == ["LINESTRING(0 2,10 2)", nil, "LINESTRING(0 3,10 3)"]
+    end
+
+    test "join styles round, mitre and bevel" do
+      series = s(["LINESTRING (0 0, 3 4, 6 4)"])
+
+      mitre = GeoSeries.offset_curve(series, 1, join_style: :mitre)
+      bevel = GeoSeries.offset_curve(series, 1, join_style: :bevel)
+
+      assert list(
+               GeoSeries.geom_equals_exact(
+                 mitre,
+                 s(["LINESTRING (-0.8 0.6, 2.5 5, 6 5)"]),
+                 1.0e-9
+               )
+             ) ==
+               [true]
+
+      assert list(
+               GeoSeries.geom_equals_exact(
+                 bevel,
+                 s(["LINESTRING (-0.8 0.6, 2.2 4.6, 3 5, 6 5)"]),
+                 1.0e-9
+               )
+             ) ==
+               [true]
+
+      [round] = series |> GeoSeries.offset_curve(1, quad_segs: 16) |> GeoSeries.to_wkt()
+      [coarse] = series |> GeoSeries.offset_curve(1, quad_segs: 8) |> GeoSeries.to_wkt()
+      assert String.length(round) > String.length(coarse)
+    end
+
+    test "returns a multi-line when the curve breaks and an empty line when nothing remains" do
+      series =
+        s(["LINESTRING (0 0, 4 4, 4 0, 0 4)", "POINT (1 1)", "LINESTRING (0 0, 10 0, 0 0.5)"])
+
+      assert [multi, empty, gone] = series |> GeoSeries.offset_curve(1) |> GeoSeries.to_wkt()
+      assert multi =~ "MULTILINESTRING"
+      assert empty == "LINESTRING EMPTY"
+      assert gone == "LINESTRING EMPTY"
+    end
+
+    test "offsets the rings of a polygon outwards for positive distances" do
+      series = s(["POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))"])
+      [ring] = series |> GeoSeries.offset_curve(1, join_style: :mitre) |> GeoSeries.to_wkt()
+      assert ring =~ "LINESTRING"
+
+      [length] =
+        series |> GeoSeries.offset_curve(1, join_style: :mitre) |> GeoSeries.length() |> list()
+
+      assert_in_delta length, 24.0, 1.0e-9
+    end
+
+    test "validates its options and the distance" do
+      series = s(["LINESTRING (0 0, 1 1)"])
+
+      assert_raise ArgumentError, ~r/join_style/, fn ->
+        GeoSeries.offset_curve(series, 1, join_style: :x)
+      end
+
+      assert_raise ArgumentError, ~r/quad_segs/, fn ->
+        GeoSeries.offset_curve(series, 1, quad_segs: 0)
+      end
+
+      assert_raise ArgumentError, ~r/quad_segs/, fn ->
+        GeoSeries.offset_curve(series, 1, quad_segs: 100_000)
+      end
+
+      assert_raise ArgumentError, ~r/mitre_limit/, fn ->
+        GeoSeries.offset_curve(series, 1, mitre_limit: 0)
+      end
+
+      assert_raise ArgumentError, ~r/distance/, fn -> GeoSeries.offset_curve(series, "x") end
+
+      assert_raise ArgumentError, ~r/length mismatch/, fn ->
+        GeoSeries.offset_curve(series, [1, 2])
+      end
+
+      assert_raise ArgumentError, fn -> GeoSeries.offset_curve(series, 1, bogus: true) end
+    end
+
+    test "refuses parameters that would build millions of vertices" do
+      coords = Enum.map_join(0..999, ", ", fn i -> "#{i} #{rem(i, 2)}" end)
+      series = s(["LINESTRING (#{coords})"])
+
+      assert_raise ArgumentError, ~r/vertices/, fn ->
+        GeoSeries.offset_curve(series, 0.1, quad_segs: 10_000)
+      end
+    end
+  end
 end

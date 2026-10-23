@@ -15,6 +15,7 @@ mod gpkg_io;
 mod line_merge;
 mod mixed_ops;
 mod noding;
+mod offset_curve;
 mod parity_a;
 mod parity_b;
 mod parity_c;
@@ -45,8 +46,10 @@ pub use gpkg_io::{
     gpkg_info, gpkg_layers, read_gpkg, write_gpkg, GpkgRead, GpkgWriteOptions, LayerInfo,
     LayerSummary,
 };
+pub use offset_curve::{OffsetJoin, OffsetParams, MAX_QUAD_SEGS};
 pub use parity_e::{GridFeature, GridType};
 pub use parity_i::{PrecisionMode, VertexKind, VertexParts};
+pub use parity_j::NO_CLEARANCE;
 pub use parquet_io::{
     geoparquet_metadata, read_geoparquet, read_geoparquet_filtered, write_geoparquet,
     write_geoparquet_with, GeoParquetRead, ParquetOptions,
@@ -72,6 +75,8 @@ mod gpkg_tests;
 mod hardening_tests;
 #[cfg(test)]
 mod io_g1_tests;
+#[cfg(test)]
+mod offset_curve_tests;
 #[cfg(test)]
 mod parity_a_tests;
 #[cfg(test)]
