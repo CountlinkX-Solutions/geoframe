@@ -5,3 +5,10 @@ edition = "2021"
 publish = false
 
 [dependencies]
+geo = "0.33"
+geo-traits = "0.3"
+geoarrow-array = "0.9"
+geoarrow-expr-geo = "0.9"
+geoarrow-schema = "0.9"
+wkb = "0.9"
+wkt = "0.14"
