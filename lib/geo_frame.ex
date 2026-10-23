@@ -40,6 +40,12 @@ defmodule GeoFrame do
   alias GeoFrame.Native
 
   @doc """
+  Spatial join of two `GeoFrame.GeoDataFrame`s. See `GeoFrame.SpatialJoin`.
+  """
+  @spec sjoin(GeoDataFrame.t(), GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
+  defdelegate sjoin(left, right, opts \\ []), to: GeoFrame.SpatialJoin
+
+  @doc """
   Reads a GeoParquet file into a `GeoFrame.GeoDataFrame`.
 
   The primary geometry column named in the file's `geo` metadata becomes the geometry;

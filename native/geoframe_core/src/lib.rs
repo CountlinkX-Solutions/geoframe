@@ -5,12 +5,14 @@ mod column;
 mod parquet_io;
 mod predicates;
 mod set_ops;
+mod sindex;
 mod unary;
 
 pub use column::GeoColumn;
 pub use parquet_io::{read_geoparquet, write_geoparquet, GeoParquetRead};
 pub use predicates::Predicate;
 pub use set_ops::SetOp;
+pub use sindex::QueryPredicate;
 pub use unary::{BufferOptions, Origin, UnaryOp};
 
 #[cfg(test)]
@@ -19,6 +21,8 @@ mod parquet_tests;
 mod predicates_tests;
 #[cfg(test)]
 mod set_ops_tests;
+#[cfg(test)]
+mod sindex_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -125,10 +125,27 @@ pub(crate) fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
     catch_unwind(AssertUnwindSafe(f)).ok()
 }
 
+/// One pair evaluated as `a.predicate(b)`; `None` when `geo` panics on degenerate input.
+pub(crate) fn pair_predicate(
+    a: &Geometry<f64>,
+    b: &Geometry<f64>,
+    predicate: Predicate,
+) -> Option<bool> {
+    if predicate == Predicate::Intersects {
+        return guarded(|| a.intersects(b));
+    }
+    guarded(|| {
+        De9im {
+            matrix: a.relate(b),
+            transposed: false,
+        }
+        .eval(predicate)
+    })
+}
+
 impl GeoColumn {
-    /// Resolves the CRS and length rules shared by every binary operation. Returns whether
-    /// `other` broadcasts (length 1 against a column of a different length).
-    fn check_pairing(&self, other: &GeoColumn) -> Result<bool, String> {
+    /// Rejects two columns whose CRS are both set and different.
+    pub(crate) fn check_crs(&self, other: &GeoColumn) -> Result<(), String> {
         if let (Some(a), Some(b)) = (self.crs(), other.crs()) {
             if a != b {
                 return Err(format!(
@@ -136,6 +153,13 @@ impl GeoColumn {
                 ));
             }
         }
+        Ok(())
+    }
+
+    /// Resolves the CRS and length rules shared by every binary operation. Returns whether
+    /// `other` broadcasts (length 1 against a column of a different length).
+    fn check_pairing(&self, other: &GeoColumn) -> Result<bool, String> {
+        self.check_crs(other)?;
         if self.len() == other.len() {
             Ok(false)
         } else if other.len() == 1 {
