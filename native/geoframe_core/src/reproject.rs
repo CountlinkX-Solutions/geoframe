@@ -97,6 +97,25 @@ pub fn normalize_crs(input: &str) -> Result<String, String> {
     resolve(input).map(|r| r.label)
 }
 
+/// Whether two CRS labels name the same CRS for compatibility checks. Labels are compared
+/// after resolution, so case differences (`epsg:4326`) do not matter and `OGC:CRS84` equals
+/// `EPSG:4326` (GeoFrame always uses x = longitude, y = latitude). Labels that cannot be
+/// resolved fall back to a case-insensitive comparison of the trimmed text. Stored labels are
+/// never rewritten.
+pub fn crs_equivalent(a: &str, b: &str) -> bool {
+    let canonical = |label: String| {
+        if label == "OGC:CRS84" {
+            "EPSG:4326".to_string()
+        } else {
+            label
+        }
+    };
+    match (normalize_crs(a), normalize_crs(b)) {
+        (Ok(a), Ok(b)) => canonical(a) == canonical(b),
+        _ => a.trim().eq_ignore_ascii_case(b.trim()),
+    }
+}
+
 /// Whether `input` names a geographic (lon/lat) CRS; `None` when it cannot be resolved.
 pub fn crs_is_geographic(input: &str) -> Option<bool> {
     resolve(input).ok().map(|r| r.proj.is_latlong())

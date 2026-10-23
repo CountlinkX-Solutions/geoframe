@@ -187,7 +187,7 @@ impl GeoColumn {
     /// Rejects two columns whose CRS are both set and different.
     pub(crate) fn check_crs(&self, other: &GeoColumn) -> Result<(), String> {
         if let (Some(a), Some(b)) = (self.crs(), other.crs()) {
-            if a != b {
+            if !crate::crs_equivalent(&a, &b) {
                 return Err(format!(
                     "CRS mismatch: left is {a}, right is {b}; reproject one side first"
                 ));

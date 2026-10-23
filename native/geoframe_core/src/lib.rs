@@ -3,6 +3,7 @@
 
 mod affine;
 mod arrow_io;
+mod atomic;
 mod attributes;
 pub(crate) mod column;
 mod ewkb;
@@ -40,7 +41,7 @@ pub use parquet_io::{
     GeoParquetRead, ParquetOptions,
 };
 pub use predicates::Predicate;
-pub use reproject::{crs_is_geographic, normalize_crs};
+pub use reproject::{crs_equivalent, crs_is_geographic, normalize_crs};
 pub use set_ops::SetOp;
 pub use sindex::{NearestPairs, QueryPredicate};
 pub use unary::{BufferOptions, Origin, UnaryOp};
@@ -53,6 +54,8 @@ mod ewkb_tests;
 mod flatgeobuf_tests;
 #[cfg(test)]
 mod geojson_tests;
+#[cfg(test)]
+mod hardening_tests;
 #[cfg(test)]
 mod io_g1_tests;
 #[cfg(test)]

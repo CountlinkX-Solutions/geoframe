@@ -9,12 +9,20 @@ const FLAG_M: u32 = 0x4000_0000;
 const FLAG_SRID: u32 = 0x2000_0000;
 const TYPE_MASK: u32 = 0x0FFF_FFFF;
 
+/// Maximum collection nesting accepted when rewriting (the `wkb` 0.9.3 reader enforces its own
+/// `MAX_WKB_NESTING_DEPTH` of 128; ours is stricter so the recursive rewrite cannot overflow the
+/// stack first).
+pub const MAX_NESTING_DEPTH: usize = 64;
+
+/// Error text produced when [`MAX_NESTING_DEPTH`] is exceeded; callers treat it as fatal.
+pub const NESTING_ERROR: &str = "WKB nesting too deep";
+
 /// Rewrites EWKB (or ISO WKB, which passes through unchanged) to ISO WKB and returns the SRID
 /// when the top-level geometry carries one.
 pub fn ewkb_to_iso(bytes: &[u8]) -> Result<(Vec<u8>, Option<i32>), String> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut pos = 0;
-    let srid = rewrite(bytes, &mut pos, &mut out, Target::Iso, true, None)?;
+    let srid = rewrite(bytes, &mut pos, &mut out, Target::Iso, true, None, 0)?;
     Ok((out, srid))
 }
 
@@ -22,7 +30,7 @@ pub fn ewkb_to_iso(bytes: &[u8]) -> Result<(Vec<u8>, Option<i32>), String> {
 pub fn wkb_to_ewkb(bytes: &[u8], srid: i32) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(bytes.len() + 4);
     let mut pos = 0;
-    rewrite(bytes, &mut pos, &mut out, Target::Ewkb, true, Some(srid))?;
+    rewrite(bytes, &mut pos, &mut out, Target::Ewkb, true, Some(srid), 0)?;
     Ok(out)
 }
 
@@ -66,7 +74,11 @@ fn rewrite(
     target: Target,
     top: bool,
     srid_out: Option<i32>,
+    depth: usize,
 ) -> Result<Option<i32>, String> {
+    if depth > MAX_NESTING_DEPTH {
+        return Err(NESTING_ERROR.to_string());
+    }
     let order = take(bytes, pos, 1)?[0];
     let little = match order {
         0 => false,
@@ -133,7 +145,7 @@ fn rewrite(
         }
         4..=7 => {
             for _ in 0..count(pos, out)? {
-                rewrite(bytes, pos, out, target, false, None)?;
+                rewrite(bytes, pos, out, target, false, None, depth + 1)?;
             }
         }
         other => return Err(format!("unsupported WKB geometry type {other}")),

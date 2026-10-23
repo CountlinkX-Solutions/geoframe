@@ -677,8 +677,7 @@ pub fn write_feather(
             .try_with_compression(Some(CompressionType::ZSTD))
             .map_err(|e| e.to_string())?,
     };
-    let result = (|| -> Result<(), String> {
-        let file = File::create(path).map_err(|e| format!("cannot create {path}: {e}"))?;
+    crate::atomic::write_atomic(path, |file| {
         let mut writer = FileWriter::try_new_with_options(file, &batch.schema(), write_options)
             .map_err(|e| format!("cannot write {path}: {e}"))?;
         writer
@@ -687,11 +686,7 @@ pub fn write_feather(
         writer
             .finish()
             .map_err(|e| format!("cannot write {path}: {e}"))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(path);
-    }
-    result
+    })
 }
 
 /// Reads a Feather v2 file written by GeoFrame or GeoPandas `to_feather`.
