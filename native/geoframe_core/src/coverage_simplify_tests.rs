@@ -312,3 +312,15 @@ fn work_is_capped() {
         .simplify_coverage_capped(1.0, true, 1_000, 1_000)
         .is_ok());
 }
+
+#[test]
+fn a_collapsed_ring_is_left_as_it_is() {
+    // GEOS drops the repeated vertex but does not simplify a ring of three coordinates.
+    let out = some(&["POLYGON ((0.625 2.53, 0.625 2.53, 0.62 2.535, 0.625 2.53))"])
+        .simplify_coverage(3.0, true)
+        .unwrap();
+    assert_eq!(
+        text(&out),
+        canon_all(&["POLYGON ((0.625 2.53, 0.62 2.535, 0.625 2.53))"])
+    );
+}

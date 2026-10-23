@@ -71,7 +71,8 @@ fn seg_key(a: C, b: C) -> SegKey {
     }
 }
 
-/// A ring (closed, no repeated points, at least four coordinates); `None` when it is degenerate.
+/// A ring (closed, no repeated points; three coordinates are enough, GEOS lets a collapsed
+/// ring through); `None` when it is degenerate.
 fn clean_ring(ring: &LineString<f64>) -> Option<Vec<C>> {
     let mut pts: Vec<C> = Vec::with_capacity(ring.0.len());
     for &c in &ring.0 {
@@ -82,7 +83,7 @@ fn clean_ring(ring: &LineString<f64>) -> Option<Vec<C>> {
     if pts.len() >= 2 && pts.first() != pts.last() {
         pts.push(pts[0]);
     }
-    (pts.len() >= 4).then_some(pts)
+    (pts.len() >= 3).then_some(pts)
 }
 
 /// The rings of a polygon: `Some(vec![])` for an empty polygon, `None` when a ring is degenerate.
@@ -245,6 +246,8 @@ struct Line {
     ring: bool,
     /// A free ring may lose any vertex; the ends of every other line stay.
     free: bool,
+    /// A collapsed free ring (under four coordinates) is left as it is.
+    frozen: bool,
 }
 
 impl Line {
@@ -277,11 +280,14 @@ impl Line {
             size: n,
             ring,
             free: ring && free,
+            frozen: free && !ring && pts.len() < 4,
         }
     }
 
     fn min_size(&self) -> usize {
-        if self.ring {
+        if self.frozen {
+            usize::MAX
+        } else if self.ring {
             3
         } else {
             2
