@@ -57,6 +57,21 @@ fn to_wkb<'a>(env: Env<'a>, column: Handle) -> Result<Vec<Option<Binary<'a>>>, S
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn to_ewkb<'a>(env: Env<'a>, column: Handle, srid: i32) -> Result<Vec<Option<Binary<'a>>>, String> {
+    let rows = column.0.to_ewkb(srid)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            row.map(|bytes| {
+                let mut owned = OwnedBinary::new(bytes.len());
+                owned.as_mut_slice().copy_from_slice(&bytes);
+                Binary::from_owned(owned, env)
+            })
+        })
+        .collect())
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn to_geojson(column: Handle) -> Vec<Option<String>> {
     column.0.to_geojson()
 }

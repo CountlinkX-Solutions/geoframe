@@ -116,6 +116,83 @@ defmodule GeoFrame do
   defdelegate overlay(df1, df2, opts \\ []), to: GeoFrame.Overlay
 
   @doc """
+  Runs a SQL query on a Postgrex connection and returns the result as a
+  `GeoFrame.GeoDataFrame` (GeoPandas `read_postgis`).
+
+  `conn` is a `Postgrex` connection (pid or registered name). The optional `:postgrex`
+  dependency must be present; start the connection with `types: GeoFrame.Postgrex.Types` so
+  `geometry` columns decode to raw EWKB:
+
+      {:ok, conn} = Postgrex.start_link(hostname: "localhost", database: "gis", types: GeoFrame.Postgrex.Types)
+      {:ok, gdf} = GeoFrame.read_postgis(conn, "SELECT id, name, geom FROM places WHERE id > $1", params: [10])
+
+  Without that types module, select the geometry as `ST_AsEWKB(geom) AS geom` (bytea) or as
+  hex text; both are detected automatically.
+
+  Options:
+
+    * `:geom_col` - the geometry column of the result (default `"geom"`, as in GeoPandas).
+    * `:crs` - overrides the CRS. Otherwise the EWKB SRID becomes `"EPSG:<srid>"` (SRID 0 or
+      none gives `nil`); rows with different SRIDs are an error without an override.
+    * `:params` - query parameters (default `[]`).
+
+  Postgres types map to Explorer dtypes: integers to `{:s, 64}`, floats and `numeric` to
+  `{:f, 64}`, `text` to `:string`, `boolean`, `date`, `timestamp` to `{:naive_datetime,
+  :microsecond}`, `timestamptz` to `{:datetime, :microsecond, "Etc/UTC"}`, `json`/`jsonb` to
+  JSON text, `bytea` to `:binary`. Nulls stay null. Returns `{:error, message}` on a query or
+  decoding failure.
+  """
+  @spec read_postgis(term(), String.t(), keyword()) ::
+          {:ok, GeoDataFrame.t()} | {:error, String.t()}
+  def read_postgis(conn, sql, opts \\ []), do: GeoFrame.PostGIS.read(conn, sql, opts)
+
+  @doc "Like `read_postgis/3` but raises `ArgumentError` on failure."
+  @spec read_postgis!(term(), String.t(), keyword()) :: GeoDataFrame.t()
+  def read_postgis!(conn, sql, opts \\ []) do
+    case read_postgis(conn, sql, opts) do
+      {:ok, gdf} -> gdf
+      {:error, message} -> raise ArgumentError, message
+    end
+  end
+
+  @doc """
+  Writes a `GeoFrame.GeoDataFrame` to a PostGIS table (GeoPandas `to_postgis`).
+
+  The table gets one typed column per attribute plus the geometry column
+  (`geometry(<Type>, <srid>)`, or `geometry(Geometry, <srid>)` for mixed types), named after
+  the frame's `geometry_column`. The SRID comes from an `"EPSG:<code>"` CRS (`OGC:CRS84` is
+  4326, no CRS is 0); other CRS strings raise. Geometry is sent as EWKB parameters, in batches,
+  inside one transaction: a failure rolls everything back. Identifiers are always quoted and
+  values are always bind parameters. The PostGIS extension must already be installed.
+
+  Options:
+
+    * `:if_exists` - `:fail` (default), `:replace` (drop and recreate) or `:append`. Appending
+      to a missing table creates it.
+    * `:schema` - the schema (default: the connection's search path).
+    * `:index` - must be `false` (there is no index to write).
+    * `:dtype` - a map of column name to SQL type (for example `%{"id" => "integer"}`), only
+      plain type names are accepted.
+    * `:spatial_index` - `true` creates a GiST index on the geometry column (off by default,
+      like GeoPandas).
+    * `:chunksize` - rows per `INSERT` (default 1000, capped by the 65 535 parameter limit).
+
+  Returns `:ok` or `{:error, message}`; invalid options raise `ArgumentError`.
+  """
+  @spec to_postgis(GeoDataFrame.t(), term(), String.t(), keyword()) :: :ok | {:error, String.t()}
+  def to_postgis(%GeoDataFrame{} = gdf, conn, table, opts \\ []),
+    do: GeoFrame.PostGIS.write(gdf, conn, table, opts)
+
+  @doc "Like `to_postgis/4` but raises `ArgumentError` on failure."
+  @spec to_postgis!(GeoDataFrame.t(), term(), String.t(), keyword()) :: :ok
+  def to_postgis!(%GeoDataFrame{} = gdf, conn, table, opts \\ []) do
+    case to_postgis(gdf, conn, table, opts) do
+      :ok -> :ok
+      {:error, message} -> raise ArgumentError, message
+    end
+  end
+
+  @doc """
   Reads a GeoParquet file into a `GeoFrame.GeoDataFrame`.
 
   The primary geometry column named in the file's `geo` metadata becomes the geometry;

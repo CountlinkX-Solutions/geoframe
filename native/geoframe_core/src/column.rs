@@ -167,19 +167,47 @@ impl GeoColumn {
         Self::from_geometries(&parsed, crs)
     }
 
-    /// Parses WKB rows; `None` rows become null geometries.
+    /// Parses WKB rows; `None` rows become null geometries. EWKB is accepted (SRID and Z/M
+    /// flags). Without an explicit `crs`, an embedded SRID becomes `"EPSG:<srid>"`; rows with
+    /// different SRIDs are rejected unless `crs` is given. SRID 0 means unknown.
     pub fn from_wkb<B: AsRef<[u8]>>(rows: &[Option<B>], crs: Option<&str>) -> Result<Self, String> {
-        let parsed = rows
+        let mut srid: Option<i32> = None;
+        let mut converted: Vec<Option<Vec<u8>>> = Vec::with_capacity(rows.len());
+        for (i, row) in rows.iter().enumerate() {
+            let Some(bytes) = row else {
+                converted.push(None);
+                continue;
+            };
+            // A rewrite failure falls through so the reader reports the problem.
+            match crate::ewkb::ewkb_to_iso(bytes.as_ref()) {
+                Ok((iso, row_srid)) => {
+                    if let Some(s) = row_srid.filter(|&s| s > 0) {
+                        match srid {
+                            Some(prev) if prev != s && crs.is_none() => {
+                                return Err(format!(
+                                    "mixed SRIDs in EWKB input ({prev} and {s} at row {i}); pass a crs to override"
+                                ))
+                            }
+                            _ => srid = Some(s),
+                        }
+                    }
+                    converted.push(Some(iso));
+                }
+                Err(_) => converted.push(Some(bytes.as_ref().to_vec())),
+            }
+        }
+        let parsed = converted
             .iter()
             .enumerate()
             .map(|(i, row)| match row {
                 None => Ok(None),
-                Some(bytes) => wkb::reader::read_wkb(bytes.as_ref())
+                Some(bytes) => wkb::reader::read_wkb(bytes)
                     .map(Some)
                     .map_err(|e| format!("invalid WKB at row {i}: {e}")),
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Self::from_geometries(&parsed, crs)
+        let inferred = srid.map(|s| format!("EPSG:{s}"));
+        Self::from_geometries(&parsed, crs.or(inferred.as_deref()))
     }
 
     /// The underlying GeoArrow array.
@@ -282,6 +310,14 @@ impl GeoColumn {
             .iter()
             .map(|row| row.map(<[u8]>::to_vec))
             .collect())
+    }
+
+    /// Like [`to_wkb`](Self::to_wkb) but PostGIS EWKB carrying `srid`.
+    pub fn to_ewkb(&self, srid: i32) -> Result<Vec<Option<Vec<u8>>>, String> {
+        self.to_wkb()?
+            .into_iter()
+            .map(|row| row.map(|b| crate::ewkb::wkb_to_ewkb(&b, srid)).transpose())
+            .collect()
     }
 
     /// GeoJSON geometry objects as JSON text, one per row; `None` for null rows and rows `geo`

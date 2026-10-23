@@ -179,6 +179,16 @@ defmodule GeoFrame.GeoDataFrame do
     end
   end
 
+  # -- PostGIS --------------------------------------------------------------------------
+
+  @doc "GeoPandas `GeoDataFrame.from_postgis`: alias of `GeoFrame.read_postgis/3`."
+  @spec from_postgis(term(), String.t(), keyword()) :: {:ok, t()} | {:error, String.t()}
+  defdelegate from_postgis(conn, sql, opts \\ []), to: GeoFrame, as: :read_postgis
+
+  @doc "GeoPandas `GeoDataFrame.to_postgis`: alias of `GeoFrame.to_postgis/4`."
+  @spec to_postgis(t(), term(), String.t(), keyword()) :: :ok | {:error, String.t()}
+  defdelegate to_postgis(gdf, conn, table, opts \\ []), to: GeoFrame
+
   # -- Arrow interchange ----------------------------------------------------------------
 
   @doc """

@@ -65,12 +65,12 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
 | `GeoSeries.from_wkt` | `from_wkt` yes | `from_wkt/2`, `from_wkt!/2` | ✅ | |
-| `GeoSeries.from_wkb` | `from_wkb` yes | `from_wkb/2`, `from_wkb!/2` | ✅ | |
+| `GeoSeries.from_wkb` | `from_wkb` yes | `from_wkb/2`, `from_wkb!/2` | ✅ | accepts PostGIS EWKB; the SRID becomes `"EPSG:<srid>"` unless `crs:` is given; mixed SRIDs are an error |
 | `GeoSeries.from_xy` / `points_from_xy` | `point`, `line_string`, `multi_point`, `polygon`... constructors from columns yes | `from_xy/3`, `GeoFrame.points_from_xy/3` | ✅ | lists or Explorer series; nil/NaN -> null point; `crs:`; `z:` validated then dropped (2D storage) |
 | `GeoSeries.from_file` | — | `GeoFrame.read_file` (GDF only) | 🟡 | series-only variant missing; trivial wrapper |
 | `GeoSeries.from_arrow` | — (geoarrow native) | `from_arrow/2`, `from_arrow!/2` | ✅ | Arrow IPC stream binary (no C Data Interface on the BEAM); WKB, WKT, native GeoArrow (interleaved or separated); `geometry:`, `crs:` (only when the data has none) |
 | `GeoSeries.to_wkt` | `to_wkt` yes | `to_wkt/1` | ✅ | |
-| `GeoSeries.to_wkb` (hex option) | `to_wkb` yes | `to_wkb/2` | ✅ | `hex: true` gives upper-case hex strings |
+| `GeoSeries.to_wkb` (hex option) | `to_wkb` yes | `to_wkb/2` | ✅ | `hex: true` gives upper-case hex strings; `srid: n \| true` emits EWKB |
 | `GeoSeries.to_json` | — | `to_geojson/1` | 🟡 | returns list of decoded maps, not a FeatureCollection string |
 | `GeoSeries.to_arrow` | — | `to_arrow/2` | ✅ | IPC stream binary with `ARROW:extension:name`/`metadata` (CRS as PROJJSON); `geometry_encoding: :wkb \| :geoarrow`; native needs one geometry kind (X and MultiX mix as MultiX) |
 | `GeoSeries.to_file` | — | — | ❌ | trivial wrapper over write_file (needs a GDF) |
@@ -269,7 +269,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `GeoDataFrame(...)` | DataFrame + geometry column | `GeoDataFrame.new/3` | ✅ | |
 | `from_features` | — | `GeoDataFrame.from_features/2` | 🟡 | list or FeatureCollection; `crs:`, `columns:`; GeoJSON inference; property columns sorted by name (Elixir maps) |
 | `from_arrow` / `to_arrow` | geoarrow native | `GeoDataFrame.from_arrow/2`, `to_arrow/2` | ✅ | see §1; interchange verified against GeoPandas 1.2 / pyarrow 26 both ways |
-| `from_postgis` / `to_postgis` / `read_postgis` | roadmap | — | ❌ | needs Postgrex + WKB; Elixir-side, medium |
+| `from_postgis` / `to_postgis` / `read_postgis` | roadmap | `GeoFrame.read_postgis/3`, `to_postgis/4` (+ `!`), `GeoDataFrame.from_postgis/3`, `to_postgis/4` | ✅ | optional Postgrex; EWKB with SRID; see Batch G2; verified against GeoPandas 1.2 both ways |
 | `to_geo_dict` | — | `to_geojson/1` | 🟡 | features list; no `na`, `show_bbox`, `drop_id` |
 | `iterfeatures` | — | — | ⛔ | Python generator |
 | `to_json` | — | `write_geojson` | 🟡 | file only; no string-returning variant |
@@ -296,7 +296,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | FlatGeobuf read/write | no | `read_flatgeobuf` (bbox), `write_flatgeobuf` | ✅ | |
 | `read_file_info`, `list_layers` | no | — | ❌ | only meaningful with multi-layer drivers (GPKG) |
 | Shapefile / GeoPackage / OGR | roadmap "GDAL vector files" | — | ❌ | either pure-Rust (`shapefile`, `rusqlite`+gpkg) or GDAL binding; large; decide |
-| `read_postgis` / `to_postgis` | roadmap | — | ❌ | see §12 |
+| `read_postgis` / `to_postgis` | roadmap | `GeoFrame.read_postgis/3`, `to_postgis/4` | ✅ | see §12 |
 | GeoSeries `to_arrow` / `from_arrow` | yes | `GeoSeries.to_arrow/2`, `from_arrow/2` | ✅ | see §1 |
 
 ## 14. Tools
@@ -397,6 +397,7 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 
 ## Batch G - I/O breadth (high value for adoption, hard)
 - G1 status: done (issue #48). Arrow/Feather IO, GeoParquet write options and `bbox:` reads. Design and deviations: the geometry stays in Rust and tables move as Arrow IPC bytes (no C Data Interface on the BEAM); native `geoarrow` encoding needs one geometry kind like GeoPandas (single/multi mix is promoted to multi by this crate, because geoarrow-array 0.9 mishandles validity when a single geometry is pushed into a multi builder); the `geoparquet` 0.9 reader asserts one geometry type for native columns, so the type list is normalised from the encoding before reading (GeoPandas lists `["Polygon", "MultiPolygon"]`); a read panic is returned as an error. `EPSG:3857`, `EPSG:4269` and WGS 84 UTM zones are written as complete PROJJSON, because pyproj rejects identifier-only stubs. Not done: `geoparquet_metadata`, `index`/`partition_cols`, Feather `schema_version`, geometry column order (still last).
+- G2 status: done (issue #51). `read_postgis`/`to_postgis`, EWKB in `GeoSeries.from_wkb`/`to_wkb(srid:)` (Rust: SRID and Z/M flags are rewritten to and from ISO WKB). `postgrex` is an optional dependency; `GeoFrame.Postgrex.Extension` / `GeoFrame.Postgrex.Types` decode a `geometry` column to its raw EWKB binary (text transfer format, because the binary `geometry_send` drops the SRID); bytea and hex text are detected without the extension. Writes are one transaction, EWKB bind parameters via `ST_GeomFromEWKB`, quoted identifiers, `if_exists` fail/replace/append, optional GiST index (`spatial_index: true`, off like GeoPandas). Deviations: mixed geometry types map to `geometry(Geometry, srid)` (single/multi are not promoted); `index:` must be `false` (no index); EWKB Z/M flags are parsed on read, but Z/M behaviour beyond that (and writing Z geometries to a 2D-typed column) is untested and belongs to batch I; `geography` columns are not handled; `chunksize` defaults to 1000 rows. Tests tagged `:postgis` run when `GEOFRAME_POSTGIS_URL` is set (CI service container); `scripts/crosscheck_postgis.sh` (dev-only) round-trips tables with GeoPandas 1.2 in both directions.
 - Members: `read_feather`/`to_feather`, `from_arrow`/`to_arrow`, GeoParquet write options (compression, `with_covering`; `geoparquet_metadata` not yet), `read_postgis`/`to_postgis`, Shapefile and GeoPackage via `read_file`/`write_file`, `list_layers`, `read_file_info`, string `to_json`.
 - Crates: `geoarrow-array`, `arrow-ipc`, `geoparquet`, `postgrex` (Elixir side) or `sqlx`, pure-Rust `shapefile`, `geozero` (with-shp / with-gpkg features) or GDAL binding.
 - Difficulty: high. Split into G1 (Arrow/Feather + parquet opts), G2 (PostGIS), G3 (Shapefile/GPKG).
@@ -415,4 +416,4 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 `plot` (use Kino map), `geocode`/`reverse_geocode`, pandas index alignment (`align=`), `iterfeatures`, Shapely object constructors, persistent `sindex` object, arbitrary-callback `transform`, deprecated `unary_union`.
 
 ---
-Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 131, '🟡': 29, '❌': 26, '⛔': 15}
+Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 133, '🟡': 29, '❌': 24, '⛔': 15}

@@ -5,6 +5,7 @@ mod affine;
 mod arrow_io;
 mod attributes;
 pub(crate) mod column;
+mod ewkb;
 mod flatgeobuf_io;
 mod geojson_io;
 mod line_merge;
@@ -30,6 +31,7 @@ pub use arrow_io::{
 };
 pub use attributes::VectorRead;
 pub use column::GeoColumn;
+pub use ewkb::{ewkb_to_iso, wkb_to_ewkb};
 pub use flatgeobuf_io::{read_flatgeobuf, write_flatgeobuf};
 pub use geojson_io::{read_geojson, read_geojson_str, write_geojson};
 pub use parity_e::{GridFeature, GridType};
@@ -45,6 +47,8 @@ pub use unary::{BufferOptions, Origin, UnaryOp};
 
 #[cfg(test)]
 mod affine_tests;
+#[cfg(test)]
+mod ewkb_tests;
 #[cfg(test)]
 mod flatgeobuf_tests;
 #[cfg(test)]
