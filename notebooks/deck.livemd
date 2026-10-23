@@ -55,3 +55,32 @@ GeoFrame.Kino.deck(frame,
   tooltip: [:zone, :size]
 )
 ```
+
+## Smart Cells
+
+With `geoframe` installed, Livebook's **Smart** menu offers two cells that write the code for
+you:
+
+* **Read spatial file** reads a file with `GeoFrame.read_file!/2`. Choose the path, the driver
+  (or leave it on `auto`), a GeoPackage layer, an optional bounding box and target CRS, and
+  tick **Show map** to end the cell with `GeoFrame.Kino.deck/2`.
+* **Spatial join** lists the `GeoDataFrame` variables of the notebook (evaluate the cell that
+  creates them first) and generates `GeoFrame.sjoin/3` or `GeoFrame.sjoin_nearest/3`.
+
+The cells generate plain Elixir, which **Convert to Code cell** keeps. This is what they write
+for the neighborhoods file, joined with its nearest other neighborhood; it also runs headlessly:
+
+```elixir
+path = Path.join([__DIR__, "..", "test", "fixtures", "neighborhoods.parquet"]) |> Path.expand()
+
+neighborhoods = GeoFrame.read_file!(path)
+neighborhoods = GeoFrame.GeoDataFrame.to_crs(neighborhoods, 3857)
+joined =
+  GeoFrame.sjoin_nearest(neighborhoods, neighborhoods,
+    how: :left,
+    exclusive: true,
+    distance_col: "dist"
+  )
+
+GeoFrame.Kino.deck(joined, tooltip: [:name_left, :name_right, :dist])
+```
