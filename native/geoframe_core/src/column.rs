@@ -75,7 +75,7 @@ impl ColumnBuilder {
         &mut self,
         geometry: Option<&impl geo_traits::GeometryTrait<T = f64>>,
     ) -> Result<(), String> {
-        self.0.push_geometry(geometry).map_err(|e| e.to_string())
+        push_guarded(&mut self.0, geometry)
     }
 
     pub fn finish(self) -> GeoColumn {
@@ -83,6 +83,22 @@ impl ColumnBuilder {
             array: self.0.finish(),
         }
     }
+}
+
+/// Pushes one parsed geometry. The GeoArrow builder panics (instead of returning an error) on
+/// a collection whose members have different dimensions, so a panic is reported as such; the
+/// builder is dropped by the caller on error.
+fn push_guarded(
+    builder: &mut GeometryBuilder,
+    geometry: Option<&impl geo_traits::GeometryTrait<T = f64>>,
+) -> Result<(), String> {
+    catch_unwind(AssertUnwindSafe(|| builder.push_geometry(geometry)))
+        .map_err(|_| {
+            "unsupported geometry: a collection cannot mix dimensions (XY, XYZ, XYM, XYZM) \
+             among its members"
+                .to_string()
+        })?
+        .map_err(|e| e.to_string())
 }
 
 /// Maximum parenthesis nesting accepted in WKT; `wkt` parses recursively without a limit.
@@ -112,10 +128,8 @@ impl GeoColumn {
         crs: Option<&str>,
     ) -> Result<Self, String> {
         let mut builder = GeometryBuilder::new(GeometryType::new(metadata_for(crs)));
-        for geom in geoms {
-            builder
-                .push_geometry(geom.as_ref())
-                .map_err(|e| e.to_string())?;
+        for (i, geom) in geoms.iter().enumerate() {
+            push_guarded(&mut builder, geom.as_ref()).map_err(|e| format!("row {i}: {e}"))?;
         }
         Ok(Self {
             array: builder.finish(),
@@ -239,6 +253,16 @@ impl GeoColumn {
             .collect::<Result<Vec<_>, String>>()?;
         let inferred = srid.map(|s| format!("EPSG:{s}"));
         Self::from_geometries(&parsed, crs.or(inferred.as_deref()))
+    }
+
+    /// The GeoArrow extension type (CRS metadata included) new arrays are built with.
+    pub(crate) fn array_type(&self) -> GeometryType {
+        self.array.extension_type().clone()
+    }
+
+    /// Wraps a freshly built array, which must carry this column's extension type.
+    pub(crate) fn with_array(&self, array: GeometryArray) -> Self {
+        Self { array }
     }
 
     /// The underlying GeoArrow array.

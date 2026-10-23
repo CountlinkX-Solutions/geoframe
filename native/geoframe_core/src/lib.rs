@@ -35,6 +35,7 @@ mod set_ops;
 mod shapefile_io;
 mod sindex;
 mod unary;
+mod zm;
 
 pub use arrow_io::{
     from_arrow_ipc, read_feather, to_arrow_ipc, write_feather, FeatherCompression,
@@ -121,3 +122,5 @@ mod test_support;
 mod tests;
 #[cfg(test)]
 mod unary_tests;
+#[cfg(test)]
+mod zm_tests;

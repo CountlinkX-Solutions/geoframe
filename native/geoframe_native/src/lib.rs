@@ -355,6 +355,36 @@ fn y(column: Handle) -> Vec<Option<f64>> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn has_z(column: Handle) -> Vec<bool> {
+    column.0.has_z()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn has_m(column: Handle) -> Vec<bool> {
+    column.0.has_m()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn get_z(column: Handle) -> Vec<Option<f64>> {
+    column.0.z()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn get_m(column: Handle) -> Vec<Option<f64>> {
+    column.0.m()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn force_2d(column: Handle) -> Result<Handle, String> {
+    column.0.force_2d().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn force_3d(column: Handle, z: Vec<Option<f64>>) -> Result<Handle, String> {
+    column.0.force_3d(&z).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn geom_type(column: Handle) -> Vec<Option<String>> {
     column.0.geom_type()
 }
