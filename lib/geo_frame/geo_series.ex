@@ -1758,6 +1758,86 @@ defmodule GeoFrame.GeoSeries do
   def y(%__MODULE__{ref: ref}), do: ref |> Native.y() |> float_series()
 
   @doc """
+  Z coordinate of each point as an f64 series (`GeoSeries.z` in GeoPandas, also available as
+  `get_z/1`). Non-point geometries, empty points, points without Z and nulls give `nil`
+  (GeoPandas raises for non-points and gives NaN for 2D points).
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT Z (1 2 3)", "POINT (1 2)", nil])
+      iex> s |> GeoFrame.GeoSeries.z() |> Explorer.Series.to_list()
+      [3.0, nil, nil]
+  """
+  @spec z(t()) :: Series.t()
+  def z(%__MODULE__{ref: ref}), do: ref |> Native.get_z() |> float_series()
+
+  @doc "Alias of `z/1`."
+  @spec get_z(t()) :: Series.t()
+  def get_z(series), do: z(series)
+
+  @doc """
+  M (measure) of each point as an f64 series (`GeoSeries.m` in GeoPandas, also available as
+  `get_m/1`); same rules as `z/1`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT M (1 2 4)", "POINT ZM (1 2 3 5)"])
+      iex> s |> GeoFrame.GeoSeries.m() |> Explorer.Series.to_list()
+      [4.0, 5.0]
+  """
+  @spec m(t()) :: Series.t()
+  def m(%__MODULE__{ref: ref}), do: ref |> Native.get_m() |> float_series()
+
+  @doc "Alias of `m/1`."
+  @spec get_m(t()) :: Series.t()
+  def get_m(series), do: m(series)
+
+  @doc """
+  Whether each geometry has a Z coordinate; `false` for null rows (like Shapely `has_z`).
+  An empty geometry keeps the dimension it was declared with (`POINT Z EMPTY` has Z) and a
+  collection has Z when any member does.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT Z (1 2 3)", "POINT (1 2)", nil])
+      iex> s |> GeoFrame.GeoSeries.has_z() |> Explorer.Series.to_list()
+      [true, false, false]
+  """
+  @spec has_z(t()) :: Series.t()
+  def has_z(%__MODULE__{ref: ref}), do: ref |> Native.has_z() |> Series.from_list(dtype: :boolean)
+
+  @doc """
+  Whether each geometry has an M coordinate; same rules as `has_z/1`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT M (1 2 4)", "POINT Z (1 2 3)"])
+      iex> s |> GeoFrame.GeoSeries.has_m() |> Explorer.Series.to_list()
+      [true, false]
+  """
+  @spec has_m(t()) :: Series.t()
+  def has_m(%__MODULE__{ref: ref}), do: ref |> Native.has_m() |> Series.from_list(dtype: :boolean)
+
+  @doc """
+  Drops the Z and M coordinates of every geometry. The CRS is kept.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT ZM (1 2 3 4)"])
+      iex> s |> GeoFrame.GeoSeries.force_2d() |> GeoFrame.GeoSeries.to_wkt()
+      ["POINT(1 2)"]
+  """
+  @spec force_2d(t()) :: t()
+  def force_2d(%__MODULE__{ref: ref}), do: ref |> Native.force_2d() |> wrap() |> unwrap!()
+
+  @doc """
+  Gives every geometry without Z a Z coordinate (Shapely `force_3d`). `z` is a number
+  (default `0.0`), or a list or `Explorer.Series` with one number per row (`nil` is NaN).
+
+  Like Shapely 2.2, a geometry that already has Z keeps it and loses its M, and a geometry
+  with M but no Z is left unchanged.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1 2)", "POINT Z (1 2 3)"])
+      iex> s |> GeoFrame.GeoSeries.force_3d(9) |> GeoFrame.GeoSeries.to_wkt()
+      ["POINT Z(1 2 9)", "POINT Z(1 2 3)"]
+  """
+  @spec force_3d(t(), param()) :: t()
+  def force_3d(%__MODULE__{ref: ref} = series, z \\ 0.0) do
+    values = param!(z, size(series), "z")
+    ref |> Native.force_3d(values) |> wrap() |> unwrap!()
+  end
+
+  @doc """
   The geometry type name per row, as GeoPandas/Shapely spell it: `"Point"`, `"LineString"`,
   `"Polygon"`, `"MultiPoint"`, `"MultiLineString"`, `"MultiPolygon"` or
   `"GeometryCollection"`; `nil` for null rows.

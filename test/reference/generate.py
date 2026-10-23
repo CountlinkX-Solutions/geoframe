@@ -115,6 +115,42 @@ E_CORPUS = {
 }
 CORPUS.update(E_CORPUS)
 
+# Z/M corpus (Z1): every dimension (Z, M, ZM) for every geometry family, empties that declare a
+# dimension, and collections with mixed members. The `z_` prefix keeps these out of the 2D sets.
+Z_CORPUS = {
+    "z_pt_z": "POINT Z (1 2 3)",
+    "z_pt_m": "POINT M (1 2 4)",
+    "z_pt_zm": "POINT ZM (1 2 3 4)",
+    "z_pt_neg": "POINT Z (-1.5 2.25 -3.125)",
+    "z_pt_zero_z": "POINT Z (5 6 0)",
+    "z_line_z": "LINESTRING Z (0 0 1, 1 1 2, 2 0 3)",
+    "z_line_m": "LINESTRING M (0 0 1, 1 1 2, 2 0 3)",
+    "z_line_zm": "LINESTRING ZM (0 0 1 5, 1 1 2 6, 2 0 3 7)",
+    "z_poly_z": "POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 4 4, 0 0 1))",
+    "z_poly_m": "POLYGON M ((0 0 1, 4 0 2, 4 4 3, 0 4 4, 0 0 1))",
+    "z_poly_zm": "POLYGON ZM ((0 0 1 9, 4 0 2 8, 4 4 3 7, 0 4 4 6, 0 0 1 9))",
+    "z_poly_hole_z": "POLYGON Z ((0 0 1, 10 0 1, 10 10 1, 0 10 1, 0 0 1), (2 2 5, 4 2 5, 4 4 5, 2 4 5, 2 2 5))",
+    "z_mpt_z": "MULTIPOINT Z ((0 0 1), (2 2 3), (5 1 7))",
+    "z_mpt_m": "MULTIPOINT M ((0 0 1), (2 2 3))",
+    "z_mpt_zm": "MULTIPOINT ZM ((0 0 1 2), (2 2 3 4))",
+    "z_mline_z": "MULTILINESTRING Z ((0 0 1, 2 0 2), (5 5 3, 6 6 4))",
+    "z_mline_m": "MULTILINESTRING M ((0 0 1, 2 0 2), (5 5 3, 6 6 4))",
+    "z_mpoly_z": "MULTIPOLYGON Z (((0 0 1, 2 0 1, 2 2 1, 0 0 1)), ((5 5 2, 8 5 2, 8 8 2, 5 5 2)))",
+    "z_mpoly_zm": "MULTIPOLYGON ZM (((0 0 1 2, 2 0 1 2, 2 2 1 2, 0 0 1 2)), ((5 5 2 3, 8 5 2 3, 8 8 2 3, 5 5 2 3)))",
+    "z_coll_z": "GEOMETRYCOLLECTION Z (POINT Z (1 2 3), LINESTRING Z (0 0 1, 1 1 2))",
+    "z_coll_zm": "GEOMETRYCOLLECTION ZM (POINT ZM (1 2 3 4), LINESTRING ZM (0 0 1 2, 1 1 3 4))",
+    "z_coll_one": "GEOMETRYCOLLECTION Z (POINT Z (1 2 3))",
+    "z_coll_mixed": "GEOMETRYCOLLECTION (POINT (1 2), POINT Z (1 2 3))",
+    "z_pt_z_empty": "POINT Z EMPTY",
+    "z_pt_m_empty": "POINT M EMPTY",
+    "z_pt_zm_empty": "POINT ZM EMPTY",
+    "z_line_z_empty": "LINESTRING Z EMPTY",
+    "z_poly_m_empty": "POLYGON M EMPTY",
+    "z_mpt_z_empty": "MULTIPOINT Z EMPTY",
+    "z_coll_z_empty": "GEOMETRYCOLLECTION Z EMPTY",
+}
+CORPUS.update(Z_CORPUS)
+
 
 def geom(cid):
     w = CORPUS[cid]
@@ -231,7 +267,7 @@ def singles(ids):
 NON_EMPTY_2D = [
     k for k, w in CORPUS.items()
     if w is not None and "EMPTY" not in w
-    and not k.startswith(("g_", "e_", "i_", "j_"))
+    and not k.startswith(("g_", "e_", "i_", "j_", "z_"))
 ]
 EMPTIES = ["pt_empty", "line_empty", "poly_empty", "coll_empty", "null"]
 GEO = [k for k in CORPUS if k.startswith("g_")]
@@ -763,6 +799,44 @@ def build_parity_i():
 
 
 # --------------------------------------------------------------------------------------
+# Z1: Z/M dimension support (has_z, has_m, z, m, force_2d, force_3d, WKB/WKT carrying Z and M)
+# --------------------------------------------------------------------------------------
+_ZM_CONTROLS = ["pt1", "line_h", "sq", "mpoly", "coll"]
+
+
+def _iso_hex(g):
+    return None if g is None else shapely.to_wkb(g, hex=True, byte_order=1, flavor="iso")
+
+
+def _norm_wkt(g):
+    """Shapely WKT with the whitespace around brackets and commas removed (GeoFrame prints no
+    space before `(` or after `,`)."""
+    if g is None:
+        return None
+    import re
+    return re.sub(r"\s*([(),])\s*", r"\1", shapely.to_wkt(g, rounding_precision=12, trim=True))
+
+
+def build_zm():
+    w = Writer("zm")
+    z_ids = sorted(Z_CORPUS)
+    w.add_set("all", singles(z_ids + _ZM_CONTROLS + EMPTIES))
+    w.group("has_z", "bool", "all", lambda a, b: a.has_z)
+    w.group("has_m", "bool", "all", lambda a, b: a.has_m)
+    # GeoPandas raises for non-points; the exception becomes a null expectation.
+    w.group("z", "float", "all", lambda a, b: a.z.iloc[0], per_row=True)
+    w.group("m", "float", "all", lambda a, b: a.m.iloc[0], per_row=True)
+    w.group("to_wkb_hex", "string", "all", lambda a, b: [_iso_hex(g) for g in a],
+            label="to_wkb_hex(iso)")
+    w.group("to_wkt_zm", "string", "all", lambda a, b: [_norm_wkt(g) for g in a])
+    w.group("force_2d", "string", "all", lambda a, b: [_iso_hex(g) for g in a.force_2d()])
+    for z in (0.0, 7.5):
+        w.group("force_3d", "string", "all", lambda a, b, z=z: [_iso_hex(g) for g in a.force_3d(z)],
+                label=f"force_3d({z})", args={"z": z})
+    w.dump()
+
+
+# --------------------------------------------------------------------------------------
 # batch I2: offset_curve, snap, shared_paths, minimum_clearance(_line), polygonize, build_area
 # --------------------------------------------------------------------------------------
 DBL_MAX = 1.7976931348623157e308
@@ -1240,6 +1314,7 @@ def main():
     build_parity_i()
     build_parity_j()
     build_parity_k()
+    build_zm()
     build_frames()
     build_overlay()
     corpus = dict(CORPUS)

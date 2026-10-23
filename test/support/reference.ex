@@ -15,7 +15,7 @@ defmodule GeoFrame.Reference do
   alias GeoFrame.SpatialJoin
 
   @fixtures ~w(measures unary_predicates binary_predicates constructive constructive_e set_ops
-               affine linear_referencing crs geodesic io parity_i parity_j)
+               affine linear_referencing crs geodesic io parity_i parity_j zm)
   @dir Path.expand("../reference/fixtures", __DIR__)
   # GEOS' DBL_MAX, which stands for "no clearance" in the fixtures.
   @dbl_max 1.797_693_134_862_315_7e308
@@ -143,7 +143,7 @@ defmodule GeoFrame.Reference do
                 is_valid is_empty is_ring is_closed is_ccw is_valid_reason isna bounds total_bounds
                 area_geodesic length_geodesic centroid convex_hull envelope boundary exterior
                 extract_unique_points reverse representative_point make_valid line_merge interiors
-                is_simple normalize)
+                is_simple normalize has_z has_m z m)
   @binary_ops ~w(distance relate shortest_line intersects contains within touches crosses overlaps
                  disjoint covers covered_by contains_properly geom_equals geom_equals_identical
                  intersection union difference symmetric_difference)
@@ -297,6 +297,16 @@ defmodule GeoFrame.Reference do
   defp apply_param("estimate_utm_crs", _, a, _), do: GeoSeries.estimate_utm_crs(a)
   defp apply_param("to_wkb_hex", _, a, _), do: GeoSeries.to_wkb(a, hex: true)
   defp apply_param("to_wkt_roundtrip", _, a, _), do: a
+
+  defp apply_param("force_2d", _, a, _),
+    do: a |> GeoSeries.force_2d() |> GeoSeries.to_wkb(hex: true)
+
+  defp apply_param("force_3d", args, a, _),
+    do: a |> GeoSeries.force_3d(args["z"]) |> GeoSeries.to_wkb(hex: true)
+
+  defp apply_param("to_wkt_zm", _, a, _) do
+    a |> GeoSeries.to_wkt() |> Enum.map(&(&1 && String.replace(&1, ~r/\s*([(),])\s*/, "\\1")))
+  end
 
   defp apply_param("geojson", _, a, _),
     do: a |> GeoSeries.to_geojson() |> Enum.map(&encode_json/1)
