@@ -34,10 +34,10 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `area` | `area`, `area_planar` yes | `area/1` | ✅ | planar; zero for points/lines (GeoPolars errors unless `allow_non_polygons`) |
-| — | `area_geodesic` yes (PROJ+geographiclib, needs CRS) | — | ❌ | geo `GeodesicArea` trait |
-| `length` | `length` yes (planar/geodesic) | `length/1` | 🟡 | planar only; no geodesic |
-| `distance` | `distance` yes (planar/geodesic) | `distance/2` | 🟡 | planar only; no `align`; no geodesic |
+| `area` | `area`, `area_planar` yes | `area/2` (`method: :planar \| :geodesic`) | ✅ | planar by default; zero for points/lines (GeoPolars errors unless `allow_non_polygons`) |
+| — | `area_geodesic` yes (PROJ+geographiclib, needs CRS) | `area_geodesic/1` | ✅ | m², WGS 84, unsigned (orientation-independent: rings are oriented first because geo returns the ellipsoid complement for clockwise exteriors); projected CRS reprojected to lon/lat; nil CRS raises |
+| `length` | `length` yes (planar/geodesic) | `length/2` (`method:`), `length_geodesic/1` | ✅ | metres on WGS 84; polygon perimeter includes holes |
+| `distance` | `distance` yes (planar/geodesic) | `distance/3` (`method: :planar \| :geodesic \| :haversine`) | 🟡 | no `align`; geodesic/haversine exact for point pairs, approximate otherwise (planar nearest points in lon/lat, then geodesic between them) |
 | `bounds` | `bounds` yes | `bounds/1` (DataFrame minx..maxy) | ✅ | |
 | `total_bounds` | — | `total_bounds/1` | ✅ | |
 | `geom_type` | `dimension_of`/dtype | `geom_type/1` | ✅ | |
@@ -97,7 +97,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | `geom_equals_exact` | no | `geom_equals_exact/3` | ✅ | structure + vertex order, planar tolerance (inclusive) |
 | `geom_equals_identical` | no | `geom_equals_identical/2` | ✅ | exact coordinates, NaN equals NaN |
 | `contains_properly` | no | `contains_properly/2` | ✅ | DE-9IM `T**FF*FF*`; also a `sindex_query`/`sjoin` predicate |
-| `dwithin` | no | `dwithin/2,3` | ✅ | planar |
+| `dwithin` | no | `dwithin/3,4` | ✅ | `method:` as `distance/3`; geodesic limit in metres |
 | `relate` | no | `relate/2` | ✅ | DE-9IM string |
 | `relate_pattern` | no | `relate_pattern/3` | ✅ | validated 9-char pattern (`T F * 0 1 2`, case-insensitive) |
 | `align=` parameter on all binary ops | — | — | ⛔ | pandas index alignment; GeoFrame pairs by position |
@@ -281,7 +281,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| — | `area_geodesic` | — | ❌ | see §2 |
+| — | `area_geodesic` | `area_geodesic/1` | ✅ | see §2 |
 | — | `wrap_longitude` | `wrap_longitude/1` | ✅ | x into [-180, 180); geographic or no CRS; geometries are not split at the antimeridian |
 | — | `skew`, `skew_about_centroid` | `skew/4` (`origin: :centroid`) | ✅ | see §7 |
 | — | `null_out_invalid` | `null_out_invalid/1` | ✅ | see §3 |
@@ -342,6 +342,7 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 - Members: `area_geodesic`, geodesic `length`, geodesic `distance` (a `method:` option), `GeoSeries.dwithin` geodesic variant optional.
 - Crates: `geo::GeodesicArea`, `Geodesic` metric space with `Length`/`Distance` (geographiclib-rs already in the registry), or `Haversine`.
 - Difficulty: medium (CRS gating: require geographic CRS; reproject projected inputs first).
+- Status: done (issue #40). Deviations: WGS 84 only (other geographic datums are measured on WGS 84); nil CRS raises, projected CRS is reprojected to lon/lat; geo's unsigned area returns the ellipsoid complement for clockwise rings, so polygons are oriented first; geodesic distance for non-point pairs is an approximation (planar nearest points in lon/lat, then geodesic distance between them).
 
 ## Batch G - I/O breadth (high value for adoption, hard)
 - Members: `read_feather`/`to_feather`, `from_arrow`/`to_arrow`, GeoParquet write options (compression, `with_covering`, `geoparquet_metadata`), `read_postgis`/`to_postgis`, Shapefile and GeoPackage via `read_file`/`write_file`, `list_layers`, `read_file_info`, string `to_json`.
@@ -362,4 +363,4 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 `plot` (use Kino map), `geocode`/`reverse_geocode`, pandas index alignment (`align=`), `iterfeatures`, Shapely object constructors, persistent `sindex` object, arbitrary-callback `transform`, deprecated `unary_union`.
 
 ---
-Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 99, '🟡': 30, '❌': 55, '⛔': 15}
+Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 102, '🟡': 30, '❌': 53, '⛔': 15}

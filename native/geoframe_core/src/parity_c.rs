@@ -161,7 +161,10 @@ impl GeoColumn {
 /// Nearest points `(on a, on b)`. The minimum distance between two geometries is attained at a
 /// vertex of one of them, so the best vertex-to-other-geometry projection is exact; geometries
 /// that intersect are handled first because crossings need not touch a vertex.
-fn nearest_pair(a: &Geometry<f64>, b: &Geometry<f64>) -> Option<(Point<f64>, Point<f64>)> {
+pub(crate) fn nearest_pair(
+    a: &Geometry<f64>,
+    b: &Geometry<f64>,
+) -> Option<(Point<f64>, Point<f64>)> {
     if a.coords_count() == 0 || b.coords_count() == 0 {
         return None;
     }

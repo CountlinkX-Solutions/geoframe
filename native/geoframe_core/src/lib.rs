@@ -9,6 +9,7 @@ mod geojson_io;
 mod line_merge;
 mod parity_a;
 mod parity_c;
+mod parity_f;
 mod parity_h;
 mod parquet_io;
 mod predicates;
@@ -38,6 +39,8 @@ mod geojson_tests;
 mod parity_a_tests;
 #[cfg(test)]
 mod parity_c_tests;
+#[cfg(test)]
+mod parity_f_tests;
 #[cfg(test)]
 mod parity_h_tests;
 #[cfg(test)]
