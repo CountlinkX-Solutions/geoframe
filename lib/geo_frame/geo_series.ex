@@ -1541,6 +1541,57 @@ defmodule GeoFrame.GeoSeries do
     ref |> Native.build_area(opts[:node] == true) |> wrap() |> unwrap!()
   end
 
+  @doc """
+  Whether the polygons of the whole series form a valid coverage (GeoPandas
+  `is_valid_coverage`, GEOS `CoverageValidator`; a single boolean, not one per row).
+
+  A polygonal coverage is valid when its polygons do not overlap and the edges they share match
+  vertex for vertex. Holes (regions without a polygon) are allowed. Geometries that are not
+  polygons or multipolygons, and null rows, are ignored; an empty series is valid.
+
+  Option `:gap_width` (default `0.0`) also rejects gaps narrower than it: a segment that runs
+  alongside a neighbour's for more than that length, closer than that width, is invalid. A
+  negative width counts as `0.0`. Raises `ArgumentError` when the width is not a finite number,
+  or when the check needs over 50,000,000 segment pairs.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 1 1, 1 0, 0 0))", "POLYGON ((0 0, 1 1, 0 1, 0 0))"])
+      iex> GeoFrame.GeoSeries.is_valid_coverage(s)
+      true
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 1 1, 1 0, 0 0))", "POLYGON ((0 0, 0.5 0.5, 1 1, 0 1, 0 0))"])
+      iex> GeoFrame.GeoSeries.is_valid_coverage(s)
+      false
+  """
+  @spec is_valid_coverage(t(), keyword()) :: boolean()
+  # GeoPandas-compatible name, see is_valid/1.
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+  def is_valid_coverage(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, gap_width: 0.0)
+    ref |> Native.valid_coverage(number!(opts[:gap_width], "gap_width")) |> unwrap!()
+  end
+
+  @doc """
+  The edges that make the coverage invalid, per row (GeoPandas `invalid_coverage_edges`).
+
+  Each row gets the stretches of its polygon's rings that overlap a neighbour, fail to match a
+  neighbour's edge vertex for vertex, or (with `:gap_width`) border a narrow gap: a
+  `LINESTRING`, a `MULTILINESTRING` when there are several, or `LINESTRING EMPTY` when the row
+  is valid (also for rows that are not polygons). Null rows stay null. Options and limits as
+  for `is_valid_coverage/2`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 1 1, 1 0, 0 0))", "POLYGON ((0 0, 0.5 0.5, 1 1, 0 1, 0 0))"])
+      iex> s |> GeoFrame.GeoSeries.invalid_coverage_edges() |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(0 0,1 1)", "LINESTRING(0 0,0.5 0.5,1 1)"]
+  """
+  @spec invalid_coverage_edges(t(), keyword()) :: t()
+  def invalid_coverage_edges(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, gap_width: 0.0)
+
+    ref
+    |> Native.invalid_coverage_edges(number!(opts[:gap_width], "gap_width"))
+    |> wrap()
+    |> unwrap!()
+  end
+
   @max_quad_segs 10_000
 
   @doc """

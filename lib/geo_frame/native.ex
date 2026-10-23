@@ -108,6 +108,8 @@ defmodule GeoFrame.Native do
   def minimum_clearance_line(_ref), do: err()
   def polygonize(_ref, _node), do: err()
   def build_area(_ref, _node), do: err()
+  def valid_coverage(_ref, _gap_width), do: err()
+  def invalid_coverage_edges(_ref, _gap_width), do: err()
   def offset_curve(_ref, _distances, _quad_segs, _join_style, _mitre_limit), do: err()
   def fill_null(_ref, _fill), do: err()
   def closed_flags(_ref), do: err()
