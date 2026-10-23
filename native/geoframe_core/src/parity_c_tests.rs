@@ -217,6 +217,17 @@ fn remove_repeated_points_with_tolerance() {
 }
 
 #[test]
+fn remove_repeated_points_keeps_a_collapsed_line_at_two_points() {
+    // GEOS never reduces a line below two points: a fully collapsed line keeps its point twice.
+    for tolerance in [0.0, 0.5] {
+        let out = one("LINESTRING (1 1, 1 1)")
+            .remove_repeated_points(tolerance)
+            .unwrap();
+        assert_wkt(&out, &[Some("LINESTRING (1 1, 1 1)")]);
+    }
+}
+
+#[test]
 fn remove_repeated_points_rejects_a_bad_tolerance() {
     assert!(one("POINT (0 0)").remove_repeated_points(-1.0).is_err());
     assert!(one("POINT (0 0)").remove_repeated_points(f64::NAN).is_err());
