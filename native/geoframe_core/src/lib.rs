@@ -10,6 +10,7 @@ mod coverage;
 mod coverage_simplify;
 mod crs_wkt;
 mod dbf;
+mod deck;
 mod ewkb;
 mod flatgeobuf_io;
 mod geojson_io;
@@ -46,6 +47,7 @@ pub use arrow_io::{
 };
 pub use attributes::VectorRead;
 pub use column::GeoColumn;
+pub use deck::{deck_buffers, DeckBuffers};
 pub use ewkb::{ewkb_to_iso, wkb_to_ewkb};
 pub use flatgeobuf_io::{read_flatgeobuf, write_flatgeobuf};
 pub use geojson_io::{read_geojson, read_geojson_str, write_geojson};
@@ -75,6 +77,8 @@ mod affine_tests;
 mod coverage_simplify_tests;
 #[cfg(test)]
 mod coverage_tests;
+#[cfg(test)]
+mod deck_tests;
 #[cfg(test)]
 mod ewkb_tests;
 #[cfg(test)]

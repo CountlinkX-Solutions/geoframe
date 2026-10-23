@@ -23,6 +23,7 @@ rstar = "0.12"
 wkb = "0.9"
 wkt = "0.14"
 proj4rs = { version = "0.2.1", default-features = false }
+earcut = "0.4"
 crs-definitions = "0.6.0"
 flatgeobuf = { version = "6.0.1", default-features = false }
 geozero = { version = "0.15.1", default-features = false, features = ["with-geo"] }

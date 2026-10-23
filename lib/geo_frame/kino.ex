@@ -23,16 +23,14 @@ if Code.ensure_loaded?(Kino) do
     GeoJSON is JSON text held in the notebook, so maps are capped at #{50_000} features by
     default. Larger inputs show a notice instead of a map. Change the cap per call with the
     `:max_features` option of `map/2`, or globally with
-    `config :geoframe, max_map_features: n`. A binary GeoArrow layer rendered with deck.gl
-    will lift this limit in a later phase.
+    `config :geoframe, max_map_features: n`. For larger inputs use `deck/2`, which sends
+    binary buffers and renders them with deck.gl.
 
     The Table tab converts every geometry to WKT up front, which is also unsuited to very
     large frames.
     """
 
     @default_max_features 50_000
-    @viewport {640, 420}
-    @max_lat 85.0
 
     alias GeoFrame.GeoDataFrame
     alias GeoFrame.GeoSeries
@@ -73,9 +71,20 @@ if Code.ensure_loaded?(Kino) do
           Kino.Markdown.new("Nothing to draw: the geometry column has no non-empty geometries.")
 
         true ->
-          frame |> maplibre() |> Kino.MapLibre.new()
+          maplibre_kino(frame)
       end
     end
+
+    @doc """
+    Builds a deck.gl map kino that draws geometry from binary buffers instead of GeoJSON, so it
+    scales to a million features.
+
+    See `GeoFrame.Kino.Deck` for the options (`:color`, `:radius`, `:width`, `:opacity`,
+    `:tooltip`, `:max_features`, `:basemap`, `:height`) and how the data is transferred. Unlike
+    `map/2` it needs no extra packages, only internet access in the browser.
+    """
+    @spec deck(GeoDataFrame.t() | GeoSeries.t(), keyword()) :: Kino.JS.Live.t()
+    defdelegate deck(frame, opts \\ []), to: GeoFrame.Kino.Deck, as: :new
 
     @doc false
     @spec render(GeoDataFrame.t() | GeoSeries.t()) :: Kino.Layout.t()
@@ -99,6 +108,11 @@ if Code.ensure_loaded?(Kino) do
     end
 
     if Code.ensure_loaded?(MapLibre) and Code.ensure_loaded?(Kino.MapLibre) do
+      @viewport {640, 420}
+      @max_lat 85.0
+
+      defp maplibre_kino(frame), do: frame |> maplibre() |> Kino.MapLibre.new()
+
       @doc """
       Builds the `MapLibre` style for a frame or series, without wrapping it in a kino.
 
@@ -157,30 +171,33 @@ if Code.ensure_loaded?(Kino) do
 
         %{"type" => "FeatureCollection", "features" => features}
       end
-    end
 
-    # Centre and zoom that fit `bounds` into the assumed viewport (Web Mercator, 512px tiles).
-    defp view(nil), do: {{0.0, 0.0}, 1}
+      # Centre and zoom that fit `bounds` into the assumed viewport (Web Mercator, 512px tiles).
+      defp view(nil), do: {{0.0, 0.0}, 1}
 
-    defp view({minx, miny, maxx, maxy}) do
-      center = {(minx + maxx) / 2, (miny + maxy) / 2}
-      dx = maxx - minx
-      dy = mercator_y(maxy) - mercator_y(miny)
+      defp view({minx, miny, maxx, maxy}) do
+        center = {(minx + maxx) / 2, (miny + maxy) / 2}
+        dx = maxx - minx
+        dy = mercator_y(maxy) - mercator_y(miny)
 
-      if dx == 0 and dy == 0 do
-        {center, 14}
-      else
-        {width, height} = @viewport
-        zoom_x = if dx > 0, do: :math.log2(width / 512 * 360 / dx), else: 22.0
-        zoom_y = if dy > 0, do: :math.log2(height / 512 * 2 * :math.pi() / dy), else: 22.0
-        zoom = (min(zoom_x, zoom_y) - 0.3) |> max(0.0) |> min(18.0) |> Float.round(2)
-        {center, zoom}
+        if dx == 0 and dy == 0 do
+          {center, 14}
+        else
+          {width, height} = @viewport
+          zoom_x = if dx > 0, do: :math.log2(width / 512 * 360 / dx), else: 22.0
+          zoom_y = if dy > 0, do: :math.log2(height / 512 * 2 * :math.pi() / dy), else: 22.0
+          zoom = (min(zoom_x, zoom_y) - 0.3) |> max(0.0) |> min(18.0) |> Float.round(2)
+          {center, zoom}
+        end
       end
-    end
 
-    defp mercator_y(lat) do
-      lat = lat |> max(-@max_lat) |> min(@max_lat)
-      :math.log(:math.tan(:math.pi() / 4 + lat * :math.pi() / 360))
+      defp mercator_y(lat) do
+        lat = lat |> max(-@max_lat) |> min(@max_lat)
+        :math.log(:math.tan(:math.pi() / 4 + lat * :math.pi() / 360))
+      end
+    else
+      # Unreachable: map/2 checks for the optional packages first.
+      defp maplibre_kino(_frame), do: raise("the map needs the optional :kino_maplibre package")
     end
   end
 
