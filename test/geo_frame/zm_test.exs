@@ -81,4 +81,61 @@ defmodule GeoFrame.ZmTest do
       s(["GEOMETRYCOLLECTION (POINT (1 2), POINT Z (1 2 3))"])
     end
   end
+
+  describe "Z/M through constructive operations" do
+    test "translate/4 and scale/4 take :zoff and :zfact" do
+      series = s(["LINESTRING Z (0 0 1, 1 1 2)", "POINT M (1 2 3)"])
+
+      assert series |> GeoSeries.translate(1, 2, zoff: 3) |> GeoSeries.to_wkt() ==
+               ["LINESTRING Z(1 2 4,2 3 5)", "POINT(2 4)"]
+
+      assert series
+             |> GeoSeries.scale(2, 3, zfact: 4, origin: {0, 0})
+             |> GeoSeries.to_wkt() == ["LINESTRING Z(0 0 4,2 3 8)", "POINT(2 6)"]
+
+      assert_raise ArgumentError, ~r/zoff/, fn -> GeoSeries.translate(series, 1, 2, zoff: "x") end
+
+      assert_raise ArgumentError, ~r/scalar/, fn ->
+        GeoSeries.translate(series, [1, 2], [1, 2], zoff: 1)
+      end
+    end
+
+    test "affine_transform/2 takes 6 or 12 numbers" do
+      series = s(["POINT Z (1 2 3)", "POINT (1 2)"])
+
+      assert series |> GeoSeries.affine_transform([1, 0, 0, 1, 5, 5]) |> GeoSeries.to_wkt() ==
+               ["POINT Z(6 7 3)", "POINT(6 7)"]
+
+      assert series
+             |> GeoSeries.affine_transform([1, 0, 1, 0, 1, 0, 0, 0, 2, 5, 5, 5])
+             |> GeoSeries.to_wkt() == ["POINT Z(9 7 11)", "POINT(6 7)"]
+
+      assert_raise ArgumentError, ~r/12 numbers/, fn ->
+        GeoSeries.affine_transform(series, [1, 2, 3])
+      end
+    end
+
+    test "vertex copies keep Z and M, simplify and to_crs drop M" do
+      line = s(["LINESTRING ZM (0 0 1 10, 5 0.01 2 20, 10 0 3 30, 10 10 4 40)"])
+
+      assert line |> GeoSeries.reverse() |> GeoSeries.to_wkt() ==
+               ["LINESTRING ZM(10 10 4 40,10 0 3 30,5 0.01 2 20,0 0 1 10)"]
+
+      assert line |> GeoSeries.boundary() |> GeoSeries.to_wkt() ==
+               ["MULTIPOINT ZM((0 0 1 10),(10 10 4 40))"]
+
+      assert line |> GeoSeries.simplify(1.0, preserve_topology: false) |> GeoSeries.to_wkt() ==
+               ["LINESTRING Z(0 0 1,10 0 3,10 10 4)"]
+
+      point = s(["POINT ZM (-80 25 100 5)"], crs: "EPSG:4326")
+      assert point |> GeoSeries.to_crs(3857) |> GeoSeries.z() |> list() == [100.0]
+      assert point |> GeoSeries.to_crs(3857) |> GeoSeries.has_m() |> list() == [false]
+    end
+
+    test "centroid and envelope stay 2D" do
+      series = s(["POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 0 1))"])
+      assert series |> GeoSeries.envelope() |> GeoSeries.has_z() |> list() == [false]
+      assert series |> GeoSeries.centroid() |> GeoSeries.has_z() |> list() == [false]
+    end
+  end
 end

@@ -14,6 +14,7 @@ use geo::{
 };
 use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 
+use crate::zm_bridge::Keep;
 use crate::GeoColumn;
 
 /// The text Shapely and GeoPandas report for a valid geometry.
@@ -151,7 +152,7 @@ impl GeoColumn {
     /// The `n`th part of each geometry; negative `n` counts from the end. A single geometry
     /// is its own part 0. Out-of-range indices give null.
     pub fn get_geometry(&self, n: i64) -> Result<Self, String> {
-        self.map_geometry(|g| {
+        self.map_geometry_zm(Keep::Both, |g| {
             let parts = parts(g);
             let index = if n < 0 {
                 parts.len().checked_sub(n.unsigned_abs() as usize)?
@@ -165,7 +166,7 @@ impl GeoColumn {
     /// The holes of each polygon as a `MultiLineString` (empty for a polygon without holes);
     /// null for every other geometry type.
     pub fn interiors(&self) -> Result<Self, String> {
-        self.map_geometry(|g| match g {
+        self.map_geometry_zm(Keep::Both, |g| match g {
             Geometry::Polygon(p) => Some(Geometry::MultiLineString(MultiLineString::new(
                 p.interiors().to_vec(),
             ))),

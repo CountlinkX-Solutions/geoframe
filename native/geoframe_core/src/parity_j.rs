@@ -47,6 +47,7 @@ use rstar::RTree;
 use crate::noding;
 use crate::polygonize::node_lines;
 use crate::predicates::guarded;
+use crate::zm_bridge::{identity, lookup_of, Keep, Restore};
 use crate::GeoColumn;
 
 /// What [`GeoColumn::minimum_clearance`] reports when no clearance exists (a point, an empty
@@ -229,7 +230,23 @@ impl GeoColumn {
             snap_points,
             |pts, row| guarded(|| snap_pair(row, pts, tolerance)).flatten(),
         )?;
-        self.rebuild(&rows)
+        // Z comes from the line, but a vertex on a reference vertex takes the reference's Z
+        // (NaN when it has none); M is dropped.
+        let reference_wkb = other.to_wkb()?;
+        let reference = |k: usize| {
+            let index = if reference_wkb.len() == 1 { 0 } else { k };
+            reference_wkb
+                .get(index)?
+                .as_deref()
+                .map(|bytes| lookup_of(bytes, &identity))
+        };
+        let source: Vec<usize> = (0..rows.len()).collect();
+        let restore = Restore {
+            keep: Keep::Z,
+            index: &identity,
+            reference: Some(&reference),
+        };
+        self.rebuild_zm(&rows, &source, &restore)
     }
 }
 

@@ -19,7 +19,7 @@ use crate::ewkb::{MAX_NESTING_DEPTH, NESTING_ERROR};
 use crate::GeoColumn;
 
 /// `(has_z, has_m)` of a geometry.
-fn dimensions<G: GeometryTrait<T = f64>>(geometry: &G) -> (bool, bool) {
+pub(crate) fn dimensions<G: GeometryTrait<T = f64>>(geometry: &G) -> (bool, bool) {
     if let GeometryType::GeometryCollection(collection) = geometry.as_type() {
         return collection
             .geometries()
@@ -113,7 +113,7 @@ impl GeoColumn {
         })
     }
 
-    fn rewrite_dimensions(&self, edit: impl Fn(usize) -> Edit) -> Result<Self, String> {
+    fn rewrite_dimensions(&self, edit: impl Fn(usize) -> Edit<'static>) -> Result<Self, String> {
         let mut builder = GeometryBuilder::new(self.array_type());
         for (row, bytes) in self.to_wkb()?.into_iter().enumerate() {
             let rewritten = bytes.map(|b| rewrite(&b, edit(row))).transpose()?;
@@ -130,14 +130,22 @@ impl GeoColumn {
     }
 }
 
+/// Visits (and maps) one vertex: `(x, y, z, m)` in, `(x, y, z)` out. `z` and `m` are NaN when
+/// the geometry lacks them; the output Z is written only when the geometry has Z.
+pub(crate) type VertexFn<'a> = dyn Fn(f64, f64, f64, f64) -> Result<(f64, f64, f64), String> + 'a;
+
 #[derive(Clone, Copy)]
-enum Edit {
+pub(crate) enum Edit<'a> {
     Drop,
     Force3d(f64),
+    /// Rewrites every vertex with the function; M is dropped, Z is kept.
+    Map(&'a VertexFn<'a>),
+    /// Reverses the vertex order of every line and ring; keeps Z and M.
+    Reverse,
 }
 
 /// Rewrites ISO WKB (as written by the column) under `edit`.
-fn rewrite(bytes: &[u8], edit: Edit) -> Result<Vec<u8>, String> {
+pub(crate) fn rewrite(bytes: &[u8], edit: Edit<'_>) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(bytes.len() + bytes.len() / 4);
     let mut pos = 0;
     node(bytes, &mut pos, &mut out, edit, 0)?;
@@ -158,7 +166,7 @@ fn node(
     bytes: &[u8],
     pos: &mut usize,
     out: &mut Vec<u8>,
-    edit: Edit,
+    edit: Edit<'_>,
     depth: usize,
 ) -> Result<(), String> {
     if depth > MAX_NESTING_DEPTH {
@@ -189,6 +197,8 @@ fn node(
         Edit::Force3d(fill) if z => (true, false, fill),
         Edit::Force3d(_) if m => (false, true, f64::NAN),
         Edit::Force3d(fill) => (true, false, fill),
+        Edit::Map(_) => (z, false, f64::NAN),
+        Edit::Reverse => (z, m, f64::NAN),
     };
     out.push(order);
     put_u32(out, base + 1000 * (u32::from(new_z) + 2 * u32::from(new_m)));
@@ -207,6 +217,7 @@ fn node(
             .checked_mul(width * 8)
             .ok_or_else(|| "truncated WKB".to_string())?;
         let block = take(bytes, pos, len)?;
+        let mut rows: Vec<Vec<f64>> = Vec::with_capacity(n);
         for coord in block.chunks_exact(width * 8) {
             let values: Vec<f64> = coord
                 .as_chunks::<8>()
@@ -214,28 +225,41 @@ fn node(
                 .iter()
                 .map(|raw| f64_at(raw))
                 .collect();
-            let mut push = |value: f64| {
-                out.extend_from_slice(&if little {
-                    value.to_le_bytes()
-                } else {
-                    value.to_be_bytes()
-                })
+            let empty_point = values[0].is_nan() && values[1].is_nan();
+            let mut row = vec![values[0], values[1]];
+            let mapped = match edit {
+                Edit::Map(f) if !empty_point => {
+                    let zin = if z { values[2] } else { f64::NAN };
+                    let min = if m { values[width - 1] } else { f64::NAN };
+                    Some(f(values[0], values[1], zin, min)?)
+                }
+                _ => None,
             };
-            push(values[0]);
-            push(values[1]);
+            if let Some((x, y, _)) = mapped {
+                row = vec![x, y];
+            }
             if new_z {
-                let empty_point = values[0].is_nan() && values[1].is_nan();
-                push(if z {
-                    values[2]
-                } else if empty_point {
-                    f64::NAN
-                } else {
-                    fill
+                row.push(match mapped {
+                    Some((_, _, nz)) => nz,
+                    None if z => values[2],
+                    None if empty_point => f64::NAN,
+                    None => fill,
                 });
             }
             if new_m {
-                push(values[width - 1]);
+                row.push(values[width - 1]);
             }
+            rows.push(row);
+        }
+        if matches!(edit, Edit::Reverse) {
+            rows.reverse();
+        }
+        for value in rows.into_iter().flatten() {
+            out.extend_from_slice(&if little {
+                value.to_le_bytes()
+            } else {
+                value.to_be_bytes()
+            });
         }
         Ok(())
     };

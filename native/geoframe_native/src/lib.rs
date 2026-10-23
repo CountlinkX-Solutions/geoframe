@@ -305,8 +305,8 @@ fn estimate_utm_crs(column: Handle) -> Result<String, String> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn translate(column: Handle, xoff: f64, yoff: f64) -> Result<Handle, String> {
-    column.0.translate(xoff, yoff).map(wrap)
+fn translate(column: Handle, xoff: f64, yoff: f64, zoff: f64) -> Result<Handle, String> {
+    column.0.translate3(xoff, yoff, zoff).map(wrap)
 }
 
 /// `origin` is `"center"`, `"centroid"` or `"coord"` (then `ox`/`oy` apply).
@@ -324,12 +324,13 @@ fn scale(
     column: Handle,
     xfact: f64,
     yfact: f64,
+    zfact: f64,
     origin: String,
     ox: f64,
     oy: f64,
 ) -> Result<Handle, String> {
     let origin = parse_origin(&origin, ox, oy)?;
-    column.0.scale(xfact, yfact, &origin).map(wrap)
+    column.0.scale3(xfact, yfact, zfact, &origin).map(wrap)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -855,9 +856,12 @@ fn skew_rows(
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn affine_transform(column: Handle, matrix: Vec<f64>) -> Result<Handle, String> {
+    if let Ok(matrix) = <[f64; 12]>::try_from(matrix.as_slice()) {
+        return column.0.affine_transform3(&matrix).map(wrap);
+    }
     let matrix: [f64; 6] = matrix
         .try_into()
-        .map_err(|_| "affine_transform needs exactly 6 numbers".to_string())?;
+        .map_err(|_| "affine_transform needs 6 or 12 numbers".to_string())?;
     column.0.affine_transform(&matrix).map(wrap)
 }
 

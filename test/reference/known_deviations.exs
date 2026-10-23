@@ -64,7 +64,260 @@ zm_deviations =
       end
     )
 
+# Z/M constructive operations (file zm_ops.json): one entry per (reason, op).
+zm_ops_classes = [
+  {"hole", "simplify",
+   [
+     "simplify(1.0, preserve_topology=false):z2_poly_hole_z"
+   ]},
+  {"mixed", "affine_transform",
+   [
+     "affine_transform(12):z_coll_mixed",
+     "affine_transform(6):z_coll_mixed"
+   ]},
+  {"mixed", "boundary",
+   [
+     "boundary:z_coll_mixed"
+   ]},
+  {"mixed", "exterior",
+   [
+     "exterior:z_coll_mixed"
+   ]},
+  {"mixed", "get_geometry",
+   [
+     "get_geometry(0):z_coll_mixed",
+     "get_geometry(1):z_coll_mixed"
+   ]},
+  {"mixed", "normalize",
+   [
+     "normalize:z_coll_mixed"
+   ]},
+  {"mixed", "reverse",
+   [
+     "reverse:z_coll_mixed"
+   ]},
+  {"mixed", "rotate",
+   [
+     "rotate(30,center):z_coll_mixed",
+     "rotate(90,(0,0)):z_coll_mixed"
+   ]},
+  {"mixed", "scale",
+   [
+     "scale(-1,3,centroid):z_coll_mixed",
+     "scale(2,0.5,zfact=3,center):z_coll_mixed",
+     "scale(2,0.5,zfact=4,(0,0)):z_coll_mixed"
+   ]},
+  {"mixed", "set_precision",
+   [
+     "set_precision(0.5, keep_collapsed):z_coll_mixed",
+     "set_precision(0.5, pointwise):z_coll_mixed",
+     "set_precision(0.5, valid_output):z_coll_mixed",
+     "set_precision(1.0, keep_collapsed):z_coll_mixed",
+     "set_precision(1.0, pointwise):z_coll_mixed",
+     "set_precision(1.0, valid_output):z_coll_mixed"
+   ]},
+  {"mixed", "simplify",
+   [
+     "simplify(1.0, preserve_topology=false):z_coll_mixed"
+   ]},
+  {"mixed", "skew",
+   [
+     "skew(20,10,center):z_coll_mixed"
+   ]},
+  {"mixed", "translate",
+   [
+     "translate(2.5,-3):z_coll_mixed",
+     "translate(2.5,-3,zoff=3):z_coll_mixed"
+   ]},
+  {"one", "affine_transform",
+   [
+     "affine_transform(12):z_coll_one",
+     "affine_transform(6):z_coll_one"
+   ]},
+  {"one", "boundary",
+   [
+     "boundary:z_coll_one"
+   ]},
+  {"one", "normalize",
+   [
+     "normalize:z_coll_one"
+   ]},
+  {"one", "reverse",
+   [
+     "reverse:z_coll_one"
+   ]},
+  {"one", "rotate",
+   [
+     "rotate(30,center):z_coll_one",
+     "rotate(90,(0,0)):z_coll_one"
+   ]},
+  {"one", "scale",
+   [
+     "scale(-1,3,centroid):z_coll_one",
+     "scale(2,0.5,zfact=3,center):z_coll_one",
+     "scale(2,0.5,zfact=4,(0,0)):z_coll_one"
+   ]},
+  {"one", "set_precision",
+   [
+     "set_precision(0.5, keep_collapsed):z_coll_one",
+     "set_precision(0.5, pointwise):z_coll_one",
+     "set_precision(0.5, valid_output):z_coll_one",
+     "set_precision(1.0, keep_collapsed):z_coll_one",
+     "set_precision(1.0, pointwise):z_coll_one",
+     "set_precision(1.0, valid_output):z_coll_one"
+   ]},
+  {"one", "simplify",
+   [
+     "simplify(1.0, preserve_topology=false):z_coll_one"
+   ]},
+  {"one", "skew",
+   [
+     "skew(20,10,center):z_coll_one"
+   ]},
+  {"one", "translate",
+   [
+     "translate(2.5,-3):z_coll_one",
+     "translate(2.5,-3,zoff=3):z_coll_one"
+   ]},
+  {"zmnan", "affine_transform",
+   [
+     "affine_transform(12):z2_line_zm",
+     "affine_transform(12):z2_poly_cw_zm",
+     "affine_transform(12):z2_zigzag_zm",
+     "affine_transform(12):z_coll_zm",
+     "affine_transform(12):z_line_zm",
+     "affine_transform(12):z_mpoly_zm",
+     "affine_transform(12):z_mpt_zm",
+     "affine_transform(12):z_poly_zm",
+     "affine_transform(12):z_pt_zm",
+     "affine_transform(6):z2_line_zm",
+     "affine_transform(6):z2_poly_cw_zm",
+     "affine_transform(6):z2_zigzag_zm",
+     "affine_transform(6):z_coll_zm",
+     "affine_transform(6):z_line_zm",
+     "affine_transform(6):z_mpoly_zm",
+     "affine_transform(6):z_mpt_zm",
+     "affine_transform(6):z_poly_zm",
+     "affine_transform(6):z_pt_zm"
+   ]},
+  {"zmnan", "rotate",
+   [
+     "rotate(30,center):z2_line_zm",
+     "rotate(30,center):z2_poly_cw_zm",
+     "rotate(30,center):z2_zigzag_zm",
+     "rotate(30,center):z_coll_zm",
+     "rotate(30,center):z_line_zm",
+     "rotate(30,center):z_mpoly_zm",
+     "rotate(30,center):z_mpt_zm",
+     "rotate(30,center):z_poly_zm",
+     "rotate(30,center):z_pt_zm",
+     "rotate(90,(0,0)):z2_line_zm",
+     "rotate(90,(0,0)):z2_poly_cw_zm",
+     "rotate(90,(0,0)):z2_zigzag_zm",
+     "rotate(90,(0,0)):z_coll_zm",
+     "rotate(90,(0,0)):z_line_zm",
+     "rotate(90,(0,0)):z_mpoly_zm",
+     "rotate(90,(0,0)):z_mpt_zm",
+     "rotate(90,(0,0)):z_poly_zm",
+     "rotate(90,(0,0)):z_pt_zm"
+   ]},
+  {"zmnan", "scale",
+   [
+     "scale(-1,3,centroid):z2_line_zm",
+     "scale(-1,3,centroid):z2_poly_cw_zm",
+     "scale(-1,3,centroid):z2_zigzag_zm",
+     "scale(-1,3,centroid):z_coll_zm",
+     "scale(-1,3,centroid):z_line_zm",
+     "scale(-1,3,centroid):z_mpoly_zm",
+     "scale(-1,3,centroid):z_mpt_zm",
+     "scale(-1,3,centroid):z_poly_zm",
+     "scale(-1,3,centroid):z_pt_zm",
+     "scale(2,0.5,zfact=3,center):z2_line_zm",
+     "scale(2,0.5,zfact=3,center):z2_poly_cw_zm",
+     "scale(2,0.5,zfact=3,center):z2_zigzag_zm",
+     "scale(2,0.5,zfact=3,center):z_coll_zm",
+     "scale(2,0.5,zfact=3,center):z_line_zm",
+     "scale(2,0.5,zfact=3,center):z_mpoly_zm",
+     "scale(2,0.5,zfact=3,center):z_mpt_zm",
+     "scale(2,0.5,zfact=3,center):z_poly_zm",
+     "scale(2,0.5,zfact=3,center):z_pt_zm",
+     "scale(2,0.5,zfact=4,(0,0)):z2_line_zm",
+     "scale(2,0.5,zfact=4,(0,0)):z2_poly_cw_zm",
+     "scale(2,0.5,zfact=4,(0,0)):z2_zigzag_zm",
+     "scale(2,0.5,zfact=4,(0,0)):z_coll_zm",
+     "scale(2,0.5,zfact=4,(0,0)):z_line_zm",
+     "scale(2,0.5,zfact=4,(0,0)):z_mpoly_zm",
+     "scale(2,0.5,zfact=4,(0,0)):z_mpt_zm",
+     "scale(2,0.5,zfact=4,(0,0)):z_poly_zm",
+     "scale(2,0.5,zfact=4,(0,0)):z_pt_zm"
+   ]},
+  {"zmnan", "skew",
+   [
+     "skew(20,10,center):z2_line_zm",
+     "skew(20,10,center):z2_poly_cw_zm",
+     "skew(20,10,center):z2_zigzag_zm",
+     "skew(20,10,center):z_coll_zm",
+     "skew(20,10,center):z_line_zm",
+     "skew(20,10,center):z_mpoly_zm",
+     "skew(20,10,center):z_mpt_zm",
+     "skew(20,10,center):z_poly_zm",
+     "skew(20,10,center):z_pt_zm"
+   ]},
+  {"zmnan", "to_crs",
+   [
+     "to_crs(4326->EPSG:32617):z2_ll_mpt_zm",
+     "to_crs(4326->EPSG:32617):z2_ll_pt_zm",
+     "to_crs(4326->EPSG:3857):z2_ll_mpt_zm",
+     "to_crs(4326->EPSG:3857):z2_ll_pt_zm",
+     "to_crs(4979->4978):z2_ll_mpt_zm",
+     "to_crs(4979->4978):z2_ll_pt_zm"
+   ]},
+  {"zmnan", "translate",
+   [
+     "translate(2.5,-3):z2_line_zm",
+     "translate(2.5,-3):z2_poly_cw_zm",
+     "translate(2.5,-3):z2_zigzag_zm",
+     "translate(2.5,-3):z_coll_zm",
+     "translate(2.5,-3):z_line_zm",
+     "translate(2.5,-3):z_mpoly_zm",
+     "translate(2.5,-3):z_mpt_zm",
+     "translate(2.5,-3):z_poly_zm",
+     "translate(2.5,-3):z_pt_zm",
+     "translate(2.5,-3,zoff=3):z2_line_zm",
+     "translate(2.5,-3,zoff=3):z2_poly_cw_zm",
+     "translate(2.5,-3,zoff=3):z2_zigzag_zm",
+     "translate(2.5,-3,zoff=3):z_coll_zm",
+     "translate(2.5,-3,zoff=3):z_line_zm",
+     "translate(2.5,-3,zoff=3):z_mpoly_zm",
+     "translate(2.5,-3,zoff=3):z_mpt_zm",
+     "translate(2.5,-3,zoff=3):z_poly_zm",
+     "translate(2.5,-3,zoff=3):z_pt_zm"
+   ]}
+]
+
+zm_ops_reasons = %{
+  "mixed" =>
+    "A GEOMETRYCOLLECTION whose members have different dimensions (POINT and POINT Z) is rejected with an error: the GeoArrow builder cannot store it. Shapely keeps it.",
+  "one" =>
+    "A one-member GEOMETRYCOLLECTION is stored as that member when parsed (see geom_type), so the result describes the member where Shapely keeps the collection.",
+  "zmnan" =>
+    "Shapely 2.2 (GEOS 3.14) affine and transform functions turn an XYZM geometry into XYZM with NaN in both Z and M (it applies the matrix to a 4-column coordinate array). GeoFrame keeps Z (transformed as for XYZ) and drops M, which is what the operation is defined to do.",
+  "hole" =>
+    "simplify with preserve_topology=false: GEOS removes a polygon hole whose ring collapses under the tolerance; geo's Ramer-Douglas-Peucker keeps the three-vertex hole. Not Z-related (the 2D result differs the same way)."
+}
+
+zm_ops_deviations =
+  Enum.map(zm_ops_classes, fn {kind, op, cases} ->
+    %{
+      reason: Map.fetch!(zm_ops_reasons, kind),
+      doc: "docs/parity.md#z-and-m",
+      op: op,
+      cases: cases
+    }
+  end)
+
 zm_deviations ++
+  zm_ops_deviations ++
   [
     %{
       reason:
