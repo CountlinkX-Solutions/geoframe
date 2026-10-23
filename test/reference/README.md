@@ -10,7 +10,7 @@ geometries. **CI needs no Python**: the reference results are committed as JSON 
 | File | Role |
 |---|---|
 | `generate.py` | Dev-only generator. Fixed corpus (points, lines, polygons with holes, multi geometries, collections, empties, an invalid bowtie, degenerate cases, touching/overlapping/disjoint pairs, lon/lat geometries near Miami and far apart). Computes every supported operation with GeoPandas/Shapely/pyproj. Deterministic: no randomness, sorted JSON keys, full-precision numbers, 12-decimal WKT. |
-| `fixtures/*.json` | Generated output, one file per category: `measures`, `unary_predicates`, `binary_predicates`, `constructive`, `set_ops`, `affine`, `linear_referencing`, `crs`, `geodesic`, `io`, `frames` (sjoin, sjoin_nearest, dissolve), plus `corpus.json` (the geometries and the tool versions). |
+| `fixtures/*.json` | Generated output, one file per category: `measures`, `unary_predicates`, `binary_predicates`, `constructive`, `set_ops`, `affine`, `linear_referencing`, `crs`, `geodesic`, `io`, `frames` (sjoin, sjoin_nearest, dissolve), `overlay` (frame-level `overlay`, `clip`, `explode`, `intersection_all`; rows are compared column by column, geometries as overlay results), plus `corpus.json` (the geometries and the tool versions). |
 | `known_deviations.exs` | Machine-readable list of known differences (op, case ids, reason, link to `docs/parity.md#reference-testing`). |
 | `../support/reference.ex` | The comparison engine (test-only module `GeoFrame.Reference`). |
 

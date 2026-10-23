@@ -344,6 +344,13 @@ def build_set_ops():
     w.add_set("ops", pairs(SETOP_IDS))
     for op in ["intersection", "union", "difference", "symmetric_difference"]:
         w.group(op, "geom", "ops", lambda a, b, op=op: getattr(a, op)(b, align=False))
+    # Shapely's fast rectangle clip, row by row (empties are kept, results may be invalid).
+    w.add_set("clip_rows", singles([i for i in SETOP_IDS if i != "coll"] + ["sq_cw", "line_closed", "mline", "sq_far"]))
+    for rect in [(0, 0, 3, 3), (1, 1, 5, 5), (-1, -1, 10, 10), (4, 0, 8, 4), (2, 2, 3, 3)]:
+        w.group("clip_by_rect", "geom", "clip_rows",
+                lambda a, b, rect=rect: a.clip_by_rect(*rect),
+                label="clip_by_rect(%s)" % ",".join(str(v) for v in rect),
+                args={"rect": list(rect)})
     w.add_set("union_all", [(i,) for i in ["sq", "sq_overlap", "sq_touch", "sq_hole"]])
     w.dump({"union_all": {"ids": ["sq", "sq_overlap", "sq_touch", "sq_hole"],
                           "e": full(series(["sq", "sq_overlap", "sq_touch", "sq_hole"]).union_all())}})
@@ -549,6 +556,131 @@ def build_frames():
         f.write("\n")
 
 
+# --------------------------------------------------------------------------------------
+# overlay, clip, explode, intersection_all (frame level)
+# --------------------------------------------------------------------------------------
+def frame_rows(df):
+    """Column names and rows (attribute values then the geometry WKT); NaN becomes None."""
+    cols = [c for c in df.columns if c != df.geometry.name]
+    rows = []
+    for _, r in df.iterrows():
+        vals = []
+        for c in cols:
+            v = r[c]
+            if v is None or (isinstance(v, float) and math.isnan(v)) or v != v:
+                vals.append(None)
+            elif isinstance(v, (int, float)) or hasattr(v, "item"):
+                vals.append(num(v))
+            else:
+                vals.append(str(v))
+        vals.append(full(r[df.geometry.name]))
+        rows.append(vals)
+    return cols + ["geometry"], rows
+
+
+def overlay_frames():
+    """Small deterministic frames: name -> (left rows, right rows)."""
+    sq = lambda x, y, w, h: "POLYGON ((%s %s, %s %s, %s %s, %s %s, %s %s))" % (
+        x, y, x + w, y, x + w, y + h, x, y + h, x, y)
+    poly = (
+        [("A", 1, 1.0, sq(0, 0, 4, 4)), ("B", 2, 2.0, sq(6, 0, 4, 4)), ("C", 3, 3.0, sq(0, 6, 4, 4))],
+        [("X", 10, 0.5, sq(2, 2, 6, 6)), ("Y", 20, 1.5, sq(12, 12, 2, 2)),
+         ("Z", 30, 2.5, sq(-2, -2, 3, 3)), ("W", 40, 3.5, sq(10, 0, 2, 4))],
+    )
+    poly2 = (
+        [("H", 1, 1.0, CORPUS["sq_hole"]), ("E", 2, 2.0, CORPUS["ell"]),
+         ("M", 3, 3.0, CORPUS["mpoly"]), ("T", 4, 4.0, CORPUS["tri"])],
+        [("S", 10, 0.5, CORPUS["sq"]), ("O", 20, 1.5, CORPUS["sq_overlap"]),
+         ("U", 30, 2.5, CORPUS["sq_touch"]), ("R", 40, 3.5, CORPUS["sq_corner"])],
+    )
+    lines = (
+        [("L1", 1, 1.0, "LINESTRING (0 0, 10 0)"), ("L2", 2, 2.0, "LINESTRING (0 5, 10 5)")],
+        [("M1", 10, 0.5, "LINESTRING (5 -5, 5 10)"), ("M2", 20, 1.5, "LINESTRING (8 0, 12 0)"),
+         ("M3", 30, 2.5, "LINESTRING (20 20, 21 21)")],
+    )
+    points = (
+        [("P1", 1, 1.0, "POINT (0 0)"), ("P2", 2, 2.0, "POINT (1 1)"), ("P3", 3, 3.0, "POINT (2 2)")],
+        [("Q1", 10, 0.5, "POINT (1 1)"), ("Q2", 20, 1.5, "POINT (9 9)")],
+    )
+    return {"poly": poly, "poly2": poly2, "lines": lines, "points": points}
+
+
+def overlay_gdf(rows, idname):
+    import pandas as pd
+
+    df = pd.DataFrame({idname: [r[0] for r in rows], "k": [r[1] for r in rows],
+                       "v" if idname in ("lid",) else "w": [r[2] for r in rows]})
+    return gpd.GeoDataFrame(df, geometry=[swkt.loads(r[3]) for r in rows])
+
+
+def build_overlay():
+    import warnings
+
+    warnings.simplefilter("ignore")
+    out = {"frames": {}, "overlay": [], "clip": [], "explode": [], "intersection_all": []}
+
+    for name, (left, right) in overlay_frames().items():
+        out["frames"][name] = {"left": [list(r) for r in left], "right": [list(r) for r in right]}
+        ldf, rdf = overlay_gdf(left, "lid"), overlay_gdf(right, "rid")
+        hows = ["intersection", "union", "identity", "symmetric_difference", "difference"]
+        for how in hows:
+            for keep in [None, True, False]:
+                res = gpd.overlay(ldf, rdf, how=how, keep_geom_type=keep)
+                cols, rows = frame_rows(res)
+                out["overlay"].append({"frames": name, "how": how, "keep_geom_type": keep,
+                                       "columns": cols, "rows": rows})
+
+    # clip: data sets by type, masks and boxes
+    data_sets = {
+        "polys": ["sq", "sq_hole", "tri", "sq_overlap", "sq_touch", "sq_corner", "sq_inner",
+                  "sq_far", "ell", "sq_cw", "mpoly"],
+        "lines": ["line_h", "line_diag", "line_cross", "line_closed", "mline", "line_dup"],
+        "points": ["pt1", "pt2", "pt_edge", "pt_far", "mpt"],
+    }
+    masks = {"sq": CORPUS["sq"], "sq_hole": CORPUS["sq_hole"], "ell": CORPUS["ell"],
+             "mpoly": CORPUS["mpoly"], "tri": CORPUS["tri"], "sq_touch": CORPUS["sq_touch"],
+             "sq_corner": CORPUS["sq_corner"]}
+    boxes = [(1, 1, 3, 3), (0, 0, 4, 4), (2, -1, 8, 5), (-5, -5, 0, 0), (4, 4, 9, 9)]
+    import pandas as pd
+
+    for dname, ids in data_sets.items():
+        gdf = gpd.GeoDataFrame({"id": ids}, geometry=[geom(i) for i in ids])
+        cases = [("mask:" + m, swkt.loads(w), w) for m, w in masks.items()]
+        cases += [("box:" + ",".join(str(v) for v in b), b, list(b)) for b in boxes]
+        for label, mask, raw in cases:
+            for keep in [False, True]:
+                res = gpd.clip(gdf, mask, keep_geom_type=keep)
+                res = res.sort_values("id", kind="stable")
+                cols, rows = frame_rows(res)
+                out["clip"].append({"data": dname, "ids": ids, "mask": raw, "label": label,
+                                    "keep_geom_type": keep, "columns": cols, "rows": rows})
+
+    # explode
+    ids = ["pt1", "mpt", "mline", "mpoly", "coll", "sq", "poly_empty", "line_empty",
+           "coll_empty", "null", "sq_hole"]
+    gdf = gpd.GeoDataFrame({"n": list(range(len(ids)))}, geometry=[geom(i) for i in ids])
+    for ip, ii in [(False, False), (True, False), (False, True)]:
+        res = gdf.explode(index_parts=ip, ignore_index=ii)
+        rows = []
+        for idx, r in res.iterrows():
+            pos = idx[0] if isinstance(idx, tuple) else idx
+            part = idx[1] if isinstance(idx, tuple) else None
+            rows.append({"index": None if ii else int(pos), "part": None if part is None else int(part),
+                         "n": int(r["n"]), "g": full(r.geometry)})
+        out["explode"].append({"ids": ids, "index_parts": ip, "ignore_index": ii, "rows": rows})
+
+    # intersection_all
+    for idl in [["sq", "sq_overlap"], ["sq", "sq_touch"], ["sq", "null", "sq_overlap", "sq_inner"],
+                ["sq", "sq_far"], ["line_h", "line_cross"], ["sq_hole", "sq_overlap", "ell"],
+                ["sq", "sq_corner"], ["null"], ["pt1"], ["sq"]]:
+        out["intersection_all"].append({"ids": idl, "e": full(series(idl).intersection_all())})
+
+    path = os.path.join(OUT, "overlay.json")
+    with open(path, "w") as f:
+        json.dump(out, f, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        f.write("\n")
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     build_measures()
@@ -562,6 +694,7 @@ def main():
     build_geodesic()
     build_io()
     build_frames()
+    build_overlay()
     corpus = dict(CORPUS)
     meta = {
         "geopandas": gpd.__version__,

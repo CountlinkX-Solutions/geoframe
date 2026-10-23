@@ -93,6 +93,20 @@ defmodule GeoFrame do
   defdelegate sjoin_nearest(left, right, opts \\ []), to: GeoFrame.SpatialJoin
 
   @doc """
+  Clips a frame or series to a polygon (or bounding box) mask. See `GeoFrame.Overlay.clip/3`.
+  """
+  @spec clip(GeoDataFrame.t() | GeoSeries.t(), term(), keyword()) ::
+          GeoDataFrame.t() | GeoSeries.t()
+  defdelegate clip(data, mask, opts \\ []), to: GeoFrame.Overlay
+
+  @doc """
+  Spatial overlay of two `GeoFrame.GeoDataFrame`s (`intersection`, `union`, `identity`,
+  `symmetric_difference`, `difference`). See `GeoFrame.Overlay.overlay/3`.
+  """
+  @spec overlay(GeoDataFrame.t(), GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
+  defdelegate overlay(df1, df2, opts \\ []), to: GeoFrame.Overlay
+
+  @doc """
   Reads a GeoParquet file into a `GeoFrame.GeoDataFrame`.
 
   The primary geometry column named in the file's `geo` metadata becomes the geometry;

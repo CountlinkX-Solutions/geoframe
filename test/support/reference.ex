@@ -199,6 +199,11 @@ defmodule GeoFrame.Reference do
   defp apply_param("orient_polygons", args, a, _),
     do: GeoSeries.orient_polygons(a, exterior_cw: args["exterior_cw"])
 
+  defp apply_param("clip_by_rect", args, a, _) do
+    [xmin, ymin, xmax, ymax] = args["rect"]
+    GeoSeries.clip_by_rect(a, xmin, ymin, xmax, ymax)
+  end
+
   defp apply_param("get_geometry", args, a, _), do: GeoSeries.get_geometry(a, args["n"])
   defp apply_param("shortest_line", _, a, b), do: GeoSeries.shortest_line(a, b)
 
@@ -262,8 +267,9 @@ defmodule GeoFrame.Reference do
   defp geom_mode(%{"op" => "buffer"}), do: :buffer
   defp geom_mode(%{"op" => "representative_point"}), do: :representative
 
-  defp geom_mode(%{"op" => op}) when op in ~w(intersection union difference symmetric_difference),
-    do: :overlay
+  defp geom_mode(%{"op" => op})
+       when op in ~w(intersection union difference symmetric_difference clip_by_rect),
+       do: :overlay
 
   defp geom_mode(%{"op" => op}) when op in @exact_ops, do: :exact
   defp geom_mode(_), do: :topological
@@ -462,6 +468,197 @@ defmodule GeoFrame.Reference do
       |> Series.to_list() == [true]
 
     [frame_result("union_all", "union_all", ok, {wkt, e})]
+  end
+
+  # -- frames: overlay / clip / explode / intersection_all -----------------------------------
+
+  @doc "Evaluates the overlay, clip, explode and intersection_all fixtures."
+  @spec run_overlay() :: [result()]
+  def run_overlay do
+    doc = read("overlay")
+    overlay_cases(doc) ++ clip_cases(doc) ++ explode_cases(doc) ++ intersection_all_cases(doc)
+  end
+
+  defp overlay_cases(doc) do
+    for c <- doc["overlay"] do
+      %{"left" => left, "right" => right} = doc["frames"][c["frames"]]
+      df1 = overlay_frame(left, "lid", "v")
+      df2 = overlay_frame(right, "rid", "w")
+      keep = c["keep_geom_type"]
+      label = "overlay(#{c["frames"]},#{c["how"]},keep=#{inspect(keep)})"
+
+      got =
+        try do
+          opts = [how: String.to_atom(c["how"]), keep_geom_type: keep]
+          {result, _log} = ExUnit.CaptureLog.with_log(fn -> GeoFrame.overlay(df1, df2, opts) end)
+          result
+        rescue
+          e -> {:raised, Exception.message(e)}
+        end
+
+      frame_case("overlay", "overlay", label, got, c["columns"], c["rows"])
+    end
+  end
+
+  defp overlay_frame(rows, id, value) do
+    data =
+      DataFrame.new([
+        {id, Enum.map(rows, &Enum.at(&1, 0))},
+        {"k", Enum.map(rows, &Enum.at(&1, 1))},
+        {value, Enum.map(rows, &Enum.at(&1, 2))}
+      ])
+
+    GeoDataFrame.new(data, GeoSeries.from_wkt!(Enum.map(rows, &Enum.at(&1, 3))))
+  end
+
+  defp clip_cases(doc) do
+    corpus = corpus()
+
+    for c <- doc["clip"] do
+      ids = c["ids"]
+
+      gdf =
+        GeoDataFrame.new(DataFrame.new(id: ids), GeoSeries.from_wkt!(Enum.map(ids, &corpus[&1])))
+
+      mask = if is_list(c["mask"]), do: List.to_tuple(c["mask"]), else: c["mask"]
+      label = "clip(#{c["data"]},#{c["label"]},keep=#{c["keep_geom_type"]})"
+
+      got =
+        try do
+          gdf
+          |> GeoFrame.clip(mask, keep_geom_type: c["keep_geom_type"])
+          |> sort_by_first_column()
+        rescue
+          e -> {:raised, Exception.message(e)}
+        end
+
+      frame_case("clip", "clip", label, got, c["columns"], c["rows"])
+    end
+  end
+
+  defp sort_by_first_column(gdf) do
+    order =
+      gdf
+      |> column("id")
+      |> Enum.with_index()
+      |> Enum.sort()
+      |> Enum.map(&elem(&1, 1))
+
+    GeoDataFrame.take(gdf, order)
+  end
+
+  defp explode_cases(doc) do
+    corpus = corpus()
+
+    for c <- doc["explode"] do
+      ids = c["ids"]
+      n = Enum.to_list(0..(length(ids) - 1))
+      gdf = GeoDataFrame.new(DataFrame.new(n: n), GeoSeries.from_wkt!(Enum.map(ids, &corpus[&1])))
+      label = "explode(index_parts=#{c["index_parts"]},ignore_index=#{c["ignore_index"]})"
+
+      opts = [index_parts: c["index_parts"], ignore_index: c["ignore_index"]]
+      got = GeoDataFrame.explode(gdf, opts)
+
+      expected_columns = explode_columns(c) ++ ["n", "geometry"]
+      rows = for r <- c["rows"], do: explode_values(c, r) ++ [r["n"], r["g"]]
+
+      frame_case("explode", "explode", label, got, expected_columns, rows)
+    end
+  end
+
+  defp explode_columns(c) do
+    if(c["ignore_index"], do: [], else: ["index"]) ++ if(c["index_parts"], do: ["part"], else: [])
+  end
+
+  defp explode_values(c, r) do
+    if(c["ignore_index"], do: [], else: [r["index"]]) ++
+      if c["index_parts"], do: [r["part"]], else: []
+  end
+
+  defp intersection_all_cases(doc) do
+    corpus = corpus()
+
+    for c <- doc["intersection_all"] do
+      series = GeoSeries.from_wkt!(Enum.map(c["ids"], &corpus[&1]))
+      [wkt] = series |> GeoSeries.intersection_all() |> GeoSeries.to_wkt()
+      label = "intersection_all(#{Enum.join(c["ids"], ",")})"
+      {status, detail} = compare_geom(%{"op" => "intersection"}, wkt, c["e"], {nil, nil}, nil)
+
+      %{
+        file: "overlay",
+        op: "intersection_all",
+        label: label,
+        id: label,
+        status: status,
+        nullish: false,
+        detail: detail
+      }
+    end
+  end
+
+  # Compares a result frame (or a raised error) with expected column names and rows.
+  defp frame_case(op, _kind, label, got, columns, rows) do
+    {status, detail} =
+      case got do
+        {:raised, msg} -> {:differ, {:raised, msg}}
+        %GeoDataFrame{} = gdf -> compare_frame(gdf, columns, rows)
+      end
+
+    %{
+      file: "overlay",
+      op: op,
+      label: label,
+      id: label,
+      status: status,
+      nullish: false,
+      detail: detail
+    }
+  end
+
+  defp compare_frame(gdf, columns, expected) do
+    names = GeoDataFrame.names(gdf)
+    actual = frame_values(gdf)
+
+    cond do
+      names != columns ->
+        {:differ, {:columns, names, columns}}
+
+      length(actual) != length(expected) ->
+        {:differ, {:row_count, length(actual), length(expected)}}
+
+      true ->
+        case first_disagreement(actual, expected) do
+          nil -> {:agree, nil}
+          bad -> {:differ, bad}
+        end
+    end
+  end
+
+  defp first_disagreement(actual, expected) do
+    actual
+    |> Enum.zip(expected)
+    |> Enum.with_index()
+    |> Enum.find_value(fn {{got, want}, i} ->
+      if row_agrees?(got, want), do: nil, else: {i, got, want}
+    end)
+  end
+
+  defp frame_values(gdf) do
+    attrs = gdf.data |> DataFrame.names() |> Enum.map(&column(gdf, &1))
+    wkts = GeoSeries.to_wkt(GeoDataFrame.geometry(gdf))
+    Enum.zip_with(attrs ++ [wkts], & &1)
+  end
+
+  defp row_agrees?(got, want) do
+    {g_attrs, [g_wkt]} = Enum.split(got, -1)
+    {w_attrs, [w_wkt]} = Enum.split(want, -1)
+
+    Enum.zip(g_attrs, w_attrs)
+    |> Enum.all?(fn
+      {a, b} when is_number(a) and is_number(b) -> numbers_close?(a, b, @rtol, @atol)
+      {a, b} -> a == b
+    end) and
+      match?({:agree, _}, compare_geom(%{"op" => "intersection"}, g_wkt, w_wkt, {nil, nil}, nil))
   end
 
   defp frame_result(op, label, ok, detail) do

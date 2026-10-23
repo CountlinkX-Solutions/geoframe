@@ -194,7 +194,8 @@ defmodule GeoFrame.SpatialJoin do
   end
 
   # Selects `rows` from the attribute frame; `nil` rows become all-null rows.
-  defp gather(%DataFrame{} = data, rows) do
+  @doc false
+  def gather(%DataFrame{} = data, rows) do
     names = DataFrame.names(data)
 
     cond do
@@ -217,7 +218,8 @@ defmodule GeoFrame.SpatialJoin do
   end
 
   # Renames only the attribute names present on both sides.
-  defp suffixed(left, right, lsuffix, rsuffix) do
+  @doc false
+  def suffixed(left, right, lsuffix, rsuffix) do
     left_names = DataFrame.names(left)
     right_names = DataFrame.names(right)
     shared = MapSet.new(left_names) |> MapSet.intersection(MapSet.new(right_names))
@@ -231,7 +233,8 @@ defmodule GeoFrame.SpatialJoin do
     {rename.(left_names, lsuffix), rename.(right_names, rsuffix)}
   end
 
-  defp columns(data, names) do
+  @doc false
+  def columns(data, names) do
     for {old, new} <- names, do: {new, DataFrame.pull(data, old)}
   end
 

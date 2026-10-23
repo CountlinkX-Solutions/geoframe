@@ -5,5 +5,6 @@ defmodule GeoFrame.DoctestTest do
   doctest GeoFrame.GeoSeries
   doctest GeoFrame.CRS
   doctest GeoFrame.GeoDataFrame
+  doctest GeoFrame.Overlay
   doctest GeoFrame.Testing
 end

@@ -1531,13 +1531,13 @@ defmodule GeoFrame.GeoSeries do
     Pairing, null and CRS rules are those of `intersects/2` (`other` may be a series of the
     same length, or a single geometry / WKT string that broadcasts).
 
-    Supported: polygonal x polygonal in full; line x polygon for `intersection` and
-    `difference` (only the one-dimensional part is kept); points against any geometry for
-    `intersection` and `difference`, and point x point for all four. Every other combination
-    (and `GeometryCollection` input) gives `nil`. Empty results are empty geometries
-    (`POLYGON EMPTY`, `LINESTRING EMPTY`, `MULTIPOINT EMPTY`), not `nil`. Lower-dimensional
-    results are dropped: polygons sharing only an edge intersect in `POLYGON EMPTY` where
-    Shapely returns the shared `LINESTRING`.
+    Every combination of points, lines and polygons is supported, with GEOS results: lines are
+    noded (crossings, overlaps), the lower-dimensional parts of a result are kept (two squares
+    sharing an edge intersect in that `LINESTRING`, sharing a corner in a `POINT`), and a result
+    of several dimensions is a `GEOMETRYCOLLECTION` with one member per part. A
+    `GeometryCollection` input is supported by `intersection` only (member by member); the other
+    operations give `nil` for it. Empty results are empty geometries
+    (`POLYGON EMPTY`, `LINESTRING EMPTY`, `MULTIPOINT EMPTY`), not `nil`.
     """
     @spec unquote(name)(t(), other()) :: t()
     def unquote(name)(%__MODULE__{ref: left} = series, other) do
@@ -1554,8 +1554,9 @@ defmodule GeoFrame.GeoSeries do
   @doc """
   The union of all non-null geometries as a **one-row** GeoSeries (GeoPandas returns a scalar).
 
-  Polygons are merged with a single `unary_union`, points are merged and deduplicated, and
-  identical lines are merged into a `MultiLineString`. A mix of geometry families gives a
+  Polygons are merged with a single `unary_union`, lines are noded and overlaps merged, and
+  points are deduplicated. A mix of families gives a `GEOMETRYCOLLECTION` in which lines inside
+  a polygon and points on a polygon or line are absorbed. A `GeometryCollection` row gives a
   `nil` row; no non-null input gives `GEOMETRYCOLLECTION EMPTY`.
   """
   @spec union_all(t()) :: t()
@@ -1569,13 +1570,88 @@ defmodule GeoFrame.GeoSeries do
   result has one row per group (same CRS).
 
   Null rows are skipped; a group without non-null rows gives `GEOMETRYCOLLECTION EMPTY`, and
-  a group of incompatible geometry families gives a null row, as `union_all/1` does. Raises
+  a group containing a `GeometryCollection` row gives a null row, as `union_all/1` does. Raises
   `ArgumentError` when `group_ids` has the wrong length or an id is out of range.
   """
   @spec union_groups(t(), [non_neg_integer()], non_neg_integer()) :: t()
   def union_groups(%__MODULE__{ref: ref}, group_ids, n_groups)
       when is_list(group_ids) and is_integer(n_groups) and n_groups >= 0 do
     ref |> Native.union_groups(group_ids, n_groups) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  The intersection of all non-null geometries as a **one-row** GeoSeries (GeoPandas
+  `intersection_all`, which returns a scalar).
+
+  Rows are folded left to right with `intersection/2`, so the lower-dimensional parts of
+  touching geometries survive (two squares sharing an edge give that edge). A step whose result
+  is a `GEOMETRYCOLLECTION` (mixed dimensions) cannot be intersected further and gives a `nil`
+  row. No non-null input gives `GEOMETRYCOLLECTION EMPTY`.
+  """
+  @spec intersection_all(t()) :: t()
+  def intersection_all(%__MODULE__{ref: ref}) do
+    ref |> Native.intersection_all() |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  Splits multi-part geometries and collections into their parts, like `GeoSeries.explode`.
+
+  Returns `{parts, positions}`: a `GeoSeries` with one row per part and the parallel list of
+  zero-based **source row positions** (what the pandas index holds in GeoPandas). Multi-part
+  geometries give their members and collections their direct members (one level, as
+  `shapely.get_parts`; nested collections do not exist because storage flattens them). An
+  atomic geometry, even an empty polygon or line, is its own single part. Null rows and empty
+  multi-geometries or collections have no parts and disappear. The CRS is kept.
+
+  Option `index_parts: true` returns `{parts, positions, part_numbers}` where `part_numbers`
+  holds the zero-based number of each part within its source row (the second level of the
+  pandas MultiIndex).
+
+  ## Example
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (0 0)", "MULTIPOINT ((1 1), (2 2))"])
+      iex> {parts, positions} = GeoFrame.GeoSeries.explode(s)
+      iex> {GeoFrame.GeoSeries.to_wkt(parts), positions}
+      {["POINT(0 0)", "POINT(1 1)", "POINT(2 2)"], [0, 1, 1]}
+  """
+  @spec explode(t(), keyword()) ::
+          {t(), [non_neg_integer()]} | {t(), [non_neg_integer()], [non_neg_integer()]}
+  def explode(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, index_parts: false)
+    {parts_ref, positions} = ref |> Native.explode() |> unwrap!()
+    parts = %__MODULE__{ref: parts_ref}
+
+    if opts[:index_parts],
+      do: {parts, positions, part_numbers(positions)},
+      else: {parts, positions}
+  end
+
+  defp part_numbers(positions) do
+    {numbers, _} =
+      Enum.map_reduce(positions, {nil, 0}, fn
+        position, {position, n} -> {n + 1, {position, n + 1}}
+        position, _ -> {0, {position, 0}}
+      end)
+
+    numbers
+  end
+
+  @doc """
+  Shapely's `clip_by_rect`: every geometry clipped to the rectangle, row by row.
+
+  This is the fast rectangle clip of GEOS. Only what reaches into the interior of the
+  rectangle survives: a point or line touching the edge, or a polygon sharing only an edge with
+  the rectangle, gives `GEOMETRYCOLLECTION EMPTY`. Empty results are **kept** (use
+  `GeoFrame.clip/3` to drop them) and the result of a polygon is not guaranteed valid. Null and
+  `GeometryCollection` rows give `nil`. Raises `ArgumentError` for an inverted rectangle.
+  """
+  @spec clip_by_rect(t(), number(), number(), number(), number()) :: t()
+  def clip_by_rect(%__MODULE__{ref: ref}, xmin, ymin, xmax, ymax)
+      when is_number(xmin) and is_number(ymin) and is_number(xmax) and is_number(ymax) do
+    ref
+    |> Native.clip_by_rect(xmin * 1.0, ymin * 1.0, xmax * 1.0, ymax * 1.0)
+    |> wrap()
+    |> unwrap!()
   end
 
   defp other_ref(_series, %__MODULE__{ref: ref}), do: ref

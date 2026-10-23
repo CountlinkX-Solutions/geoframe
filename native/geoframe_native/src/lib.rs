@@ -218,6 +218,30 @@ fn union_all(column: Handle) -> Result<Handle, String> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn intersection_all(column: Handle) -> Result<Handle, String> {
+    column.0.intersection_all().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn explode(column: Handle) -> Result<(Handle, Vec<u32>), String> {
+    column
+        .0
+        .explode()
+        .map(|(parts, source)| (wrap(parts), source))
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn clip_by_rect(
+    column: Handle,
+    xmin: f64,
+    ymin: f64,
+    xmax: f64,
+    ymax: f64,
+) -> Result<Handle, String> {
+    column.0.clip_by_rect(xmin, ymin, xmax, ymax).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn union_groups(column: Handle, group_ids: Vec<u32>, n_groups: usize) -> Result<Handle, String> {
     column.0.union_groups(&group_ids, n_groups).map(wrap)
 }
