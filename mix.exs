@@ -34,6 +34,7 @@ defmodule GeoFrame.MixProject do
       {:rustler, "~> 0.38", runtime: false},
       {:explorer, "~> 0.13"},
       {:jason, "~> 1.4"},
+      {:postgrex, "~> 0.22", optional: true},
       {:kino, "~> 0.19", optional: true},
       {:maplibre, "~> 0.1.9", optional: true},
       {:kino_maplibre, "~> 0.1.13", optional: true},

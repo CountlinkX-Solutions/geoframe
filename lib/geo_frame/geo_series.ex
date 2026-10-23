@@ -162,25 +162,56 @@ defmodule GeoFrame.GeoSeries do
   @doc """
   Returns the geometries as WKB (`nil` for nulls).
 
-  Option `:hex` - when `true`, returns upper-case hexadecimal strings instead of binaries,
-  like GeoPandas `to_wkb(hex=True)`. Default `false`.
+  Options:
+
+    * `:hex` - when `true`, returns upper-case hexadecimal strings instead of binaries,
+      like GeoPandas `to_wkb(hex=True)`. Default `false`.
+    * `:srid` - an integer, or `true` to take it from an `"EPSG:<code>"` CRS, to emit PostGIS
+      EWKB with that SRID (GeoPandas `to_wkb(include_srid=True)`). Default: plain WKB.
 
       iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1 2)"])
       iex> GeoFrame.GeoSeries.to_wkb(s, hex: true)
       ["0101000000000000000000F03F0000000000000040"]
+      iex> GeoFrame.GeoSeries.to_wkb(s, hex: true, srid: 4326)
+      ["0101000020E6100000000000000000F03F0000000000000040"]
   """
   @spec to_wkb(t(), keyword()) :: [binary() | nil]
-  def to_wkb(%__MODULE__{ref: ref}, opts \\ []) do
-    opts = Keyword.validate!(opts, hex: false)
+  def to_wkb(%__MODULE__{ref: ref} = series, opts \\ []) do
+    opts = Keyword.validate!(opts, hex: false, srid: nil)
 
     unless is_boolean(opts[:hex]), do: raise(ArgumentError, ":hex must be a boolean")
 
-    rows = ref |> Native.to_wkb() |> unwrap!()
+    rows =
+      case wkb_srid(series, opts[:srid]) do
+        nil -> ref |> Native.to_wkb() |> unwrap!()
+        srid -> ref |> Native.to_ewkb(srid) |> unwrap!()
+      end
 
     if opts[:hex],
       do: Enum.map(rows, &(&1 && Base.encode16(&1))),
       else: rows
   end
+
+  defp wkb_srid(_series, nil), do: nil
+  defp wkb_srid(_series, false), do: nil
+  defp wkb_srid(_series, srid) when is_integer(srid) and srid >= 0, do: srid
+
+  defp wkb_srid(series, true) do
+    case crs(series) do
+      "EPSG:" <> code ->
+        case Integer.parse(code) do
+          {srid, ""} -> srid
+          _ -> raise ArgumentError, "srid: true needs an EPSG CRS, got #{inspect(crs(series))}"
+        end
+
+      other ->
+        raise ArgumentError, "srid: true needs an EPSG CRS, got #{inspect(other)}"
+    end
+  end
+
+  defp wkb_srid(_series, other),
+    do:
+      raise(ArgumentError, ":srid must be a non-negative integer or true, got: #{inspect(other)}")
 
   @doc """
   GeoJSON geometry objects (RFC 7946), one decoded map per row.

@@ -39,6 +39,7 @@ Row-changing operations (filter, sort, slice, join) compute row indices once and
 | GeoJSON (RFC 7946) | `GeoFrame.read_geojson/2` | `GeoFrame.write_geojson/3` | `.geojson`, `.json` |
 | FlatGeobuf | `GeoFrame.read_flatgeobuf/2` (optional `bbox:` via the index) | `GeoFrame.write_flatgeobuf/3` | `.fgb` |
 | Feather v2 (Arrow IPC file) | `GeoFrame.read_feather/2` | `GeoFrame.write_feather/3` | `.feather`, `.arrow` |
+| PostGIS (optional `:postgrex`) | `GeoFrame.read_postgis/3` | `GeoFrame.to_postgis/4` (`if_exists`, `schema`, `spatial_index`) | n/a (database) |
 | Arrow IPC stream (binary) | `GeoSeries.from_arrow/2`, `GeoDataFrame.from_arrow/2` | `GeoSeries.to_arrow/2`, `GeoDataFrame.to_arrow/2` | n/a (in memory) |
 
 `GeoFrame.read_file/2` and `GeoFrame.write_file/3` choose the format from the extension or
@@ -51,6 +52,20 @@ extension metadata (`geoarrow.wkb` or native types, CRS as PROJJSON) on the geom
 GeoPandas, pyarrow, Explorer and ADBC read what GeoFrame writes and the reverse. Feather and
 GeoParquet files written by GeoPandas 1.2 read directly (LZ4/Zstd/Snappy/gzip/brotli, WKB and
 native encodings, covering bbox).
+
+### PostGIS
+
+Add `{:postgrex, "~> 0.22"}` and start the connection with the GeoFrame types so `geometry`
+columns decode to raw EWKB (parsed in Rust, SRID becomes the CRS):
+
+```elixir
+{:ok, conn} = Postgrex.start_link(hostname: "localhost", database: "gis", types: GeoFrame.Postgrex.Types)
+{:ok, gdf} = GeoFrame.read_postgis(conn, "SELECT id, geom FROM places WHERE id > $1", params: [10])
+:ok = GeoFrame.to_postgis(gdf, conn, "places_copy", if_exists: :replace, spatial_index: true)
+```
+
+Without the types module, select `ST_AsEWKB(geom) AS geom`. Tests tagged `:postgis` need
+`GEOFRAME_POSTGIS_URL` (see Development).
 
 ## Roadmap
 
@@ -81,6 +96,13 @@ Requires Elixir 1.19 / OTP 28 (see `.tool-versions`) and a Rust toolchain.
 mix deps.get
 mix test
 cargo test --workspace
+```
+
+PostGIS tests are excluded unless a database is given:
+
+```sh
+docker run -d --name geoframe-postgis -e POSTGRES_PASSWORD=geoframe -p 55432:5432 postgis/postgis:17-3.5
+GEOFRAME_POSTGIS_URL=postgres://postgres:geoframe@127.0.0.1:55432/postgres mix test --only postgis
 ```
 
 ## License
