@@ -427,6 +427,78 @@ defmodule GeoFrame.GeoDataFrame do
   end
 
   @doc """
+  Joins attributes of `right` onto the rows of `left`, like GeoPandas `GeoDataFrame.merge`.
+
+  `right` is an `Explorer.DataFrame` or a `GeoFrame.GeoDataFrame`; for the latter only the
+  attributes are used and its geometry is dropped (a frame has a single geometry column).
+  The geometry always comes from `left`: it follows its rows, is repeated for duplicated keys
+  and is `nil` for rows that exist only on the right (`how: :right` and `:outer`).
+
+  Options go to `Explorer.DataFrame.join/3` (`:on`, `:how`, `:suffix`, ...); `:how` is one of
+  `:inner` (default), `:left`, `:right`, `:outer` or `:cross`. Raises `ArgumentError` when
+  `:on` names the geometry column or the result would contain a column with its name.
+
+  Known deviations from pandas: `:outer` lists left-only rows last (pandas sorts them by
+  key) and Polars does not coalesce the key, so `:outer` yields `"k"` (nil for right-only
+  rows) plus `"k_right"`; `:inner`, `:left` and `:right` match pandas row for row. Each row
+  keeps the geometry of its own left row either way.
+  """
+  @spec join(t(), DataFrame.t() | t(), keyword()) :: t()
+  def join(left, right, opts \\ [])
+
+  def join(%__MODULE__{} = left, %__MODULE__{data: right}, opts), do: join(left, right, opts)
+
+  def join(
+        %__MODULE__{data: data, geometry: geometry, geometry_column: geo} = left,
+        %DataFrame{} = right,
+        opts
+      ) do
+    reject_geometry_key!(opts[:on], geo)
+    column = temp_column(DataFrame.names(data) ++ DataFrame.names(right))
+    rows = n_rows(left)
+    positions = Series.from_list(Enum.to_list(0..(rows - 1)//1), dtype: {:s, 64})
+
+    tagged =
+      if has_columns?(data),
+        do: DataFrame.put(data, column, positions),
+        else: DataFrame.new([{column, positions}])
+
+    joined = DataFrame.join(tagged, right, opts)
+    indices = joined |> DataFrame.pull(column) |> Series.to_list()
+    attributes = DataFrame.discard(joined, column)
+
+    check_free!(attributes, left)
+    %{left | data: attributes, geometry: take_nullable(geometry, indices, rows)}
+  end
+
+  defp reject_geometry_key!(nil, _geo), do: :ok
+
+  defp reject_geometry_key!(on, geo) do
+    names =
+      on
+      |> List.wrap()
+      |> Enum.map(fn
+        {l, r} -> [l, r]
+        n -> n
+      end)
+      |> List.flatten()
+
+    if Enum.any?(names, &(to_string(&1) == geo)) do
+      raise ArgumentError, "cannot join on the geometry column #{inspect(geo)}"
+    end
+  end
+
+  # `nil` positions (rows without a left match) get a null geometry, appended as a sentinel.
+  defp take_nullable(geometry, indices, rows) do
+    if nil in indices do
+      null = GeoSeries.from_wkt!([nil], crs: GeoSeries.crs(geometry))
+      [geometry, null] |> GeoSeries.concat() |> GeoSeries.take(Enum.map(indices, &(&1 || rows)))
+    else
+      GeoSeries.take(geometry, indices)
+    end
+  end
+
+  @doc """
   Rows whose geometry intersects the box, like GeoPandas `gdf.cx[xmin:xmax, ymin:ymax]`.
   `nil` bounds are unbounded; see `GeoFrame.GeoSeries.cx/5`. Attributes stay aligned.
   """

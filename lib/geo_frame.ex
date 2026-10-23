@@ -92,6 +92,13 @@ defmodule GeoFrame do
       )
 
   @doc """
+  Alias of `GeoFrame.GeoDataFrame.join/3` (GeoPandas `GeoDataFrame.merge`).
+  """
+  @spec merge(GeoDataFrame.t(), Explorer.DataFrame.t() | GeoDataFrame.t(), keyword()) ::
+          GeoDataFrame.t()
+  defdelegate merge(left, right, opts \\ []), to: GeoDataFrame, as: :join
+
+  @doc """
   Alias of `GeoFrame.GeoSeries.from_xy/3` (GeoPandas `points_from_xy`).
   """
   @spec points_from_xy(
