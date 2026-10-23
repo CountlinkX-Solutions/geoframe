@@ -304,7 +304,12 @@ impl GeoColumn {
         let first = columns
             .first()
             .ok_or_else(|| "concat needs at least one column".to_string())?;
-        if let Some(other) = columns.iter().find(|c| c.crs() != first.crs()) {
+        let same = |a: Option<String>, b: Option<String>| match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => crate::crs_equivalent(&a, &b),
+            _ => false,
+        };
+        if let Some(other) = columns.iter().find(|c| !same(c.crs(), first.crs())) {
             return Err(format!(
                 "CRS mismatch: {:?} and {:?}; reproject or set the CRS first",
                 first.crs(),

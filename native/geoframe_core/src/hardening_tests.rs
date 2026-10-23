@@ -417,3 +417,43 @@ fn every_writer_replaces_an_existing_file() {
     }
     assert!(leftovers(&dir).is_empty());
 }
+
+// -- 9. CRS equivalence ---------------------------------------------------------------------
+
+#[test]
+fn crs_equivalence_ignores_case_and_treats_crs84_as_epsg_4326() {
+    use crate::crs_equivalent;
+    assert!(crs_equivalent("epsg:4326", "EPSG:4326"));
+    assert!(crs_equivalent("OGC:CRS84", "EPSG:4326"));
+    assert!(crs_equivalent("ogc:crs84", "epsg:4326"));
+    assert!(crs_equivalent("EPSG:3857", "epsg:3857"));
+    assert!(!crs_equivalent("EPSG:4326", "EPSG:3857"));
+    assert!(!crs_equivalent("OGC:CRS84", "EPSG:3857"));
+    // Unresolvable labels fall back to a case-insensitive comparison.
+    assert!(crs_equivalent("custom:1", "CUSTOM:1"));
+    assert!(!crs_equivalent("custom:1", "custom:2"));
+}
+
+#[test]
+fn binary_ops_and_concat_accept_equivalent_crs_labels() {
+    let a = GeoColumn::from_wkt(&[Some("POINT (1 1)")], Some("OGC:CRS84")).unwrap();
+    let b = GeoColumn::from_wkt(
+        &[Some("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))")],
+        Some("EPSG:4326"),
+    )
+    .unwrap();
+    assert_eq!(
+        b.predicate(&a, crate::Predicate::Intersects).unwrap(),
+        vec![Some(true)]
+    );
+    let c = GeoColumn::concat(&[&a, &b]).unwrap();
+    assert_eq!(c.len(), 2);
+    assert_eq!(
+        c.crs().as_deref(),
+        Some("OGC:CRS84"),
+        "labels stay as stored"
+    );
+    let other = GeoColumn::from_wkt(&[Some("POINT (1 1)")], Some("EPSG:3857")).unwrap();
+    assert!(b.predicate(&other, crate::Predicate::Intersects).is_err());
+    assert!(GeoColumn::concat(&[&a, &other]).is_err());
+}

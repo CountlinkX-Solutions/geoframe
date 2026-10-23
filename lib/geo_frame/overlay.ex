@@ -539,10 +539,15 @@ defmodule GeoFrame.Overlay do
     GeoDataFrame.new(DataFrame.new(columns), geometry, geometry_column: df1.geometry_column)
   end
 
-  defp check_crs!(a, b) when is_nil(a) or is_nil(b) or a == b, do: :ok
+  defp check_crs!(a, b) when is_nil(a) or is_nil(b), do: :ok
 
-  defp check_crs!(a, b),
-    do: raise(ArgumentError, "CRS mismatch between the inputs: #{inspect(a)} and #{inspect(b)}")
+  defp check_crs!(a, b) do
+    if GeoFrame.CRS.equivalent?(a, b) do
+      :ok
+    else
+      raise ArgumentError, "CRS mismatch between the inputs: #{inspect(a)} and #{inspect(b)}"
+    end
+  end
 
   defp names?(data), do: DataFrame.names(data) != []
 

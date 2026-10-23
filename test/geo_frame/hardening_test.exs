@@ -63,4 +63,50 @@ defmodule GeoFrame.HardeningTest do
     assert text =~ "..."
     assert inspect(s([])) =~ "size: 0"
   end
+
+  describe "CRS equivalence" do
+    alias Explorer.DataFrame
+    alias GeoFrame.GeoDataFrame
+
+    @tag :tmp_dir
+    test "a GeoJSON frame (OGC:CRS84) joins a FlatGeobuf frame (EPSG:4326)", %{tmp_dir: dir} do
+      polygons =
+        GeoDataFrame.new(
+          DataFrame.new(name: ["A"]),
+          s(["POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))"], crs: "EPSG:4326")
+        )
+
+      points =
+        GeoDataFrame.new(
+          DataFrame.new(id: [1, 2]),
+          s(["POINT (1 1)", "POINT (9 9)"], crs: "EPSG:4326")
+        )
+
+      geojson = Path.join(dir, "points.geojson")
+      fgb = Path.join(dir, "polygons.fgb")
+      :ok = GeoFrame.write_geojson(points, geojson)
+      :ok = GeoFrame.write_flatgeobuf(polygons, fgb)
+
+      {:ok, from_geojson} = GeoFrame.read_geojson(geojson)
+      {:ok, from_fgb} = GeoFrame.read_flatgeobuf(fgb)
+      assert GeoDataFrame.crs(from_geojson) == "OGC:CRS84"
+      assert GeoDataFrame.crs(from_fgb) == "EPSG:4326"
+
+      joined = GeoFrame.sjoin(from_geojson, from_fgb)
+      assert DataFrame.n_rows(joined.data) == 1
+      assert GeoDataFrame.crs(joined) == "OGC:CRS84"
+    end
+
+    test "labels compare case-insensitively and mismatches still raise" do
+      assert GeoFrame.CRS.equivalent?("epsg:4326", "EPSG:4326")
+      assert GeoFrame.CRS.equivalent?("OGC:CRS84", "EPSG:4326")
+      refute GeoFrame.CRS.equivalent?("EPSG:4326", "EPSG:3857")
+
+      a = s(["POINT (1 1)"], crs: "epsg:4326")
+      b = s(["POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))"], crs: "EPSG:4326")
+      assert GeoSeries.intersects(a, b) |> Explorer.Series.to_list() == [true]
+      c = s(["POINT (1 1)"], crs: "EPSG:3857")
+      assert_raise ArgumentError, fn -> GeoSeries.intersects(a, c) end
+    end
+  end
 end

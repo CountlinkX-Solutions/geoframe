@@ -41,7 +41,7 @@ pub use parquet_io::{
     GeoParquetRead, ParquetOptions,
 };
 pub use predicates::Predicate;
-pub use reproject::{crs_is_geographic, normalize_crs};
+pub use reproject::{crs_equivalent, crs_is_geographic, normalize_crs};
 pub use set_ops::SetOp;
 pub use sindex::{NearestPairs, QueryPredicate};
 pub use unary::{BufferOptions, Origin, UnaryOp};

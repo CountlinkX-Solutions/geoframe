@@ -67,6 +67,7 @@ defmodule GeoFrame.Native do
   def line_merge(_ref, _directed), do: err()
   def geographic(_ref), do: err()
   def crs_is_geographic(_crs), do: err()
+  def crs_equivalent(_a, _b), do: err()
   def x(_ref), do: err()
   def y(_ref), do: err()
   def geom_type(_ref), do: err()
