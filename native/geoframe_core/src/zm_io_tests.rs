@@ -405,3 +405,234 @@ mod flatgeobuf {
         }
     }
 }
+
+// -- Shapefile ----------------------------------------------------------------------------
+
+mod shapefile {
+    use super::*;
+    use crate::{read_shapefile, shapefile_info, write_shapefile};
+
+    fn write(dir: &TempDir, name: &str, geometry: &GeoColumn) -> String {
+        let file = path(dir, name);
+        write_shapefile(&file, geometry, &no_attributes(geometry.len()), None).unwrap();
+        file
+    }
+
+    fn shape_type(file: &str) -> i32 {
+        let bytes = std::fs::read(file).unwrap();
+        i32::from_le_bytes(bytes[32..36].try_into().unwrap())
+    }
+
+    /// `[xmin, ymin, xmax, ymax, zmin, zmax, mmin, mmax]` of the `.shp` header.
+    fn header_ranges(file: &str) -> [f64; 8] {
+        let bytes = std::fs::read(file).unwrap();
+        let mut out = [0.0; 8];
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = f64::from_le_bytes(bytes[36 + 8 * i..44 + 8 * i].try_into().unwrap());
+        }
+        out
+    }
+
+    #[test]
+    fn z_geometries_use_the_z_shape_types() {
+        let dir = TempDir::new().unwrap();
+        for (name, rows, expected) in [
+            ("pt", vec![Some("POINT Z (1 2 3)"), None], 11),
+            ("ln", vec![Some("LINESTRING Z (0 0 1, 1 1 2)")], 13),
+            ("mln", vec![Some("MULTILINESTRING Z ((0 0 1, 1 1 2), (2 2 3, 3 3 4))")], 13),
+            ("pg", vec![Some("POLYGON Z ((0 0 1, 0 4 2, 4 4 3, 4 0 4, 0 0 1))")], 15),
+            ("mpg", vec![Some("MULTIPOLYGON Z (((0 0 1, 0 1 1, 1 1 1, 0 0 1)), ((5 5 2, 5 6 2, 6 6 2, 5 5 2)))")], 15),
+            ("mp", vec![Some("MULTIPOINT Z ((0 0 1), (1 1 2))")], 18),
+        ] {
+            let g = col(&rows);
+            let file = write(&dir, &format!("{name}.shp"), &g);
+            assert_eq!(shape_type(&file), expected, "{name}");
+            let back = read_shapefile(&file, None).unwrap().geometry;
+            assert_eq!(wkt(&back), wkt(&g), "{name}");
+            assert_eq!(back.has_z(), g.has_z(), "{name}");
+        }
+    }
+
+    #[test]
+    fn m_only_geometries_use_the_m_shape_types() {
+        let dir = TempDir::new().unwrap();
+        for (name, rows, expected) in [
+            ("pt", vec![Some("POINT M (1 2 3)")], 21),
+            ("ln", vec![Some("LINESTRING M (0 0 1, 1 1 2)")], 23),
+            (
+                "pg",
+                vec![Some("POLYGON M ((0 0 1, 0 4 2, 4 4 3, 4 0 4, 0 0 1))")],
+                25,
+            ),
+            ("mp", vec![Some("MULTIPOINT M ((0 0 1), (1 1 2))")], 28),
+        ] {
+            let g = col(&rows);
+            let file = write(&dir, &format!("{name}.shp"), &g);
+            assert_eq!(shape_type(&file), expected, "{name}");
+            let back = read_shapefile(&file, None).unwrap().geometry;
+            assert_eq!(wkt(&back), wkt(&g), "{name}");
+            assert_eq!(back.has_z(), g.has_z(), "{name}");
+            assert_eq!(back.has_m(), g.has_m(), "{name}");
+        }
+    }
+
+    #[test]
+    fn zm_geometries_use_z_types_with_an_m_section() {
+        let dir = TempDir::new().unwrap();
+        for (name, rows) in [
+            ("pt", vec![Some("POINT ZM (1 2 3 4)")]),
+            ("ln", vec![Some("LINESTRING ZM (0 0 1 5, 1 1 2 6)")]),
+            (
+                "pg",
+                vec![Some(
+                    "POLYGON ZM ((0 0 1 5, 0 4 2 6, 4 4 3 7, 4 0 4 8, 0 0 1 5))",
+                )],
+            ),
+            ("mp", vec![Some("MULTIPOINT ZM ((0 0 1 5), (1 1 2 6))")]),
+        ] {
+            let g = col(&rows);
+            let file = write(&dir, &format!("{name}.shp"), &g);
+            assert!(matches!(shape_type(&file), 11 | 13 | 15 | 18), "{name}");
+            let back = read_shapefile(&file, None).unwrap().geometry;
+            assert_eq!(wkt(&back), wkt(&g), "{name}");
+            assert_eq!(back.has_z(), g.has_z(), "{name}");
+            assert_eq!(back.has_m(), g.has_m(), "{name}");
+        }
+    }
+
+    #[test]
+    fn header_carries_the_z_and_m_ranges() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[
+            Some("LINESTRING ZM (0 0 1 5, 1 1 9 6)"),
+            Some("LINESTRING ZM (2 2 -3 7, 3 3 4 -8)"),
+        ]);
+        let file = write(&dir, "r.shp", &g);
+        assert_eq!(
+            header_ranges(&file),
+            [0.0, 0.0, 3.0, 3.0, -3.0, 9.0, -8.0, 7.0]
+        );
+        let shx = file.replace(".shp", ".shx");
+        let bytes = std::fs::read(shx).unwrap();
+        let mut ranges = [0.0; 4];
+        for (i, slot) in ranges.iter_mut().enumerate() {
+            *slot = f64::from_le_bytes(bytes[68 + 8 * i..76 + 8 * i].try_into().unwrap());
+        }
+        assert_eq!(ranges, [-3.0, 9.0, -8.0, 7.0]);
+    }
+
+    #[test]
+    fn a_z_only_file_has_no_m_section_and_zero_m_range() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[Some("POINT Z (1 2 3)")]);
+        let file = write(&dir, "zonly.shp", &g);
+        let bytes = std::fs::read(&file).unwrap();
+        // type + x + y + z = 28 bytes of content (GDAL writes the same)
+        assert_eq!(i32::from_be_bytes(bytes[104..108].try_into().unwrap()), 14);
+        assert_eq!(&header_ranges(&file)[4..], [3.0, 3.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn two_dimensional_files_are_unchanged() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[Some("POINT (1 2)")]);
+        let file = write(&dir, "plain.shp", &g);
+        assert_eq!(shape_type(&file), 1);
+        assert_eq!(&header_ranges(&file)[4..], [0.0; 4]);
+    }
+
+    #[test]
+    fn rows_without_z_in_a_z_file_read_back_with_nan() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[Some("POINT Z (1 2 3)"), Some("POINT (4 5)"), None]);
+        let file = write(&dir, "mix.shp", &g);
+        assert_eq!(shape_type(&file), 11);
+        let back = read_shapefile(&file, None).unwrap().geometry;
+        assert_eq!(back.has_z(), [true, true, false]);
+        assert_eq!(back.z(), [Some(3.0), None, None]);
+    }
+
+    #[test]
+    fn nan_m_is_no_data_and_a_shape_without_measures_reads_as_z() {
+        let dir = TempDir::new().unwrap();
+        // Row 0 has measures; row 1 is 2D+Z so its M is no data and it reads back as Z only.
+        let g = col(&[Some("POINT ZM (1 2 3 4)"), Some("POINT Z (5 6 7)")]);
+        let file = write(&dir, "nodata.shp", &g);
+        let back = read_shapefile(&file, None).unwrap().geometry;
+        assert_eq!(back.has_m(), [true, false]);
+        assert_eq!(back.m(), [Some(4.0), None]);
+        assert_eq!(back.z(), [Some(3.0), Some(7.0)]);
+    }
+
+    #[test]
+    fn ring_orientation_moves_z_with_its_vertices() {
+        let dir = TempDir::new().unwrap();
+        // Counter-clockwise exterior: the writer reverses it, and must reverse Z with it.
+        let g = col(&[Some("POLYGON Z ((0 0 10, 4 0 20, 4 4 30, 0 4 40, 0 0 10))")]);
+        let file = write(&dir, "ring.shp", &g);
+        let back = read_shapefile(&file, None).unwrap().geometry;
+        let expect = col(&[Some("POLYGON Z ((0 0 10, 0 4 40, 4 4 30, 4 0 20, 0 0 10))")]);
+        assert_eq!(wkt(&back), wkt(&expect));
+    }
+
+    #[test]
+    fn info_names_the_z_and_m_types() {
+        let dir = TempDir::new().unwrap();
+        let z = write(&dir, "iz.shp", &col(&[Some("LINESTRING Z (0 0 1, 1 1 2)")]));
+        assert_eq!(
+            shapefile_info(&z, None).unwrap().geometry_type.as_deref(),
+            Some("LineString Z")
+        );
+        let m = write(&dir, "im.shp", &col(&[Some("POINT M (0 0 1)")]));
+        assert_eq!(
+            shapefile_info(&m, None).unwrap().geometry_type.as_deref(),
+            Some("Point M")
+        );
+    }
+
+    #[test]
+    fn zipped_z_shapefiles_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[Some("POINT ZM (1 2 3 4)")]);
+        let file = path(&dir, "z.zip");
+        write_shapefile(&file, &g, &no_attributes(1), None).unwrap();
+        let back = read_shapefile(&file, None).unwrap().geometry;
+        assert_eq!(wkt(&back), wkt(&g));
+    }
+
+    /// The `.shp` of a one-polyline-Z file with the point count patched.
+    fn patched_point_count(count: i32) -> Result<(), String> {
+        let dir = TempDir::new().unwrap();
+        let file = write(
+            &dir,
+            "evil.shp",
+            &col(&[Some("LINESTRING Z (0 0 1, 1 1 2)")]),
+        );
+        let mut bytes = std::fs::read(&file).unwrap();
+        // record content starts at 108: type, box (32), numParts, numPoints
+        bytes[108 + 4 + 32 + 4..108 + 4 + 32 + 8].copy_from_slice(&count.to_le_bytes());
+        std::fs::write(&file, bytes).unwrap();
+        read_shapefile(&file, None).map(|_| ())
+    }
+
+    #[test]
+    fn huge_declared_point_counts_are_errors_not_allocations() {
+        assert!(patched_point_count(i32::MAX).is_err());
+        assert!(patched_point_count(-1).is_err());
+        assert!(patched_point_count(1_000_000).is_err());
+    }
+
+    #[test]
+    fn a_truncated_z_array_is_an_error() {
+        let dir = TempDir::new().unwrap();
+        let file = write(
+            &dir,
+            "cut.shp",
+            &col(&[Some("LINESTRING Z (0 0 1, 1 1 2)")]),
+        );
+        let mut bytes = std::fs::read(&file).unwrap();
+        bytes.truncate(bytes.len() - 12);
+        std::fs::write(&file, bytes).unwrap();
+        assert!(read_shapefile(&file, None).is_err());
+    }
+}
