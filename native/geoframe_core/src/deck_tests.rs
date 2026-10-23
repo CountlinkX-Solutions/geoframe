@@ -2,7 +2,7 @@
 
 use geo::{Geometry, Point};
 
-use crate::deck::gather_rows;
+use crate::deck::{gather_rows, gather_vertices};
 use crate::{deck_buffers, DeckBuffers, GeoColumn};
 
 fn column(rows: &[Option<&str>]) -> GeoColumn {
@@ -157,4 +157,36 @@ fn deck_buffers_omits_style_buffers_without_style_input() {
     assert!(list
         .iter()
         .all(|(n, _)| !n.ends_with(".colors") && !n.ends_with(".sizes")));
+}
+
+#[test]
+fn gather_vertices_repeats_a_value_for_every_vertex_of_its_part() {
+    let row_values = [1u8, 2, 3];
+    // Two parts of 2 and 3 vertices drawn from rows 2 and 0.
+    assert_eq!(
+        gather_vertices(&[2, 0], &[0, 2, 5], &row_values, 1),
+        vec![3, 3, 1, 1, 1]
+    );
+    assert!(gather_vertices(&[], &[], &row_values, 1).is_empty());
+}
+
+#[test]
+fn line_and_polygon_styles_are_per_vertex_and_point_styles_per_point() {
+    let col = column(&[
+        Some("LINESTRING (0 0, 1 1, 2 0)"),
+        Some("POLYGON ((0 0, 1 0, 1 1, 0 0))"),
+        Some("POINT (5 5)"),
+    ]);
+    let colors: Vec<u8> = (0u8..12).collect();
+    let (list, _) = deck_buffers(&col, &colors, &[]);
+    let get = |name: &str| list.iter().find(|(n, _)| *n == name).unwrap().1.clone();
+    assert_eq!(get("lines.colors").len(), 3 * 4, "3 vertices x RGBA");
+    assert_eq!(get("lines.colors")[..4], [0, 1, 2, 3]);
+    assert_eq!(
+        get("polygons.colors").len(),
+        4 * 4,
+        "4 ring vertices x RGBA"
+    );
+    assert_eq!(get("polygons.colors")[12..], [4, 5, 6, 7]);
+    assert_eq!(get("points.colors"), vec![8, 9, 10, 11]);
 }

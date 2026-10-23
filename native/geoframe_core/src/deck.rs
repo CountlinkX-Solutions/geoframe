@@ -184,6 +184,26 @@ pub fn gather_rows(rows: &[i32], row_values: &[u8], stride: usize) -> Vec<u8> {
     out
 }
 
+/// Like [`gather_rows`] but one value per *vertex*: part `i` (source row `rows[i]`) covers the
+/// vertices `starts[i]..starts[i + 1]`. deck.gl reads per-feature binary attributes of path and
+/// polygon layers per vertex.
+pub fn gather_vertices(rows: &[i32], starts: &[i32], row_values: &[u8], stride: usize) -> Vec<u8> {
+    let vertices = starts.last().map_or(0, |&end| end as usize);
+    let mut out = Vec::with_capacity(vertices * stride);
+    for (part, &row) in rows.iter().enumerate() {
+        let count = (starts[part + 1] - starts[part]) as usize;
+        let start = row as usize * stride;
+        let value = row_values.get(start..start + stride);
+        for _ in 0..count {
+            match value {
+                Some(v) => out.extend_from_slice(v),
+                None => out.resize(out.len() + stride, 0),
+            }
+        }
+    }
+    out
+}
+
 fn f64_bytes(values: &[f64]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
@@ -200,8 +220,9 @@ fn u32_bytes(values: &[u32]) -> Vec<u8> {
 ///
 /// Names are `points.*`, `lines.*` and `polygons.*`; a layer without parts is omitted.
 /// `colors` (RGBA, 4 bytes per table row) and `sizes` (`f32`, 4 bytes per table row) are optional
-/// (empty = none); they are gathered per part into `*.colors` and `*.sizes`. Polygons take colors
-/// only.
+/// (empty = none); they are gathered into `*.colors` and `*.sizes`: one entry per point, but one per **vertex**
+/// for lines and polygons, the layout deck.gl expects for binary path and polygon attributes.
+/// Polygons take colors only.
 pub fn deck_buffers(
     column: &GeoColumn,
     colors: &[u8],
@@ -209,33 +230,42 @@ pub fn deck_buffers(
 ) -> (Vec<(&'static str, Vec<u8>)>, usize) {
     let b = DeckBuffers::from_column(column);
     let mut list: Vec<(&'static str, Vec<u8>)> = Vec::new();
+    // Points are styled per point; lines and polygons per vertex (`starts` = Some).
     let style = |list: &mut Vec<(&'static str, Vec<u8>)>,
                  rows: &[i32],
+                 starts: Option<&[i32]>,
                  color: &'static str,
                  size: Option<&'static str>| {
+        let gather = |values: &[u8]| match starts {
+            Some(starts) => gather_vertices(rows, starts, values, 4),
+            None => gather_rows(rows, values, 4),
+        };
         if !colors.is_empty() {
-            list.push((color, gather_rows(rows, colors, 4)));
+            list.push((color, gather(colors)));
         }
         if let (Some(name), false) = (size, sizes.is_empty()) {
-            list.push((name, gather_rows(rows, sizes, 4)));
+            list.push((name, gather(sizes)));
         }
     };
 
     if !b.point_rows.is_empty() {
         list.push(("points.positions", f64_bytes(&b.point_positions)));
         list.push(("points.rows", i32_bytes(&b.point_rows)));
-        style(
-            &mut list,
-            &b.point_rows,
-            "points.colors",
-            Some("points.sizes"),
-        );
+        let names = ("points.colors", Some("points.sizes"));
+        style(&mut list, &b.point_rows, None, names.0, names.1);
     }
     if !b.line_rows.is_empty() {
         list.push(("lines.positions", f64_bytes(&b.line_positions)));
         list.push(("lines.starts", i32_bytes(&b.line_starts)));
         list.push(("lines.rows", i32_bytes(&b.line_rows)));
-        style(&mut list, &b.line_rows, "lines.colors", Some("lines.sizes"));
+        let starts = Some(b.line_starts.as_slice());
+        style(
+            &mut list,
+            &b.line_rows,
+            starts,
+            "lines.colors",
+            Some("lines.sizes"),
+        );
     }
     if !b.polygon_rows.is_empty() {
         list.push(("polygons.positions", f64_bytes(&b.polygon_positions)));
@@ -243,7 +273,8 @@ pub fn deck_buffers(
         list.push(("polygons.ring_starts", i32_bytes(&b.ring_starts)));
         list.push(("polygons.triangles", u32_bytes(&b.triangles)));
         list.push(("polygons.rows", i32_bytes(&b.polygon_rows)));
-        style(&mut list, &b.polygon_rows, "polygons.colors", None);
+        let starts = Some(b.polygon_starts.as_slice());
+        style(&mut list, &b.polygon_rows, starts, "polygons.colors", None);
     }
     (list, b.skipped)
 }

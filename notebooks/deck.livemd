@@ -1,0 +1,57 @@
+# GeoFrame deck.gl map
+
+```elixir
+Mix.install([
+  {:geoframe, path: Path.join(__DIR__, "..")},
+  {:kino, "~> 0.19"}
+])
+```
+
+## Binary maps with deck.gl
+
+`GeoFrame.Kino.deck/2` ships geometry to the browser as typed-array buffers (no GeoJSON) and
+draws it with deck.gl, so a million points stay interactive. deck.gl and the Carto basemap load
+from the internet in your browser.
+
+## Neighborhood polygons
+
+Color by a numeric column with the viridis ramp, outline the polygons and show a tooltip on
+hover.
+
+```elixir
+path = Path.join([__DIR__, "..", "test", "fixtures", "neighborhoods.parquet"]) |> Path.expand()
+gdf = GeoFrame.read_parquet!(path)
+
+GeoFrame.Kino.deck(gdf, color: {:population, :viridis}, opacity: 0.7, tooltip: [:name, :population])
+```
+
+## One million points
+
+Random points over South Florida, reprojected from Web Mercator to show that the widget
+converts to longitude/latitude first. Color by a categorical column and size by a number.
+
+```elixir
+n = 1_000_000
+lon = for _ <- 1..n, do: -80.9 + :rand.uniform() * 1.1
+lat = for _ <- 1..n, do: 25.2 + :rand.uniform() * 1.0
+
+points =
+  GeoFrame.GeoSeries.from_xy(lon, lat, crs: "EPSG:4326")
+  |> GeoFrame.GeoSeries.to_crs(3857)
+
+frame =
+  GeoFrame.GeoDataFrame.new(
+    Explorer.DataFrame.new(
+      zone: Enum.map(1..n, &Enum.at(["a", "b", "c"], rem(&1, 3))),
+      size: Enum.map(1..n, fn _ -> :rand.uniform() end)
+    ),
+    points
+  )
+
+GeoFrame.Kino.deck(frame,
+  color: {:zone, :categorical},
+  radius: :size,
+  opacity: 0.6,
+  tooltip: [:zone, :size]
+)
+```
