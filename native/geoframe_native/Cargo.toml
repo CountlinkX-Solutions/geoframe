@@ -1,0 +1,16 @@
+[package]
+name = "geoframe_native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+# NIF symbols (enif_*) only resolve inside the BEAM, so this crate has no Rust tests;
+# logic and its tests live in geoframe_core.
+test = false
+doctest = false
+
+[dependencies]
+geoframe_core = { path = "../geoframe_core" }
+rustler = "0.39.0"
