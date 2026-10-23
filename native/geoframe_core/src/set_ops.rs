@@ -7,21 +7,26 @@
 //!
 //! Geometries fall in three families: polygonal (`Polygon`, `MultiPolygon`, `Rect`,
 //! `Triangle`), linear (`Line`, `LineString`, `MultiLineString`) and points (`Point`,
-//! `MultiPoint`). `GeometryCollection` is unsupported and gives null.
+//! `MultiPoint`). `GeometryCollection` input is unsupported and gives null (a collection of
+//! mixed dimensions has no GeoArrow family of its own).
 //!
-//! | left x right      | intersection | difference | union / symmetric difference |
-//! |-------------------|--------------|------------|------------------------------|
-//! | polygonal x polygonal | `BooleanOps` | `BooleanOps` | `BooleanOps`           |
-//! | linear x polygonal    | `clip`       | `clip` (inverted) | null              |
-//! | polygonal x linear    | `clip`       | left unchanged    | null              |
-//! | points x anything     | points kept by `Intersects` | points not intersecting | points x points only |
-//! | polygonal/linear x points | points kept | left unchanged | null              |
-//! | linear x linear       | null         | null       | null                         |
+//! | left x right          | how it is computed                                              |
+//! |-----------------------|-----------------------------------------------------------------|
+//! | polygonal x polygonal | `BooleanOps` for the area; intersection adds shared edges and touch points |
+//! | linear x linear       | noding (see [`crate::noding`]): crossings, overlaps, split lines |
+//! | linear x polygonal    | noding against the polygon boundary, pieces classified inside / on / outside |
+//! | points x anything     | point-in-geometry tests                                          |
 //!
-//! Polygonal results contain only the 2-D part: polygons sharing just an edge intersect in
-//! `POLYGON EMPTY`, where Shapely returns the edge. Line results contain only the 1-D part: a line touching a polygon at a single point gives
-//! an empty line, where Shapely returns that point. Mixed-dimension union and symmetric
-//! difference would be geometry collections and are not provided.
+//! Every combination is supported for all four operations. Results follow GEOS: the parts of
+//! the result are grouped by dimension, a lower-dimensional part contained in a higher one is
+//! absorbed, and a result of several dimensions is a `GeometryCollection` with one member per
+//! part (polygons, then lines, then points). A union (or symmetric difference) of a polygon
+//! and a line is the polygon plus the pieces of the line outside it; of a polygon and a point,
+//! the polygon plus the point when it is outside. The pieces of noded lines are only cut at
+//! nodes, never at plain vertices.
+//!
+//! Two polygons sharing just an edge intersect in that `LineString`, sharing a vertex in a
+//! `Point`; a line touching a polygon at one point intersects it in that point.
 //!
 //! # Empty results
 //!
@@ -35,6 +40,7 @@ use geo::{
     MultiPolygon, Point, Polygon,
 };
 
+use crate::mixed_ops::{self, Empty, Parts};
 use crate::predicates::guarded;
 use crate::GeoColumn;
 
@@ -84,7 +90,7 @@ impl Family {
     }
 }
 
-fn polygons(m: MultiPolygon<f64>) -> Geometry<f64> {
+pub(crate) fn polygons(m: MultiPolygon<f64>) -> Geometry<f64> {
     match m.0.len() {
         0 => Geometry::Polygon(Polygon::new(LineString::new(vec![]), vec![])),
         1 => Geometry::Polygon(m.0.into_iter().next().expect("one polygon")),
@@ -92,7 +98,7 @@ fn polygons(m: MultiPolygon<f64>) -> Geometry<f64> {
     }
 }
 
-fn lines(m: MultiLineString<f64>) -> Geometry<f64> {
+pub(crate) fn lines(m: MultiLineString<f64>) -> Geometry<f64> {
     match m.0.len() {
         0 => Geometry::LineString(LineString::new(vec![])),
         1 => Geometry::LineString(m.0.into_iter().next().expect("one line")),
@@ -100,7 +106,7 @@ fn lines(m: MultiLineString<f64>) -> Geometry<f64> {
     }
 }
 
-fn points(pts: Vec<Point<f64>>) -> Geometry<f64> {
+pub(crate) fn points(pts: Vec<Point<f64>>) -> Geometry<f64> {
     match pts.len() {
         1 => Geometry::Point(pts[0]),
         _ => Geometry::MultiPoint(MultiPoint::new(pts)),
@@ -128,25 +134,32 @@ fn filter_points(pts: &[Point<f64>], other: &Geometry<f64>, keep: bool) -> Geome
     points(dedup_points(kept))
 }
 
-fn overlay(a: &Geometry<f64>, b: &Geometry<f64>, op: SetOp) -> Option<Geometry<f64>> {
+pub(crate) fn overlay_pair(
+    a: &Geometry<f64>,
+    b: &Geometry<f64>,
+    op: SetOp,
+) -> Option<Geometry<f64>> {
     use SetOp::{Difference, Intersection, SymmetricDifference, Union};
     match (Family::of(a)?, Family::of(b)?) {
-        (Family::Polygonal(x), Family::Polygonal(y)) => Some(polygons(match op {
-            Intersection => x.intersection(&y),
-            Union => x.union(&y),
-            Difference => x.difference(&y),
-            SymmetricDifference => x.xor(&y),
-        })),
-        (Family::Linear(l), Family::Polygonal(p)) => match op {
-            Intersection => Some(lines(p.clip(&l, false))),
-            Difference => Some(lines(p.clip(&l, true))),
-            _ => None,
-        },
-        (Family::Polygonal(_), Family::Linear(l)) => match op {
-            Intersection => Some(lines(a_polygons(a)?.clip(&l, false))),
-            Difference => Some(a.clone()),
-            _ => None,
-        },
+        (Family::Polygonal(x), Family::Polygonal(y)) => Some(match op {
+            Intersection => mixed_ops::polygonal_intersection(&x, &y),
+            Union => polygons(x.union(&y)),
+            Difference => polygons(x.difference(&y)),
+            SymmetricDifference => polygons(x.xor(&y)),
+        }),
+        (Family::Linear(l), Family::Polygonal(p)) => Some(match op {
+            Intersection => mixed_ops::line_polygon_intersection(&l, &p),
+            Difference => lines(MultiLineString::new(mixed_ops::line_outside_polygon(
+                &l, &p,
+            ))),
+            Union | SymmetricDifference => mixed_ops::polygon_line_union(&p, &l),
+        }),
+        (Family::Polygonal(p), Family::Linear(l)) => Some(match op {
+            Intersection => mixed_ops::line_polygon_intersection(&l, &p),
+            Difference => polygons(p),
+            Union | SymmetricDifference => mixed_ops::polygon_line_union(&p, &l),
+        }),
+        (Family::Linear(x), Family::Linear(y)) => Some(mixed_ops::line_line(&x, &y, op)),
         (Family::Points(x), Family::Points(y)) => Some(match op {
             Intersection => filter_points(&x, b, true),
             Difference => filter_points(&x, b, false),
@@ -159,26 +172,47 @@ fn overlay(a: &Geometry<f64>, b: &Geometry<f64>, op: SetOp) -> Option<Geometry<f
                 points(dedup_points([out, rest].concat()))
             }
         }),
-        (Family::Points(x), _) => match op {
-            Intersection => Some(filter_points(&x, b, true)),
-            Difference => Some(filter_points(&x, b, false)),
-            _ => None,
-        },
-        (_, Family::Points(y)) => match op {
-            Intersection => Some(filter_points(&y, a, true)),
-            Difference => Some(a.clone()),
-            _ => None,
-        },
-        (Family::Linear(_), Family::Linear(_)) => None,
+        (Family::Points(x), other) => Some(match op {
+            Intersection => filter_points(&x, b, true),
+            Difference => filter_points(&x, b, false),
+            Union | SymmetricDifference => union_with_points(other, b, &x),
+        }),
+        (other, Family::Points(y)) => Some(match op {
+            Intersection => filter_points(&y, a, true),
+            Difference => a.clone(),
+            Union | SymmetricDifference => union_with_points(other, a, &y),
+        }),
     }
 }
 
-/// The polygonal family of `geom` as a multipolygon.
-fn a_polygons(geom: &Geometry<f64>) -> Option<MultiPolygon<f64>> {
-    match Family::of(geom)? {
-        Family::Polygonal(m) => Some(m),
-        _ => None,
-    }
+/// `geom` (already classified as `family`) together with the points not already on it.
+fn union_with_points(family: Family, geom: &Geometry<f64>, pts: &[Point<f64>]) -> Geometry<f64> {
+    let outside: Vec<Point<f64>> = dedup_points(
+        pts.iter()
+            .filter(|p| !p.intersects(geom))
+            .copied()
+            .collect(),
+    );
+    let (parts, empty) = match family {
+        Family::Polygonal(p) => (
+            Parts {
+                polygons: p.0,
+                lines: vec![],
+                points: outside,
+            },
+            Empty::Polygon,
+        ),
+        Family::Linear(l) => (
+            Parts {
+                polygons: vec![],
+                lines: l.0,
+                points: outside,
+            },
+            Empty::Line,
+        ),
+        Family::Points(_) => unreachable!("point x point is handled by the caller"),
+    };
+    parts.into_geometry(empty)
 }
 
 impl GeoColumn {
@@ -187,9 +221,9 @@ impl GeoColumn {
     pub fn set_op(&self, other: &GeoColumn, op: SetOp) -> Result<GeoColumn, String> {
         let rows = self.zip_pairs(
             other,
-            |a, b| guarded(|| overlay(a, b, op)).flatten(),
+            |a, b| guarded(|| overlay_pair(a, b, op)).flatten(),
             |scalar| scalar.clone(),
-            |scalar, row| guarded(|| overlay(row, scalar, op)).flatten(),
+            |scalar, row| guarded(|| overlay_pair(row, scalar, op)).flatten(),
         )?;
         self.rebuild(&rows)
     }
@@ -244,20 +278,32 @@ fn union_all_rows(rows: Vec<Geometry<f64>>) -> Option<Geometry<f64>> {
     for family in families {
         match family {
             Family::Polygonal(m) => polys.push(m.orient(Direction::Default)),
-            Family::Linear(m) => {
-                for line in m.0 {
-                    if !lns.contains(&line) {
-                        lns.push(line);
-                    }
-                }
-            }
+            Family::Linear(m) => lns = mixed_ops::lines_union(&lns, &m.0),
             Family::Points(p) => pts.extend(p),
         }
     }
-    match (polys.is_empty(), lns.is_empty(), pts.is_empty()) {
-        (false, true, true) => Some(polygons(unary_union(&polys))),
-        (true, false, true) => Some(lines(MultiLineString::new(lns))),
-        (true, true, false) => Some(points(dedup_points(pts))),
-        _ => None,
-    }
+    let area = if polys.is_empty() {
+        MultiPolygon::new(vec![])
+    } else {
+        unary_union(&polys)
+    };
+    // Lower dimensions inside a higher one are absorbed, as in GEOS.
+    let linework = MultiLineString::new(lns);
+    let lns = if area.0.is_empty() {
+        linework.0.clone()
+    } else {
+        mixed_ops::line_outside_polygon(&linework, &area)
+    };
+    let pts = dedup_points(pts)
+        .into_iter()
+        .filter(|p| !p.intersects(&area) && !p.intersects(&linework))
+        .collect();
+    Some(
+        Parts {
+            polygons: area.0,
+            lines: lns,
+            points: pts,
+        }
+        .into_geometry(Empty::Polygon),
+    )
 }

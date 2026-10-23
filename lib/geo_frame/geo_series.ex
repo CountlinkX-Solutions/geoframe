@@ -1531,13 +1531,12 @@ defmodule GeoFrame.GeoSeries do
     Pairing, null and CRS rules are those of `intersects/2` (`other` may be a series of the
     same length, or a single geometry / WKT string that broadcasts).
 
-    Supported: polygonal x polygonal in full; line x polygon for `intersection` and
-    `difference` (only the one-dimensional part is kept); points against any geometry for
-    `intersection` and `difference`, and point x point for all four. Every other combination
-    (and `GeometryCollection` input) gives `nil`. Empty results are empty geometries
-    (`POLYGON EMPTY`, `LINESTRING EMPTY`, `MULTIPOINT EMPTY`), not `nil`. Lower-dimensional
-    results are dropped: polygons sharing only an edge intersect in `POLYGON EMPTY` where
-    Shapely returns the shared `LINESTRING`.
+    Every combination of points, lines and polygons is supported, with GEOS results: lines are
+    noded (crossings, overlaps), the lower-dimensional parts of a result are kept (two squares
+    sharing an edge intersect in that `LINESTRING`, sharing a corner in a `POINT`), and a result
+    of several dimensions is a `GEOMETRYCOLLECTION` with one member per part. Only
+    `GeometryCollection` input gives `nil`. Empty results are empty geometries
+    (`POLYGON EMPTY`, `LINESTRING EMPTY`, `MULTIPOINT EMPTY`), not `nil`.
     """
     @spec unquote(name)(t(), other()) :: t()
     def unquote(name)(%__MODULE__{ref: left} = series, other) do
@@ -1554,8 +1553,9 @@ defmodule GeoFrame.GeoSeries do
   @doc """
   The union of all non-null geometries as a **one-row** GeoSeries (GeoPandas returns a scalar).
 
-  Polygons are merged with a single `unary_union`, points are merged and deduplicated, and
-  identical lines are merged into a `MultiLineString`. A mix of geometry families gives a
+  Polygons are merged with a single `unary_union`, lines are noded and overlaps merged, and
+  points are deduplicated. A mix of families gives a `GEOMETRYCOLLECTION` in which lines inside
+  a polygon and points on a polygon or line are absorbed. A `GeometryCollection` row gives a
   `nil` row; no non-null input gives `GEOMETRYCOLLECTION EMPTY`.
   """
   @spec union_all(t()) :: t()
@@ -1569,7 +1569,7 @@ defmodule GeoFrame.GeoSeries do
   result has one row per group (same CRS).
 
   Null rows are skipped; a group without non-null rows gives `GEOMETRYCOLLECTION EMPTY`, and
-  a group of incompatible geometry families gives a null row, as `union_all/1` does. Raises
+  a group containing a `GeometryCollection` row gives a null row, as `union_all/1` does. Raises
   `ArgumentError` when `group_ids` has the wrong length or an id is out of range.
   """
   @spec union_groups(t(), [non_neg_integer()], non_neg_integer()) :: t()

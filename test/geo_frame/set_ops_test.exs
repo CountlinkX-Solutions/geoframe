@@ -33,9 +33,10 @@ defmodule GeoFrame.SetOpsTest do
       assert list(GeoSeries.geom_type(out)) == ["Polygon"]
     end
 
-    test "squares sharing only an edge intersect in an empty polygon (documented limitation)" do
+    test "squares sharing only an edge intersect in that edge" do
       out = GeoSeries.intersection(s([@a]), "POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))")
-      assert list(GeoSeries.is_empty(out)) == [true]
+      assert list(GeoSeries.geom_type(out)) == ["LineString"]
+      assert list(GeoSeries.length(out)) == [1.0]
     end
 
     test "accepts a WKT scalar and broadcasts", %{a: a} do
@@ -59,8 +60,14 @@ defmodule GeoFrame.SetOpsTest do
       assert list(pts |> GeoSeries.difference(@a) |> GeoSeries.is_empty()) == [true, false]
     end
 
-    test "unsupported combinations are null" do
-      assert [nil] = s(["LINESTRING (0 0, 1 1)"]) |> GeoSeries.union(@a) |> GeoSeries.to_wkt()
+    test "a line union a polygon is a collection" do
+      out = s(["LINESTRING (0 0, 5 5)"]) |> GeoSeries.union(@a)
+      assert list(GeoSeries.geom_type(out)) == ["GeometryCollection"]
+    end
+
+    test "geometry collections are unsupported and give null" do
+      gc = s(["GEOMETRYCOLLECTION (POINT (0 0), POINT (1 1))"])
+      assert [nil] = gc |> GeoSeries.union(@a) |> GeoSeries.to_wkt()
     end
   end
 

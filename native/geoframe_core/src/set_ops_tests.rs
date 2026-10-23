@@ -112,19 +112,7 @@ fn point_unions_deduplicate() {
 }
 
 #[test]
-fn unsupported_combinations_are_null() {
-    for op in [SetOp::Union, SetOp::SymmetricDifference] {
-        assert_eq!(
-            run("LINESTRING (0 0, 1 1)", A, op).to_wkt().unwrap(),
-            vec![None]
-        );
-    }
-    let lines = run(
-        "LINESTRING (0 0, 2 2)",
-        "LINESTRING (0 2, 2 0)",
-        SetOp::Intersection,
-    );
-    assert_eq!(lines.to_wkt().unwrap(), vec![None]);
+fn geometry_collections_are_unsupported_and_give_null() {
     let gc = run(
         "GEOMETRYCOLLECTION (POINT (0 0), POINT (1 1))",
         A,
@@ -203,8 +191,13 @@ fn union_all_points_lines_and_edge_cases() {
         lines.union_all().unwrap().count_coordinates(),
         vec![Some(4)]
     );
-    let mixed = col(&[Some("POINT (1 1)"), Some(A)]);
-    assert_eq!(mixed.union_all().unwrap().to_wkt().unwrap(), vec![None]);
+    let mixed = col(&[Some("POINT (1 1)"), Some("POINT (9 9)"), Some(A)]);
+    let out = mixed.union_all().unwrap();
+    assert_eq!(
+        out.geom_type(),
+        vec![Some("GeometryCollection".to_string())]
+    );
+    assert_eq!(out.count_geometries(), vec![Some(2)]);
     let empty = col(&[None, None]);
     assert_eq!(
         empty.union_all().unwrap().to_wkt().unwrap(),

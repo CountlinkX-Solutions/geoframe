@@ -31,7 +31,7 @@ fn normalize(geom: &Geometry<f64>) -> Geometry<f64> {
 
 /// The member geometries of a multi-part geometry or collection; a single geometry is its
 /// own only part.
-fn parts(geom: &Geometry<f64>) -> Vec<Geometry<f64>> {
+pub(crate) fn parts(geom: &Geometry<f64>) -> Vec<Geometry<f64>> {
     match normalize(geom) {
         Geometry::MultiPoint(m) => m.0.into_iter().map(Geometry::Point).collect(),
         Geometry::MultiLineString(m) => m.0.into_iter().map(Geometry::LineString).collect(),
