@@ -178,6 +178,21 @@ impl GeoColumn {
                 sizes.len()
             ));
         }
+        let total = sizes.iter().try_fold(0usize, |acc, &n| acc.checked_add(n));
+        // A broadcast size applies to every row.
+        let total = total.and_then(|t| {
+            if sizes.len() == 1 {
+                t.checked_mul(self.len().max(1))
+            } else {
+                Some(t)
+            }
+        });
+        if total.is_none_or(|t| t > sampling::MAX_SAMPLES) {
+            return Err(format!(
+                "sample_points: total number of samples exceeds the maximum of {}",
+                sampling::MAX_SAMPLES
+            ));
+        }
         let mut rng = sampling::Rng::new(seed);
         let rows: Vec<Option<Geometry<f64>>> = self
             .geo_rows()

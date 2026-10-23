@@ -45,6 +45,13 @@ impl GridFeature {
     }
 }
 
+/// Most cells (or points) any grid may produce.
+pub const MAX_GRID_CELLS: u64 = 10_000_000;
+
+fn too_large(cells: u64) -> String {
+    format!("grid too large ({cells} cells; max 10_000_000)")
+}
+
 /// `numpy.arange(start, stop, step)` for a positive step. NumPy fills the array from the first
 /// two values, `start + i * ((start + step) - start)`, which can differ from `start + i * step`
 /// in the last bit; grid lines that touch a polygon edge depend on it.
@@ -73,7 +80,13 @@ fn square(
     origin: Coord<f64>,
     cell: f64,
     feature: GridFeature,
-) -> Vec<Geometry<f64>> {
+) -> Result<Vec<Geometry<f64>>, String> {
+    // Count before allocating (float to integer casts saturate, so an overflow stays huge).
+    let steps = |lo: f64, hi: f64| (((hi + cell - lo) / cell).ceil().max(0.0)) as u64;
+    let cells = steps(origin.x, bounds.max().x).saturating_mul(steps(origin.y, bounds.max().y));
+    if cells > MAX_GRID_CELLS {
+        return Err(too_large(cells));
+    }
     let xs = arange(origin.x, bounds.max().x + cell, cell);
     let ys = arange(origin.y, bounds.max().y + cell, cell);
     let mut out = Vec::new();
@@ -108,7 +121,7 @@ fn square(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// A NumPy slice `start..stop` with a positive step, clamped to `len`.
@@ -228,14 +241,15 @@ fn hexagon(
     let dx = cell / 3.0_f64.sqrt();
     let dy = cell / 2.0;
     let n_x = (((x_dist / dx - 1.0) / 1.5).ceil() + 2.0) * 1.5;
-    let n_y = (y_dist / dy) as i64 + 4;
+    let n_y = ((y_dist / dy) as i64).saturating_add(4);
     let (n_x, n_y) = (n_x as i64, n_y);
     if n_x <= 0 || n_y <= 0 {
         return Ok(Vec::new());
     }
     let (n_x, n_y) = (n_x as usize, n_y as usize);
-    if n_x.saturating_mul(n_y) > 100_000_000 {
-        return Err("grid too large: increase cell_size".to_string());
+    let cells = (n_x as u64).saturating_mul(n_y as u64);
+    if cells > MAX_GRID_CELLS {
+        return Err(too_large(cells));
     }
 
     let mesh = Mesh {
@@ -320,7 +334,7 @@ pub(super) fn make_grid(
     }
     let origin = spec.offset.map_or(bounds.min(), |(x, y)| Coord { x, y });
     let cells = match spec.grid {
-        GridType::Square => square(bounds, origin, cell_size, spec.feature),
+        GridType::Square => square(bounds, origin, cell_size, spec.feature)?,
         GridType::Hexagon => hexagon(bounds, origin, cell_size, spec.feature, spec.flat_topped)?,
     };
     if !spec.intersect {

@@ -54,6 +54,8 @@ mod flatgeobuf_tests;
 #[cfg(test)]
 mod geojson_tests;
 #[cfg(test)]
+mod hardening_tests;
+#[cfg(test)]
 mod io_g1_tests;
 #[cfg(test)]
 mod parity_a_tests;

@@ -246,9 +246,15 @@ pub(super) fn maximum_inscribed_circle(
     let polygons = polygons_of(geom)?;
     let bounds = geom.bounding_rect()?;
     let (width, height) = (bounds.width(), bounds.height());
-    let cell_size = width.min(height);
-    if cell_size <= 0.0 {
+    let mut cell_size = width.min(height);
+    if cell_size <= 0.0 || !cell_size.is_finite() || !width.is_finite() || !height.is_finite() {
         return None;
+    }
+    // A long thin polygon would seed `ceil(w/c) * ceil(h/c)` cells; enlarge the seed cells
+    // until the grid fits MAX_CELLS. The search still refines to `tolerance`, so a result is
+    // kept; only the starting resolution is coarser.
+    while (width / cell_size).ceil() * (height / cell_size).ceil() > MAX_CELLS as f64 {
+        cell_size *= 2.0;
     }
     let tolerance = tolerance.unwrap_or_else(|| width.max(height) / 1000.0);
     if tolerance.is_nan() || tolerance <= 0.0 {

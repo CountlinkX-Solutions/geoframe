@@ -74,6 +74,9 @@ fn locate(parts: &[(LineString<f64>, f64)], mut distance: f64) -> Coord<f64> {
         .unwrap_or(Coord { x: 0.0, y: 0.0 })
 }
 
+/// Most points one `sample_points` call may draw in total, across all rows.
+pub const MAX_SAMPLES: usize = 10_000_000;
+
 /// `size` points, or `None` when a very thin polygon cannot be hit within the attempt budget.
 /// Types other than (multi)polygons and (multi)lines, and zero-area shapes, give no points.
 pub(super) fn sample(geom: &Geometry<f64>, size: usize, rng: &mut Rng) -> Option<Geometry<f64>> {
@@ -108,7 +111,7 @@ pub(super) fn sample(geom: &Geometry<f64>, size: usize, rng: &mut Rng) -> Option
     }
     let mut points = Vec::with_capacity(size);
     let mut attempts = 0usize;
-    let budget = 1000 * size + 100_000;
+    let budget = size.saturating_mul(1000).saturating_add(100_000);
     while points.len() < size {
         if attempts >= budget {
             return None;

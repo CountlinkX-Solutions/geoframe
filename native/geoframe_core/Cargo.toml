@@ -29,3 +29,4 @@ geozero = { version = "0.15.1", default-features = false, features = ["with-geo"
 
 [dev-dependencies]
 tempfile = "3"
+flatbuffers = "24.12.23"

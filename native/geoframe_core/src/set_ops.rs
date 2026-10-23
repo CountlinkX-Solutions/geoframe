@@ -276,12 +276,20 @@ impl GeoColumn {
                 self.len()
             ));
         }
+        // Validate before allocating: every group needs at least one row to be non-trivial,
+        // so more groups than rows is a caller error (and an allocation bomb otherwise).
+        if n_groups > group_ids.len() {
+            return Err(format!(
+                "n_groups ({n_groups}) cannot exceed the number of group ids ({})",
+                group_ids.len()
+            ));
+        }
+        if let Some(&id) = group_ids.iter().find(|&&id| id as usize >= n_groups) {
+            return Err(format!("group id {id} out of range for {n_groups} groups"));
+        }
         let mut buckets: Vec<Vec<Geometry<f64>>> = vec![Vec::new(); n_groups];
         for (geom, &id) in self.geo_rows().into_iter().zip(group_ids) {
-            let bucket = buckets
-                .get_mut(id as usize)
-                .ok_or_else(|| format!("group id {id} out of range for {n_groups} groups"))?;
-            bucket.extend(geom);
+            buckets[id as usize].extend(geom);
         }
         let rows: Vec<Option<Geometry<f64>>> = buckets
             .into_iter()

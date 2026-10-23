@@ -241,12 +241,44 @@ fn crossing(a: &Geometry<f64>, b: &Geometry<f64>) -> Option<Point<f64>> {
 
 // -- discrete distances -------------------------------------------------------------------
 
+/// Most pieces a densified segment may be split into.
+const MAX_PIECES: usize = 10_000;
+/// The smallest densify fraction accepted (`1 / MAX_PIECES`).
+const MIN_DENSIFY: f64 = 1e-4;
+/// Most vertices a densify or segmentize call may produce in total.
+const MAX_OUTPUT_VERTICES: f64 = 10_000_000.0;
+
+/// Rejects a densify whose total output would exceed [`MAX_OUTPUT_VERTICES`].
+fn check_densify_budget(columns: &[&GeoColumn], pieces: Option<usize>) -> Result<(), String> {
+    let Some(pieces) = pieces else {
+        return Ok(());
+    };
+    for column in columns {
+        let total: f64 = column
+            .geo_rows()
+            .iter()
+            .flatten()
+            .map(|g| segments(g).len() as f64 * pieces as f64)
+            .sum();
+        if total > MAX_OUTPUT_VERTICES {
+            return Err(format!(
+                "densify would create {total} vertices; max {MAX_OUTPUT_VERTICES}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Validates a GEOS densify fraction and returns the number of sub-segments per segment.
 fn sub_segments(densify: Option<f64>) -> Result<Option<usize>, String> {
     match densify {
         None => Ok(None),
-        Some(f) if f.is_finite() && f > 0.0 && f <= 1.0 => Ok(Some((1.0 / f).round() as usize)),
-        Some(f) => Err(format!("densify must be in (0, 1], got {f}")),
+        Some(f) if f.is_finite() && f >= MIN_DENSIFY && f <= 1.0 => {
+            Ok(Some((1.0 / f).round() as usize))
+        }
+        Some(f) => Err(format!(
+            "densify must be in [{MIN_DENSIFY}, 1] (at most {MAX_PIECES} pieces per segment), got {f}"
+        )),
     }
 }
 
@@ -314,6 +346,7 @@ impl GeoColumn {
         densify: Option<f64>,
     ) -> Result<Vec<Option<f64>>, String> {
         let pieces = sub_segments(densify)?;
+        check_densify_budget(&[self, other], pieces)?;
         let both = |a: &Geometry<f64>, b: &Geometry<f64>| {
             guarded(|| {
                 Some(directed_hausdorff(a, b, pieces)?.max(directed_hausdorff(b, a, pieces)?))
@@ -335,6 +368,7 @@ impl GeoColumn {
         densify: Option<f64>,
     ) -> Result<Vec<Option<f64>>, String> {
         let pieces = sub_segments(densify)?;
+        check_densify_budget(&[self, other], pieces)?;
         let both = |a: &Geometry<f64>, b: &Geometry<f64>| {
             guarded(|| {
                 let (a, b) = (as_line_string(a)?, as_line_string(b)?);
@@ -511,6 +545,19 @@ impl GeoColumn {
         if !(max_segment_length.is_finite() && max_segment_length > 0.0) {
             return Err(format!(
                 "max_segment_length must be finite and positive, got {max_segment_length}"
+            ));
+        }
+        let estimate: f64 = self
+            .geo_rows()
+            .iter()
+            .flatten()
+            .flat_map(segments)
+            .map(|l| (l.start.x - l.end.x).hypot(l.start.y - l.end.y) / max_segment_length)
+            .map(|n| n.ceil().max(1.0))
+            .sum();
+        if estimate.is_nan() || estimate > MAX_OUTPUT_VERTICES {
+            return Err(format!(
+                "segmentize would create about {estimate} vertices; max {MAX_OUTPUT_VERTICES}"
             ));
         }
         self.map_geometry(|g| Some(map_members(g, &|m| segmentize_one(m, max_segment_length))))

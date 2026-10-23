@@ -1059,10 +1059,17 @@ defmodule GeoFrame.GeoSeries do
     ref |> Native.sample_points(sizes, seed) |> wrap() |> unwrap!()
   end
 
-  defp sample_sizes!(size) when is_integer(size) and size >= 0, do: [size]
+  # Most points one call may draw in total (all rows). Also enforced natively.
+  @max_samples 10_000_000
+
+  defp sample_sizes!(size) when is_integer(size) and size >= 0 do
+    check_sample_total!(size)
+    [size]
+  end
 
   defp sample_sizes!(sizes) when is_list(sizes) and sizes != [] do
     if Enum.all?(sizes, &(is_integer(&1) and &1 >= 0)) do
+      check_sample_total!(Enum.sum(sizes))
       sizes
     else
       raise ArgumentError, "size must be non-negative integers, got: #{inspect(sizes)}"
@@ -1075,6 +1082,15 @@ defmodule GeoFrame.GeoSeries do
         ArgumentError,
         "size must be a non-negative integer or a list of them, got: #{inspect(other)}"
       )
+
+  defp check_sample_total!(total) when total > @max_samples,
+    do:
+      raise(
+        ArgumentError,
+        "sample_points: total number of samples (#{total}) exceeds the maximum of #{@max_samples}"
+      )
+
+  defp check_sample_total!(_total), do: :ok
 
   @doc """
   A square or hexagonal grid over the total bounds of the series (GeoPandas `make_grid`),
@@ -1944,6 +1960,15 @@ defmodule GeoFrame.GeoSeries do
   @spec union_groups(t(), [non_neg_integer()], non_neg_integer()) :: t()
   def union_groups(%__MODULE__{ref: ref}, group_ids, n_groups)
       when is_list(group_ids) and is_integer(n_groups) and n_groups >= 0 do
+    if n_groups > Kernel.length(group_ids) do
+      raise ArgumentError,
+            "n_groups (#{n_groups}) cannot exceed the number of group ids (#{Kernel.length(group_ids)})"
+    end
+
+    if Enum.any?(group_ids, &(is_integer(&1) and &1 >= n_groups)) do
+      raise ArgumentError, "group id out of range for #{n_groups} groups"
+    end
+
     ref |> Native.union_groups(group_ids, n_groups) |> wrap() |> unwrap!()
   end
 
@@ -2043,7 +2068,11 @@ defmodule GeoFrame.GeoSeries do
 
   @doc false
   def preview(%__MODULE__{} = series) do
-    series |> to_wkt() |> Enum.take(@preview_rows)
+    # Take the rows first: serialising the whole column to WKT just to show five is O(n).
+    case min(size(series), @preview_rows) do
+      0 -> []
+      n -> series |> take(Enum.to_list(0..(n - 1))) |> to_wkt()
+    end
   end
 
   defimpl Inspect do

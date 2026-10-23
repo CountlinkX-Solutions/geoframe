@@ -85,6 +85,27 @@ impl ColumnBuilder {
     }
 }
 
+/// Maximum parenthesis nesting accepted in WKT; `wkt` parses recursively without a limit.
+pub const MAX_WKT_NESTING_DEPTH: usize = 64;
+
+/// True when `text` nests parentheses deeper than `max` (single O(n) scan).
+pub(crate) fn wkt_nesting_exceeds(text: &str, max: usize) -> bool {
+    let mut depth = 0usize;
+    for b in text.bytes() {
+        match b {
+            b'(' => {
+                depth += 1;
+                if depth > max {
+                    return true;
+                }
+            }
+            b')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    false
+}
+
 impl GeoColumn {
     fn from_geometries(
         geoms: &[Option<impl geo_traits::GeometryTrait<T = f64>>],
@@ -159,9 +180,14 @@ impl GeoColumn {
             .enumerate()
             .map(|(i, row)| match row {
                 None => Ok(None),
-                Some(text) => wkt::Wkt::<f64>::from_str(text.as_ref())
-                    .map(Some)
-                    .map_err(|e| format!("invalid WKT at row {i}: {e}")),
+                Some(text) => {
+                    if wkt_nesting_exceeds(text.as_ref(), MAX_WKT_NESTING_DEPTH) {
+                        return Err(format!("invalid WKT at row {i}: nesting too deep"));
+                    }
+                    wkt::Wkt::<f64>::from_str(text.as_ref())
+                        .map(Some)
+                        .map_err(|e| format!("invalid WKT at row {i}: {e}"))
+                }
             })
             .collect::<Result<Vec<_>, String>>()?;
         Self::from_geometries(&parsed, crs)
@@ -192,6 +218,11 @@ impl GeoColumn {
                         }
                     }
                     converted.push(Some(iso));
+                }
+                // Depth errors are fatal: handing the bytes to the reader would only trade
+                // one recursion limit for another.
+                Err(e) if e == crate::ewkb::NESTING_ERROR => {
+                    return Err(format!("invalid WKB at row {i}: {e}"))
                 }
                 Err(_) => converted.push(Some(bytes.as_ref().to_vec())),
             }
