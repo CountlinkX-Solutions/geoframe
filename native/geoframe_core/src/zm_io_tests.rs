@@ -636,3 +636,211 @@ mod shapefile {
         assert!(read_shapefile(&file, None).is_err());
     }
 }
+
+// -- GeoPackage ---------------------------------------------------------------------------
+
+mod gpkg {
+    use super::*;
+    use crate::gpkg_io::{decode_geometry_blob, encode_geometry_blob_zm};
+    use crate::{gpkg_layers, read_gpkg, write_gpkg, GpkgWriteOptions};
+    use rusqlite::Connection;
+
+    const WRITE: GpkgWriteOptions = GpkgWriteOptions {
+        append: false,
+        spatial_index: true,
+    };
+    const APPEND: GpkgWriteOptions = GpkgWriteOptions {
+        append: true,
+        spatial_index: true,
+    };
+
+    fn write(dir: &TempDir, name: &str, geometry: &GeoColumn, options: GpkgWriteOptions) -> String {
+        let file = path(dir, name);
+        write_gpkg(
+            &file,
+            geometry,
+            &no_attributes(geometry.len()),
+            "layer",
+            options,
+        )
+        .unwrap();
+        file
+    }
+
+    /// `(geometry_type_name, z, m)` of the layer in `gpkg_geometry_columns`.
+    fn flags(file: &str) -> (String, i64, i64) {
+        Connection::open(file)
+            .unwrap()
+            .query_row(
+                "SELECT geometry_type_name, z, m FROM gpkg_geometry_columns WHERE table_name = 'layer'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    }
+
+    fn blobs(file: &str) -> Vec<Option<Vec<u8>>> {
+        let conn = Connection::open(file).unwrap();
+        let mut statement = conn.prepare("SELECT geom FROM layer ORDER BY fid").unwrap();
+        statement
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn geometry_columns_flags_follow_the_data() {
+        let dir = TempDir::new().unwrap();
+        for (name, rows, expected) in [
+            ("plain", vec![Some("POINT (1 2)")], ("POINT", 0, 0)),
+            ("z", vec![Some("POINT Z (1 2 3)"), None], ("POINT", 1, 0)),
+            (
+                "m",
+                vec![Some("LINESTRING M (0 0 1, 1 1 2)")],
+                ("LINESTRING", 0, 1),
+            ),
+            (
+                "zm",
+                vec![Some("POLYGON ZM ((0 0 1 5, 4 0 2 6, 4 4 3 7, 0 0 1 5))")],
+                ("POLYGON", 1, 1),
+            ),
+            // some rows with and some without: the ordinate is optional (2)
+            (
+                "opt",
+                vec![Some("POINT Z (1 2 3)"), Some("POINT (4 5)")],
+                ("POINT", 2, 0),
+            ),
+            (
+                "optm",
+                vec![Some("POINT ZM (1 2 3 4)"), Some("POINT Z (4 5 6)")],
+                ("POINT", 1, 2),
+            ),
+        ] {
+            let g = col(&rows);
+            let file = write(&dir, &format!("{name}.gpkg"), &g, WRITE);
+            assert_eq!(
+                flags(&file),
+                (expected.0.to_string(), expected.1, expected.2),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn layers_report_the_dimension() {
+        let dir = TempDir::new().unwrap();
+        let file = write(&dir, "l.gpkg", &col(&[Some("POINT ZM (1 2 3 4)")]), WRITE);
+        let layers = gpkg_layers(&file).unwrap();
+        assert_eq!(layers[0].geometry_type.as_deref(), Some("Point ZM"));
+    }
+
+    #[test]
+    fn blob_envelopes_carry_the_z_and_m_ranges() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[
+            Some("POINT (1 2)"),
+            Some("LINESTRING Z (0 0 5, 1 1 9)"),
+            Some("LINESTRING M (0 0 -1, 1 1 4)"),
+            Some("LINESTRING ZM (0 0 5 -1, 3 4 9 4)"),
+            None,
+        ]);
+        let file = write(&dir, "env.gpkg", &g, WRITE);
+        let blobs = blobs(&file);
+        let indicator = |row: usize| (blobs[row].as_ref().unwrap()[3] >> 1) & 0b111;
+        assert_eq!((0..4).map(indicator).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        let blob = |row: usize| decode_geometry_blob(blobs[row].as_ref().unwrap()).unwrap();
+        assert_eq!(blob(1).z_range, Some([5.0, 9.0]));
+        assert_eq!(blob(1).m_range, None);
+        assert_eq!(blob(2).z_range, None);
+        assert_eq!(blob(2).m_range, Some([-1.0, 4.0]));
+        assert_eq!(blob(3).z_range, Some([5.0, 9.0]));
+        assert_eq!(blob(3).m_range, Some([-1.0, 4.0]));
+        assert_eq!(blob(3).envelope, Some([0.0, 0.0, 3.0, 4.0]));
+        assert_eq!(blob(0).z_range, None);
+    }
+
+    #[test]
+    fn nan_ordinates_do_not_enter_the_ranges() {
+        let g = GeoColumn::from_wkb(
+            &[Some(line_z_wkb(&[
+                [0.0, 0.0, f64::NAN],
+                [1.0, 1.0, 7.0],
+                [2.0, 2.0, 3.0],
+            ]))],
+            None,
+        )
+        .unwrap();
+        let dir = TempDir::new().unwrap();
+        let file = write(&dir, "nan.gpkg", &g, WRITE);
+        let blobs = blobs(&file);
+        assert_eq!(
+            decode_geometry_blob(blobs[0].as_ref().unwrap())
+                .unwrap()
+                .z_range,
+            Some([3.0, 7.0])
+        );
+    }
+
+    #[test]
+    fn encoder_picks_the_indicator_from_the_ranges() {
+        let wkb = [1, 1, 0, 0, 0];
+        for (z, m, indicator, length) in [
+            (None, None, 1, 32),
+            (Some([1.0, 2.0]), None, 2, 48),
+            (None, Some([3.0, 4.0]), 3, 48),
+            (Some([1.0, 2.0]), Some([3.0, 4.0]), 4, 64),
+        ] {
+            let blob = encode_geometry_blob_zm(&wkb, 4326, Some([0.0, 1.0, 2.0, 3.0]), z, m);
+            assert_eq!((blob[3] >> 1) & 0b111, indicator);
+            assert_eq!(blob.len(), 8 + length + wkb.len());
+        }
+    }
+
+    #[test]
+    fn z_and_m_survive_a_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[Some("POINT ZM (1 2 3 4)"), Some("POINT Z (4 5 6)"), None]);
+        let file = write(&dir, "rt.gpkg", &g, WRITE);
+        let back = read_gpkg(&file, None).unwrap().vector.geometry;
+        assert_eq!(wkt(&back), wkt(&g));
+    }
+
+    #[test]
+    fn appending_a_different_dimension_makes_the_ordinate_optional() {
+        let dir = TempDir::new().unwrap();
+        let file = write(&dir, "app.gpkg", &col(&[Some("POINT (1 2)")]), WRITE);
+        write_gpkg(
+            &file,
+            &col(&[Some("POINT Z (3 4 5)")]),
+            &no_attributes(1),
+            "layer",
+            APPEND,
+        )
+        .unwrap();
+        assert_eq!(flags(&file), ("POINT".to_string(), 2, 0));
+
+        let file = write(&dir, "app2.gpkg", &col(&[Some("POINT Z (1 2 3)")]), WRITE);
+        write_gpkg(
+            &file,
+            &col(&[Some("POINT Z (3 4 5)")]),
+            &no_attributes(1),
+            "layer",
+            APPEND,
+        )
+        .unwrap();
+        assert_eq!(flags(&file), ("POINT".to_string(), 1, 0));
+        write_gpkg(
+            &file,
+            &col(&[Some("POINT (7 8)")]),
+            &no_attributes(1),
+            "layer",
+            APPEND,
+        )
+        .unwrap();
+        assert_eq!(flags(&file), ("POINT".to_string(), 2, 0));
+
+        let all = read_gpkg(&file, None).unwrap().vector.geometry;
+        assert_eq!(all.has_z(), [true, true, false]);
+    }
+}

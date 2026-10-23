@@ -101,6 +101,31 @@ impl WkbOut {
     }
 }
 
+// -- ranges --------------------------------------------------------------------------------
+
+/// `(z, m)` ranges `[min, max]` over the vertices of an ISO WKB geometry, ignoring NaN; `None`
+/// when the geometry has no such value.
+pub(crate) fn zm_ranges(wkb: &[u8]) -> (Option<[f64; 2]>, Option<[f64; 2]>) {
+    use std::cell::Cell;
+    let widen = |range: &Cell<Option<[f64; 2]>>, value: f64| {
+        if !value.is_nan() {
+            range.set(Some(match range.get() {
+                None => [value, value],
+                Some([lo, hi]) => [lo.min(value), hi.max(value)],
+            }));
+        }
+    };
+    let (z, m) = (Cell::new(None), Cell::new(None));
+    let visit = |x: f64, y: f64, vz: f64, vm: f64| {
+        widen(&z, vz);
+        widen(&m, vm);
+        Ok((x, y, vz))
+    };
+    // The rewritten bytes are discarded: the walk only visits the vertices.
+    let _ = crate::zm::rewrite(wkb, crate::zm::Edit::Map(&visit));
+    (z.get(), m.get())
+}
+
 // -- GeoJSON -> WKB -----------------------------------------------------------------------
 
 /// ISO WKB of a GeoJSON geometry. A geometry has Z when any position (of any member of a
