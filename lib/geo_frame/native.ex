@@ -8,6 +8,7 @@ defmodule GeoFrame.Native do
   def from_wkb(_rows, _crs), do: err()
   def to_wkt(_ref), do: err()
   def to_wkb(_ref), do: err()
+  def to_geojson(_ref), do: err()
   def len(_ref), do: err()
   def crs(_ref), do: err()
   def set_crs(_ref, _crs), do: err()

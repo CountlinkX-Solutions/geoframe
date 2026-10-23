@@ -298,6 +298,31 @@ defmodule GeoFrame.GeoDataFrame do
   @doc false
   def preview(%__MODULE__{} = gdf), do: gdf |> head(@preview_rows) |> to_explorer(encoding: :wkt)
 
+  @doc """
+  The frame as a GeoJSON `FeatureCollection` map (RFC 7946).
+
+  Each row is a `Feature`: the geometry (see `GeoFrame.GeoSeries.to_geojson/1`, `nil` for
+  null or unrepresentable rows) plus the attribute columns as string-keyed `properties`.
+  Null attributes are kept as `nil`. Property values are the Elixir values Explorer yields
+  (dates, decimals, ...), so they encode with `Jason` for the common column types.
+  """
+  @spec to_geojson(t()) :: map()
+  def to_geojson(%__MODULE__{data: data, geometry: geometry}) do
+    geometries = GeoSeries.to_geojson(geometry)
+
+    properties =
+      if DataFrame.names(data) == [],
+        do: Enum.map(geometries, fn _ -> %{} end),
+        else: DataFrame.to_rows(data)
+
+    features =
+      Enum.zip_with(geometries, properties, fn geom, props ->
+        %{"type" => "Feature", "geometry" => geom, "properties" => props}
+      end)
+
+    %{"type" => "FeatureCollection", "features" => features}
+  end
+
   # -- helpers --------------------------------------------------------------------------
 
   defp has_columns?(%DataFrame{} = data), do: DataFrame.names(data) != []

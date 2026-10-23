@@ -1,0 +1,128 @@
+# GeoFrame spike
+
+```elixir
+Mix.install([
+  {:geoframe, path: Path.join(__DIR__, "..")},
+  {:kino, "~> 0.19"},
+  {:maplibre, "~> 0.1.9"},
+  {:kino_maplibre, "~> 0.1.13"}
+])
+```
+
+## Introduction
+
+GeoFrame is a GeoPandas-style geospatial dataframe for Elixir. Geometry lives in Rust as a
+GeoArrow column, attributes live in an `Explorer.DataFrame`, and the two stay aligned through
+every row operation.
+
+This notebook walks through the Phase 0 spike: read a GeoParquet file, inspect it, compute
+planar measures, filter rows, draw it, and write it back.
+
+The map tab uses MapLibre's demo basemap, so your browser needs internet access.
+
+## Read a GeoParquet file
+
+The fixture holds four polygons and one point near Miami, in `EPSG:4326`, with a missing
+`population` value to show how nulls travel.
+
+```elixir
+path = Path.join([__DIR__, "..", "test", "fixtures", "neighborhoods.parquet"]) |> Path.expand()
+gdf = GeoFrame.read_parquet!(path)
+```
+
+The cell above ends in a `GeoFrame.GeoDataFrame`, which Livebook renders with **Map**,
+**Table** and **Inspect** tabs.
+
+Pieces are available separately:
+
+```elixir
+{GeoFrame.GeoDataFrame.n_rows(gdf), GeoFrame.GeoDataFrame.names(gdf),
+ GeoFrame.GeoDataFrame.crs(gdf)}
+```
+
+```elixir
+GeoFrame.GeoDataFrame.data(gdf)
+```
+
+## Measures
+
+Measures are planar, in the units of the CRS (here square degrees, which is fine for a demo
+but not a real area). Each returns an `Explorer.Series`; the point has zero area and length.
+
+```elixir
+area = GeoFrame.GeoDataFrame.area(gdf)
+perimeter = GeoFrame.GeoDataFrame.length(gdf)
+
+{Explorer.Series.to_list(area), Explorer.Series.to_list(perimeter)}
+```
+
+```elixir
+GeoFrame.GeoDataFrame.bounds(gdf)
+```
+
+```elixir
+GeoFrame.GeoSeries.total_bounds(GeoFrame.GeoDataFrame.geometry(gdf))
+```
+
+Centroids replace the geometry and keep the attributes aligned:
+
+```elixir
+GeoFrame.GeoDataFrame.centroid(gdf)
+```
+
+## Filtering
+
+`filter_with/2` takes the attribute columns, picks the rows, and applies the same row
+positions to the geometry.
+
+```elixir
+residential =
+  GeoFrame.GeoDataFrame.filter_with(gdf, fn df ->
+    Explorer.Series.equal(df["kind"], "residential")
+  end)
+```
+
+Add the area as an attribute, then sort by it:
+
+```elixir
+gdf
+|> GeoFrame.GeoDataFrame.mutate_with(fn _df ->
+  [area: GeoFrame.GeoDataFrame.area(gdf)]
+end)
+|> GeoFrame.GeoDataFrame.sort_with(&[desc: &1["area"]])
+|> GeoFrame.GeoDataFrame.data()
+```
+
+## Maps
+
+Rendering uses `GeoFrame.Kino.map/2` under the hood. Call it directly to get the map alone or
+to pass options such as `max_features:` (inputs above the cap, 50,000 by default, show a
+notice instead of a map):
+
+```elixir
+GeoFrame.Kino.map(gdf)
+```
+
+A series draws on its own too:
+
+```elixir
+GeoFrame.Kino.map(GeoFrame.GeoDataFrame.geometry(residential))
+```
+
+Export to GeoJSON for any other tool:
+
+```elixir
+GeoFrame.GeoDataFrame.to_geojson(residential) |> Map.fetch!("features") |> hd()
+```
+
+## Write and read back
+
+```elixir
+out = Path.join(System.tmp_dir!(), "geoframe_spike_#{System.unique_integer([:positive])}.parquet")
+:ok = GeoFrame.write_parquet(residential, out)
+back = GeoFrame.read_parquet!(out)
+
+File.rm!(out)
+
+{GeoFrame.GeoDataFrame.n_rows(back), GeoFrame.GeoDataFrame.crs(back)}
+```

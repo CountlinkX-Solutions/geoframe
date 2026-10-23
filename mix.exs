@@ -33,7 +33,10 @@ defmodule GeoFrame.MixProject do
     [
       {:rustler, "~> 0.38", runtime: false},
       {:explorer, "~> 0.13"},
+      {:jason, "~> 1.4"},
       {:kino, "~> 0.19", optional: true},
+      {:maplibre, "~> 0.1.9", optional: true},
+      {:kino_maplibre, "~> 0.1.13", optional: true},
       {:stream_data, "~> 1.4", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false}

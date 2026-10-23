@@ -50,6 +50,11 @@ fn to_wkb<'a>(env: Env<'a>, column: Handle) -> Result<Vec<Option<Binary<'a>>>, S
         .collect())
 }
 
+#[rustler::nif(schedule = "DirtyCpu")]
+fn to_geojson(column: Handle) -> Vec<Option<String>> {
+    column.0.to_geojson()
+}
+
 #[rustler::nif]
 fn len(column: Handle) -> usize {
     column.0.len()

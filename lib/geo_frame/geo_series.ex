@@ -72,6 +72,27 @@ defmodule GeoFrame.GeoSeries do
   @spec to_wkb(t()) :: [binary() | nil]
   def to_wkb(%__MODULE__{ref: ref}), do: ref |> Native.to_wkb() |> unwrap!()
 
+  @doc """
+  GeoJSON geometry objects (RFC 7946), one decoded map per row.
+
+  Null rows, and rows that cannot be expressed as a `geo` geometry (such as `POINT EMPTY`),
+  give `nil`. Coordinates are emitted as stored: GeoJSON has no CRS member, so reproject to
+  longitude/latitude (`EPSG:4326`) first if the data is in another CRS.
+
+  The conversion runs in Rust and returns JSON text, which is decoded here with `Jason`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1 2)", nil])
+      iex> GeoFrame.GeoSeries.to_geojson(s)
+      [%{"type" => "Point", "coordinates" => [1.0, 2.0]}, nil]
+  """
+  @spec to_geojson(t()) :: [map() | nil]
+  def to_geojson(%__MODULE__{ref: ref}) do
+    ref |> Native.to_geojson() |> Enum.map(&decode_geojson/1)
+  end
+
+  defp decode_geojson(nil), do: nil
+  defp decode_geojson(json), do: Jason.decode!(json)
+
   @doc "Number of rows, nulls included."
   @spec size(t()) :: non_neg_integer()
   def size(%__MODULE__{ref: ref}), do: Native.len(ref)

@@ -130,3 +130,67 @@ fn empty_point_is_kept_but_measures_are_null() {
     assert_eq!(col.area(), vec![None, Some(0.0)]);
     assert_eq!(col.centroid().unwrap().to_wkt().unwrap()[0], None);
 }
+
+fn geojson(rows: &[Option<&str>]) -> Vec<Option<serde_json::Value>> {
+    wkt(rows)
+        .to_geojson()
+        .into_iter()
+        .map(|row| row.map(|text| serde_json::from_str(&text).expect("valid JSON")))
+        .collect()
+}
+
+#[test]
+fn geojson_point() {
+    let out = geojson(&[Some("POINT (1.5 2)")]);
+    assert_eq!(
+        out[0],
+        Some(serde_json::json!({"type": "Point", "coordinates": [1.5, 2.0]}))
+    );
+}
+
+#[test]
+fn geojson_polygon_with_hole() {
+    let out = geojson(&[Some(
+        "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    )]);
+    let value = out[0].as_ref().unwrap();
+    assert_eq!(value["type"], "Polygon");
+    let rings = value["coordinates"].as_array().unwrap();
+    assert_eq!(rings.len(), 2);
+    assert_eq!(rings[0].as_array().unwrap().len(), 5);
+}
+
+#[test]
+fn geojson_multipolygon() {
+    let out = geojson(&[Some(
+        "MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), ((5 5, 6 5, 6 6, 5 5)))",
+    )]);
+    let value = out[0].as_ref().unwrap();
+    assert_eq!(value["type"], "MultiPolygon");
+    assert_eq!(value["coordinates"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn geojson_keeps_nulls_and_order() {
+    let out = geojson(&[Some("POINT (1 2)"), None, Some("LINESTRING (0 0, 3 4)")]);
+    assert_eq!(out.len(), 3);
+    assert_eq!(out[0].as_ref().unwrap()["type"], "Point");
+    assert!(out[1].is_none());
+    assert_eq!(out[2].as_ref().unwrap()["type"], "LineString");
+}
+
+#[test]
+fn geojson_empty_geometries() {
+    let out = geojson(&[Some("POLYGON EMPTY"), Some("POINT EMPTY")]);
+    assert_eq!(
+        out[0],
+        Some(serde_json::json!({"type": "Polygon", "coordinates": []}))
+    );
+    // Not representable as a `geo` geometry, so null (same policy as the measures).
+    assert!(out[1].is_none());
+}
+
+#[test]
+fn geojson_of_empty_column() {
+    assert!(wkt(&[]).to_geojson().is_empty());
+}
