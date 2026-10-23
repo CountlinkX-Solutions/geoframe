@@ -295,14 +295,14 @@ defmodule GeoFrame.IoFormatsTest do
     end
 
     test "unknown extensions and drivers raise ArgumentError", %{tmp_dir: dir} do
-      assert_raise ArgumentError, ~r/\.shp/, fn -> GeoFrame.read_file(Path.join(dir, "a.shp")) end
+      assert_raise ArgumentError, ~r/\.kml/, fn -> GeoFrame.read_file(Path.join(dir, "a.kml")) end
 
       assert_raise ArgumentError, ~r/driver/, fn ->
         GeoFrame.write_file(sample(), Path.join(dir, "noext"))
       end
 
       assert_raise ArgumentError, ~r/unknown driver/, fn ->
-        GeoFrame.read_file(Path.join(dir, "a.fgb"), driver: :gpkg)
+        GeoFrame.read_file(Path.join(dir, "a.fgb"), driver: :gml)
       end
 
       assert_raise ArgumentError, ~r/unknown option/, fn ->

@@ -39,13 +39,21 @@ Row-changing operations (filter, sort, slice, join) compute row indices once and
 | GeoJSON (RFC 7946) | `GeoFrame.read_geojson/2` | `GeoFrame.write_geojson/3` | `.geojson`, `.json` |
 | FlatGeobuf | `GeoFrame.read_flatgeobuf/2` (optional `bbox:` via the index) | `GeoFrame.write_flatgeobuf/3` | `.fgb` |
 | Feather v2 (Arrow IPC file) | `GeoFrame.read_feather/2` | `GeoFrame.write_feather/3` | `.feather`, `.arrow` |
+| Shapefile (`.cpg` encodings, `.prj` CRS, zipped) | `GeoFrame.read_shapefile/2` | `GeoFrame.write_shapefile/3` (GDAL-style field-name truncation) | `.shp`, `.zip` |
+| GeoPackage (several layers, rtree index) | `GeoFrame.read_gpkg/2` (`layer:`) | `GeoFrame.write_gpkg/3` (`layer:`, `mode: :w \| :a`, `spatial_index:`) | `.gpkg` |
 | PostGIS (optional `:postgrex`) | `GeoFrame.read_postgis/3` | `GeoFrame.to_postgis/4` (`if_exists`, `schema`, `spatial_index`) | n/a (database) |
 | Arrow IPC stream (binary) | `GeoSeries.from_arrow/2`, `GeoDataFrame.from_arrow/2` | `GeoSeries.to_arrow/2`, `GeoDataFrame.to_arrow/2` | n/a (in memory) |
 
 `GeoFrame.read_file/2` and `GeoFrame.write_file/3` choose the format from the extension or
-a `driver:` option. All formats are pure Rust (no GDAL). GeoJSON writes need a lon/lat CRS
-unless `force: true`; FlatGeobuf with its spatial index stores rows in Hilbert order
-(`index: false` keeps row order). Shapefile is not supported yet.
+a `driver:` option. No format needs GDAL: all are pure Rust except GeoPackage, which is SQLite
+through `rusqlite` with the **bundled** SQLite amalgamation (the only C code GeoFrame
+compiles, built by `cc` together with the NIF; no system library is required). GeoJSON writes
+need a lon/lat CRS unless `force: true`; FlatGeobuf with its spatial index stores rows in
+Hilbert order (`index: false` keeps row order). A shapefile holds one geometry type and field
+names of at most 10 bytes (longer names are truncated exactly like GDAL, with a logged
+warning); `GeoFrame.list_layers/2` and `GeoFrame.read_file_info/2` describe a file (all
+layers of a GeoPackage, pyogrio-style info). Files written by GeoPandas 1.2 / pyogrio read
+directly, and GeoPandas reads what GeoFrame writes (`scripts/crosscheck_io.sh`).
 
 Arrow interchange is IPC bytes (the BEAM has no Arrow C Data Interface binding), with GeoArrow
 extension metadata (`geoarrow.wkb` or native types, CRS as PROJJSON) on the geometry field, so
@@ -88,6 +96,15 @@ Writers (GeoParquet, Feather, GeoJSON, FlatGeobuf) write to `<path>.tmp-<id>` be
 destination and rename it over `path` on success; a failure never removes an existing file.
 CRS labels that differ only by case, or `OGC:CRS84` against `EPSG:4326`, are compatible for
 binary operations, joins, overlay and `concat`.
+
+Shapefile and zip input/output:
+
+- Zip archives (zipped Shapefiles): a member may decompress to at most 2 GiB (`MAX_ZIP_MEMBER_BYTES`); larger members are an error.
+- dBase tables (`.dbf`): a table may expand to at most 2^28 cells (records times fields), and its header must be consistent
+  (record length covers the fields, header length covers the descriptors); inconsistent or amplifying headers are an error.
+- Shapefile sidecars are named after the path: a path ending in `.shp` swaps that suffix, any other path gets the extension
+  appended to its full name (`out.v1` writes `out.v1.shp`, `out.v1.dbf`, ...). Shapefile and zip writes go through temporary
+  files and renames, so a failed write leaves existing files as they were.
 
 ## Roadmap
 

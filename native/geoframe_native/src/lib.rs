@@ -2,11 +2,12 @@
 //! crate; this layer only converts between BEAM terms and core types.
 
 use geoframe_core::{
-    from_arrow_ipc, read_feather, read_flatgeobuf, read_geojson, read_geojson_str,
-    read_geoparquet_filtered, to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson,
-    write_geoparquet_with, BufferOptions, FeatherCompression, GeoColumn, GeometryEncoding,
-    GridFeature, GridType, NearestPairs, Origin, ParquetOptions, Predicate, QueryPredicate, SetOp,
-    TableRead, UnaryOp, VectorRead,
+    from_arrow_ipc, gpkg_info, gpkg_layers, read_feather, read_flatgeobuf, read_geojson,
+    read_geojson_str, read_geoparquet_filtered, read_gpkg, read_shapefile, shapefile_info,
+    to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson, write_geoparquet_with,
+    write_gpkg, write_shapefile, BufferOptions, FeatherCompression, GeoColumn, GeometryEncoding,
+    GpkgWriteOptions, GridFeature, GridType, LayerInfo, NearestPairs, Origin, ParquetOptions,
+    Predicate, QueryPredicate, SetOp, TableRead, UnaryOp, VectorRead,
 };
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
@@ -630,6 +631,114 @@ fn write_flatgeobuf_file(
         &layer_name,
         index,
     )
+}
+
+/// Layer facts for `read_file_info/2`.
+#[derive(rustler::NifMap)]
+struct LayerInfoTerm {
+    name: String,
+    driver: String,
+    crs: Option<String>,
+    encoding: String,
+    geometry_type: Option<String>,
+    features: u64,
+    bounds: Option<(f64, f64, f64, f64)>,
+    fields: Vec<(String, String)>,
+}
+
+fn info_term(info: LayerInfo) -> LayerInfoTerm {
+    LayerInfoTerm {
+        name: info.name,
+        driver: info.driver,
+        crs: info.crs,
+        encoding: info.encoding,
+        geometry_type: info.geometry_type,
+        features: info.features,
+        bounds: info.bounds.map(|b| (b[0], b[1], b[2], b[3])),
+        fields: info.fields,
+    }
+}
+
+/// Reads a shapefile (`.shp` or a zip holding one). Returns `{geometry, attributes_ipc}`.
+#[rustler::nif(schedule = "DirtyIo")]
+fn read_shapefile_file<'a>(
+    env: Env<'a>,
+    path: String,
+    encoding: Option<String>,
+) -> Result<(Handle, Binary<'a>), String> {
+    read_shapefile(&path, encoding.as_deref()).map(|read| vector_read(env, read))
+}
+
+/// Writes a shapefile; returns the warnings.
+#[rustler::nif(schedule = "DirtyIo")]
+fn write_shapefile_file(
+    column: Handle,
+    attributes_ipc: Binary,
+    path: String,
+    encoding: Option<String>,
+) -> Result<Vec<String>, String> {
+    write_shapefile(
+        &path,
+        &column.0,
+        attributes_ipc.as_slice(),
+        encoding.as_deref(),
+    )
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn shapefile_file_info(path: String, encoding: Option<String>) -> Result<LayerInfoTerm, String> {
+    shapefile_info(&path, encoding.as_deref()).map(info_term)
+}
+
+/// Reads one GeoPackage layer. Returns `{geometry, attributes_ipc, layer_name}`.
+#[rustler::nif(schedule = "DirtyIo")]
+fn read_gpkg_file<'a>(
+    env: Env<'a>,
+    path: String,
+    layer: Option<String>,
+) -> Result<(Handle, Binary<'a>, String), String> {
+    read_gpkg(&path, layer.as_deref()).map(|read| {
+        let (handle, ipc) = vector_read(env, read.vector);
+        (handle, ipc, read.layer)
+    })
+}
+
+/// Writes a GeoPackage layer; returns the warnings.
+#[rustler::nif(schedule = "DirtyIo")]
+fn write_gpkg_file(
+    column: Handle,
+    attributes_ipc: Binary,
+    path: String,
+    layer: String,
+    append: bool,
+    spatial_index: bool,
+) -> Result<Vec<String>, String> {
+    write_gpkg(
+        &path,
+        &column.0,
+        attributes_ipc.as_slice(),
+        &layer,
+        GpkgWriteOptions {
+            append,
+            spatial_index,
+        },
+    )
+}
+
+/// The layers of a GeoPackage as `{name, geometry_type}`.
+#[rustler::nif(schedule = "DirtyIo")]
+fn gpkg_layer_list(path: String) -> Result<Vec<(String, Option<String>)>, String> {
+    gpkg_layers(&path).map(|layers| {
+        layers
+            .into_iter()
+            .map(|l| (l.name, l.geometry_type))
+            .collect()
+    })
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn gpkg_layer_info(path: String, layer: Option<String>) -> Result<LayerInfoTerm, String> {
+    gpkg_info(&path, layer.as_deref()).map(info_term)
 }
 
 /// Per-row origins: `"coord"` reads `ox`/`oy` (a `None` in either nulls the row); the other

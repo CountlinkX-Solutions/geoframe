@@ -124,6 +124,16 @@ defmodule GeoFrame.Native do
   def write_geojson_file(_ref, _attributes_ipc, _path, _force), do: err()
   def read_flatgeobuf_file(_path, _bbox), do: err()
   def write_flatgeobuf_file(_ref, _attributes_ipc, _path, _layer_name, _index), do: err()
+  def read_shapefile_file(_path, _encoding), do: err()
+  def write_shapefile_file(_ref, _attributes_ipc, _path, _encoding), do: err()
+  def shapefile_file_info(_path, _encoding), do: err()
+  def read_gpkg_file(_path, _layer), do: err()
+
+  def write_gpkg_file(_ref, _attributes_ipc, _path, _layer, _append, _spatial_index),
+    do: err()
+
+  def gpkg_layer_list(_path), do: err()
+  def gpkg_layer_info(_path, _layer), do: err()
 
   defp err, do: :erlang.nif_error(:nif_not_loaded)
 end
