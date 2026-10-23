@@ -11,6 +11,40 @@ GeoFrame backend today: `geo` 0.33, `geoarrow-*` 0.9, `geoparquet` 0.9, `proj4rs
 Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other than area/length/bounds/centroid
 (users call `GeoSeries` on `gdf.geometry`); this is counted as ✅ for the series member and noted once in section 12.
 
+## Reference testing
+
+Since batch V every operation GeoFrame shares with GeoPandas is checked against the real library:
+`test/reference/generate.py` (dev-only; GeoPandas 1.2.0, Shapely 2.2.0, GEOS 3.14.1, pyproj 3.8.0) computes
+the results for a fixed corpus and commits them as JSON in `test/reference/fixtures/`;
+`test/geo_frame/reference_test.exs` compares GeoFrame with them in CI without Python (about 10 800 cases
+across 77 operations, plus sjoin, sjoin_nearest, dissolve and union_all on small frames). Known differences
+are listed in `test/reference/known_deviations.exs` and the suite asserts that each one still deviates. See
+`test/reference/README.md` for the tolerances and how to regenerate. Documented deviations:
+
+- **Null and empty inputs.** GeoFrame returns `nil` where GeoPandas returns `False`, `0`, `NaN` or an empty
+  geometry (`area`, predicates, `centroid`, `envelope`, `bounds`, ...); `count_geometries` of an empty atomic
+  geometry is 0 (Shapely: 1). `POINT EMPTY` cannot be stored in `geo` types.
+- **Invalid input.** Predicates and `relate` on a self-intersecting bowtie polygon follow geo's relate and differ
+  from GEOS in a few pairs. Valid inputs agree in every case.
+- **Zero-area polygons and degenerate lines.** `is_valid` accepts a polygon whose ring is collinear (GEOS: invalid)
+  and `make_valid` leaves it unchanged; `is_ring` is false for the two-point closed line `LINESTRING (1 1, 1 1)`;
+  `is_valid_reason` uses geo's wording, not GEOS' text.
+- **`envelope` of a horizontal/vertical line.** GeoFrame returns a line; GEOS 3.14 returns a zero-area polygon with
+  repeated vertices.
+- **`buffer` mitre/bevel joins** on the acute corner of a closed line differ between geo-buf and GEOS; round caps
+  and joins, flat and square caps on open lines agree (area within 2 %).
+- **`line_merge` of a polygon** gives an empty collection (GEOS merges its boundary).
+- **Set operations.** Line x line and mixed-dimension combinations are `nil`; lower-dimensional parts of a result
+  (shared edges or vertices) are dropped; mixed-family `union_all`/`dissolve` is `nil`. Batch B closes these.
+  Results agree within 1e-6, not bit-exactly: `geo`'s boolean operations snap intersection points to an integer
+  grid (about 1e-8 of the extent).
+- **Tolerances.** `to_crs` against PROJ: within 1e-6 projected units (1e-9 degrees back), including the Florida
+  East (ftUS) transverse Mercator. Geodesic area, length and point distance: within 1e-6 of `pyproj.Geod`.
+
+Fixed thanks to the suite: `distance`/`dwithin` returned `0.0`/`true` (or `f64::MAX` for an empty collection) for
+empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line to a one-point `LINESTRING`
+(GEOS keeps two points).
+
 ## 1. Constructors / conversion (GeoSeries)
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
@@ -45,7 +79,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | `z`, `m` | `z`,`m` yes | — | ❌ | GeoFrame is 2D-only (Z/M dropped); needs dimension-aware storage -> large |
 | `get_coordinates` | `coordinates` (x/y lists) | `get_coordinates/2` | 🟡 | DataFrame `x`,`y`; `include_index:` adds row position; no `include_z`, `ignore_index`, `index_parts` |
 | `count_coordinates` | yes | `count_coordinates/1` | ✅ | |
-| `count_geometries` | — | `count_geometries/1` | ✅ | null rows are `nil` (Shapely: 0) |
+| `count_geometries` | — | `count_geometries/1` | ✅ | null rows are `nil` (Shapely: 0); an empty atomic geometry gives 0 (Shapely: 1) |
 | `count_interior_rings` | — | `count_interior_rings/1` | ✅ | 0 for non-polygons as Shapely; null rows `nil` |
 | `get_geometry(index)` | — | `get_geometry/2` | 🟡 | scalar integer index only (negative from end); no per-row index array |
 | `get_precision` / `set_precision` | — | — | ❌ | needs grid snapping; low value |
@@ -66,10 +100,10 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `is_valid` | `is_valid` yes | `is_valid/1` | ✅ | geo `Validation` |
-| `is_valid_reason` | — | `is_valid_reason/1` | 🟡 | "Valid Geometry" as Shapely; first reason only, in `geo` wording rather than GEOS |
+| `is_valid` | `is_valid` yes | `is_valid/1` | ✅ | geo `Validation`; a zero-area collinear ring is valid here, invalid in GEOS (see Reference testing) |
+| `is_valid_reason` | — | `is_valid_reason/1` | 🟡 | "Valid Geometry" as Shapely; first reason only, in `geo` wording rather than GEOS (reference-tested: only "Valid Geometry" matches) |
 | `is_empty` | yes | `is_empty/1` | ✅ | |
-| `is_ring` | `is_ring` yes | `is_ring/1` | ✅ | closed, >= 4 vertices, simple; quadratic check |
+| `is_ring` | `is_ring` yes | `is_ring/1` | ✅ | closed, >= 4 vertices, simple; quadratic check; GEOS also accepts the degenerate `LINESTRING (1 1, 1 1)` |
 | `is_closed` | — | `is_closed/1` | ✅ | lines and multilines; others false (Shapely) |
 | `is_simple` | `self_intersects` (inverse, lines) | — | ❌ | linestring self-intersection via geo `Intersects`/sweep |
 | `is_ccw` | `is_ccw` yes | `is_ccw/1` | ✅ | closed `LineString` only; open lines and other types `false` |
@@ -84,7 +118,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `intersects` | roadmap (no) | `intersects/2` | ✅ | |
+| `intersects` | roadmap (no) | `intersects/2` | ✅ | all predicates: null/empty rows are `nil` (GeoPandas `False`); results on invalid bowtie input can differ from GEOS (see Reference testing) |
 | `contains` | no | `contains/2` | ✅ | |
 | `within` | no | `within/2` | ✅ | |
 | `touches` | no | `touches/2` | ✅ | |
@@ -106,7 +140,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `intersection` | no | `intersection/2` | 🟡 | polygonal full; line x polygon and point cases; other combos `nil`; lower-dim results dropped (shared edge gives `POLYGON EMPTY`) |
+| `intersection` | no | `intersection/2` | 🟡 | polygonal full; line x polygon and point cases; other combos `nil`; lower-dim results dropped (shared edge gives `POLYGON EMPTY`); results agree with GEOS within 1e-6 (integer-grid snapping) |
 | `union` | no | `union/2` | 🟡 | same limits; no line x line, no mixed dim |
 | `difference` | no | `difference/2` | 🟡 | same limits |
 | `symmetric_difference` | no | `symmetric_difference/2` | 🟡 | same limits |
@@ -121,13 +155,13 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `buffer` | no | `buffer/3` | 🟡 | cap/join/quad_segs/mitre; no `single_sided`; no per-row distance series; planar |
+| `buffer` | no | `buffer/3` | 🟡 | cap/join/quad_segs/mitre; no `single_sided`; no per-row distance series; planar; reference-tested area within 2 %, mitre/bevel joins on acute closed-line corners differ from GEOS |
 | `centroid` | `centroid` yes | `centroid/1` | ✅ | |
 | `convex_hull` | `convex_hull` yes | `convex_hull/1` | ✅ | |
-| `envelope` | via `bounds`/`to_polygon` | `envelope/1` | ✅ | |
+| `envelope` | via `bounds`/`to_polygon` | `envelope/1` | ✅ | horizontal/vertical line gives a line; GEOS 3.14 gives a zero-area polygon |
 | `simplify` | `simplify` yes | `simplify/3` | ✅ | `preserve_topology` supported |
 | `simplify_coverage` | no | — | ❌ | needs topology-preserving shared edges; hard; geo `SimplifyVw` is not coverage-aware |
-| `make_valid` | no | `make_valid/1` | 🟡 | geo `MakeValid`; polygons only; differs from GEOS in vertex detail |
+| `make_valid` | no | `make_valid/1` | 🟡 | geo `MakeValid`; polygons only; differs from GEOS in vertex detail; leaves a zero-area collinear polygon unchanged |
 | `representative_point` | no | ✅ | ✅ | see §2 |
 | `concave_hull` | no | — | ❌ | geo `ConcaveHull` (`ratio`, `allow_holes` -> only ratio) |
 | `minimum_rotated_rectangle` | no | — | ❌ | geo `MinimumRotatedRect` |
@@ -171,7 +205,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 |---|---|---|---|---|
 | `interpolate` | roadmap | `interpolate/3` | ✅ | `normalized:`, negative distance, per-row distance; MultiLineString parts concatenated; non-lines `nil` |
 | `project` | roadmap | `project/3` | ✅ | `normalized:`, `other` broadcasts |
-| `line_merge` | roadmap ("Linestring joining") | `line_merge/2` | ✅ | own endpoint-graph merge; `directed:`; non-lines give an empty collection |
+| `line_merge` | roadmap ("Linestring joining") | `line_merge/2` | ✅ | own endpoint-graph merge; `directed:`; non-lines give an empty collection (GEOS merges a polygon's boundary) |
 | `shared_paths` | no | — | ❌ | hard |
 | `offset_curve` | no | — | ❌ | see §2 |
 | `shortest_line` | no | `shortest_line/2` | ✅ | see §6 |
