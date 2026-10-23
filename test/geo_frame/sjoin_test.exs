@@ -111,13 +111,13 @@ defmodule GeoFrame.SjoinTest do
   end
 
   describe "sjoin/3 points in polygons" do
-    test "inner (default): left geometry, left + right attributes, index_right", %{
+    test "inner (default): left attributes, index_right, right attributes, geometry last", %{
       polygons: polygons,
       points: points
     } do
       out = GeoFrame.sjoin(points, polygons, predicate: :within)
 
-      assert GeoDataFrame.names(out) == ["id", "name", "value", "index_right", "geometry"]
+      assert GeoDataFrame.names(out) == ["id", "index_right", "name", "value", "geometry"]
       assert col(out, "id") == [1, 2]
       assert col(out, "name") == ["A", "B"]
       assert col(out, "value") == [10, 20]
@@ -156,7 +156,7 @@ defmodule GeoFrame.SjoinTest do
         )
 
       out = GeoFrame.sjoin(points, extra, how: :right, predicate: :within)
-      assert GeoDataFrame.names(out) == ["id", "name", "index_left", "geometry"]
+      assert GeoDataFrame.names(out) == ["index_left", "id", "name", "geometry"]
       assert col(out, "name") == ["A", "B", "C"]
       assert col(out, "id") == [2, 1, nil]
       assert col(out, "index_left") == [1, 0, nil]
@@ -194,9 +194,9 @@ defmodule GeoFrame.SjoinTest do
       assert GeoDataFrame.names(out) == [
                "id_left",
                "name_left",
+               "index_right",
                "id_right",
                "name_right",
-               "index_right",
                "geom"
              ]
 
@@ -230,7 +230,7 @@ defmodule GeoFrame.SjoinTest do
       far = GeoDataFrame.new(DataFrame.new(id: [1]), s(["POINT (500 500)"]))
       out = GeoFrame.sjoin(far, polygons)
       assert GeoDataFrame.n_rows(out) == 0
-      assert GeoDataFrame.names(out) == ["id", "name", "value", "index_right", "geometry"]
+      assert GeoDataFrame.names(out) == ["id", "index_right", "name", "value", "geometry"]
     end
 
     test "null geometries never match but survive a left join", %{polygons: polygons} do

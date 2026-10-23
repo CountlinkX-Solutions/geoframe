@@ -46,6 +46,13 @@ defmodule GeoFrame do
   defdelegate sjoin(left, right, opts \\ []), to: GeoFrame.SpatialJoin
 
   @doc """
+  Nearest-neighbour spatial join of two `GeoFrame.GeoDataFrame`s. See
+  `GeoFrame.SpatialJoin.sjoin_nearest/3`.
+  """
+  @spec sjoin_nearest(GeoDataFrame.t(), GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
+  defdelegate sjoin_nearest(left, right, opts \\ []), to: GeoFrame.SpatialJoin
+
+  @doc """
   Reads a GeoParquet file into a `GeoFrame.GeoDataFrame`.
 
   The primary geometry column named in the file's `geo` metadata becomes the geometry;

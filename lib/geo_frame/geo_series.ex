@@ -527,6 +527,42 @@ defmodule GeoFrame.GeoSeries do
   end
 
   @doc """
+  For each left geometry, the nearest right geometries by planar euclidean distance.
+
+  Returns `{left_idx, right_idx, distances}` as parallel lists ordered by left row then
+  right row. The distance is geometry to geometry (not centroids), so a point inside a
+  polygon is at distance `0.0`. Every right geometry at exactly the minimum distance is
+  returned (ties), like GeoPandas. Computed with a best-first R-tree walk, then exact
+  distances.
+
+  Options:
+
+    * `:max_distance` - non-negative; left rows whose nearest geometry is farther have no
+      match (the limit itself is inclusive).
+    * `:exclusive` - when `true`, right geometries equal to the left one (topologically) are
+      ignored, so a frame joined with itself finds each row's nearest *other* row.
+      Default `false`.
+
+  Null and empty rows never match. Differing CRS (both set) raise `ArgumentError`.
+  """
+  @spec sindex_nearest(t(), t(), keyword()) ::
+          {[non_neg_integer()], [non_neg_integer()], [float()]}
+  def sindex_nearest(left, right, opts \\ [])
+
+  def sindex_nearest(%__MODULE__{ref: left}, %__MODULE__{ref: right}, opts) when is_list(opts) do
+    max_distance = opts |> Keyword.get(:max_distance) |> then(&(&1 && &1 * 1.0))
+    exclusive = Keyword.get(opts, :exclusive, false)
+
+    unless is_boolean(exclusive) do
+      raise ArgumentError, "exclusive must be a boolean, got #{inspect(exclusive)}"
+    end
+
+    left
+    |> Native.sindex_nearest(right, max_distance, exclusive)
+    |> unwrap!()
+  end
+
+  @doc """
   The DE-9IM intersection matrix of each pair as a nine-character string series.
 
   Characters are ordered interior/boundary/exterior of the left geometry against

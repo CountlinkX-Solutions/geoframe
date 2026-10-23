@@ -211,6 +211,10 @@ defmodule GeoFrame.GeoDataFrame do
   @spec sjoin(t(), t(), keyword()) :: t()
   defdelegate sjoin(left, right, opts \\ []), to: GeoFrame.SpatialJoin
 
+  @doc "Nearest spatial join; see `GeoFrame.SpatialJoin.sjoin_nearest/3`."
+  @spec sjoin_nearest(t(), t(), keyword()) :: t()
+  defdelegate sjoin_nearest(left, right, opts \\ []), to: GeoFrame.SpatialJoin
+
   # -- attribute operations -------------------------------------------------------------
 
   @doc """

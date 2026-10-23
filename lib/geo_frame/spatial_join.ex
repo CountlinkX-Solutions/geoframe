@@ -1,6 +1,6 @@
 defmodule GeoFrame.SpatialJoin do
   @moduledoc """
-  Spatial joins between two `GeoFrame.GeoDataFrame`s with GeoPandas semantics.
+  Spatial joins (`sjoin/3`, `sjoin_nearest/3`) between two `GeoFrame.GeoDataFrame`s with GeoPandas semantics.
 
   The matching pairs come from `GeoFrame.GeoSeries.sindex_query/4` (R-tree probe, exact
   refinement, computed in Rust). Attributes are then aligned with the row indices on the
@@ -12,10 +12,13 @@ defmodule GeoFrame.SpatialJoin do
       once, with nulls on the right; `:right` is the mirror image.
     * The geometry is the left geometry for `:inner` and `:left`, the right geometry for
       `:right` (with that frame's geometry column name).
-    * Columns: left attributes, right attributes (never the right geometry), then
-      `index_right` (`index_left` for `:right`), the zero-based row position in the *other*
-      frame as a nullable `s64`, then the geometry. An attribute name present on both sides
-      becomes `name_left` / `name_right` (`:lsuffix`, `:rsuffix`).
+    * Columns follow GeoPandas: left attributes, then `index_right` (the zero-based row
+      position in the right frame, a nullable `s64`), then right attributes (never the right
+      geometry). For `how: :right` it is `index_left`, left attributes, right attributes.
+      An attribute name present on both sides becomes `name_left` / `name_right`
+      (`:lsuffix`, `:rsuffix`). The geometry is always the last column, whichever side it
+      comes from (GeoPandas puts the right geometry in the middle of a right join; a
+      `GeoFrame.GeoDataFrame` keeps its geometry last).
     * Row order: `:inner` and `:left` by left row then right row; `:right` by right row then
       left row.
 
@@ -52,20 +55,71 @@ defmodule GeoFrame.SpatialJoin do
   """
   @spec sjoin(GeoDataFrame.t(), GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
   def sjoin(%GeoDataFrame{} = left, %GeoDataFrame{} = right, opts \\ []) do
-    how = Keyword.get(opts, :how, :inner)
+    how = fetch_how!(opts)
     predicate = Keyword.get(opts, :predicate, :intersects)
-    lsuffix = opts |> Keyword.get(:lsuffix, "left") |> to_string()
-    rsuffix = opts |> Keyword.get(:rsuffix, "right") |> to_string()
+
+    query_opts = Keyword.take(opts, [:distance])
+    {li, ri} = GeoSeries.sindex_query(left.geometry, right.geometry, predicate, query_opts)
+
+    assemble(left, right, how, {li, ri, nil}, opts)
+  end
+
+  @doc """
+  Joins each `left` row with its nearest `right` geometry (planar euclidean distance,
+  geometry to geometry), like `geopandas.sjoin_nearest`.
+
+  Every right geometry at exactly the minimum distance is returned, so a left row can
+  appear several times (ties); ties are ordered by right row. For `how: :right` the roles
+  swap: each right row is joined with its nearest left geometries.
+
+  Options:
+
+    * `:how` - `:inner` (default; rows without a match are dropped), `:left` or `:right`.
+    * `:max_distance` - non-negative; farther candidates do not match (inclusive limit).
+    * `:distance_col` - name of an extra `f64` column holding the distance (omitted by
+      default; `nil` for unmatched rows).
+    * `:exclusive` - when `true`, geometries equal to the query one are ignored
+      (default `false`).
+    * `:lsuffix` / `:rsuffix` - suffixes for colliding attribute names (`"left"` / `"right"`).
+
+  Column order and nulls follow `sjoin/3`; the distance column comes after the right
+  attributes. Null and empty geometries never match. Raises `ArgumentError` for bad options,
+  a CRS mismatch or duplicate result column names.
+  """
+  @spec sjoin_nearest(GeoDataFrame.t(), GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
+  def sjoin_nearest(%GeoDataFrame{} = left, %GeoDataFrame{} = right, opts \\ []) do
+    how = fetch_how!(opts)
+    nearest_opts = Keyword.take(opts, [:max_distance, :exclusive])
+
+    {li, ri, ds} =
+      if how == :right do
+        {ri, li, ds} = GeoSeries.sindex_nearest(right.geometry, left.geometry, nearest_opts)
+        {li, ri, ds}
+      else
+        GeoSeries.sindex_nearest(left.geometry, right.geometry, nearest_opts)
+      end
+
+    assemble(left, right, how, {li, ri, ds}, opts)
+  end
+
+  defp fetch_how!(opts) do
+    how = Keyword.get(opts, :how, :inner)
 
     unless how in @hows do
       raise ArgumentError, "how must be one of #{inspect(@hows)}, got #{inspect(how)}"
     end
 
-    query_opts = Keyword.take(opts, [:distance])
-    {li, ri} = GeoSeries.sindex_query(left.geometry, right.geometry, predicate, query_opts)
+    how
+  end
 
-    {left_rows, right_rows} =
-      rows(how, li, ri, GeoDataFrame.n_rows(left), GeoDataFrame.n_rows(right))
+  # Builds the joined frame from matched row pairs (`ds` are the optional distances).
+  defp assemble(left, right, how, {li, ri, ds}, opts) do
+    lsuffix = opts |> Keyword.get(:lsuffix, "left") |> to_string()
+    rsuffix = opts |> Keyword.get(:rsuffix, "right") |> to_string()
+    distance_col = opts |> Keyword.get(:distance_col) |> then(&(&1 && to_string(&1)))
+
+    {left_rows, right_rows, distances} =
+      rows(how, li, ri, ds, GeoDataFrame.n_rows(left), GeoDataFrame.n_rows(right))
 
     {geometry, geometry_column} =
       case how do
@@ -75,32 +129,63 @@ defmodule GeoFrame.SpatialJoin do
 
     index_name = if how == :right, do: "index_left", else: "index_right"
     index_values = if how == :right, do: left_rows, else: right_rows
+    index = {index_name, Series.from_list(index_values, dtype: {:s, 64})}
 
     left_part = gather(left.data, left_rows)
     right_part = gather(right.data, right_rows)
     {left_names, right_names} = suffixed(left_part, right_part, lsuffix, rsuffix)
 
+    # GeoPandas order: left attributes then `index_right`, or `index_left` then the left
+    # attributes for a right join; geometry stays last (GeoDataFrame invariant).
     columns =
-      columns(left_part, left_names) ++
-        columns(right_part, right_names) ++
-        [{index_name, Series.from_list(index_values, dtype: {:s, 64})}]
+      if(how == :right,
+        do: [index] ++ columns(left_part, left_names) ++ columns(right_part, right_names),
+        else: columns(left_part, left_names) ++ [index] ++ columns(right_part, right_names)
+      ) ++ distance_column(distance_col, distances)
 
     check_unique!(Enum.map(columns, &elem(&1, 0)), geometry_column, index_name)
     GeoDataFrame.new(DataFrame.new(columns), geometry, geometry_column: geometry_column)
   end
 
-  # Row positions of both sides for the result; `nil` marks the unmatched side.
-  defp rows(:inner, li, ri, _n_left, _n_right), do: {li, ri}
+  defp distance_column(nil, _distances), do: []
 
-  defp rows(:left, li, ri, n_left, _n_right) do
-    pairs = Enum.zip(li, ri) ++ Enum.map(unmatched(li, n_left), &{&1, nil})
-    pairs |> Enum.sort() |> Enum.unzip()
+  defp distance_column(name, distances),
+    do: [{name, Series.from_list(distances, dtype: {:f, 64})}]
+
+  # Row positions of both sides (and distances) for the result; `nil` marks the unmatched
+  # side. `ds` is `nil` for predicate joins.
+  defp rows(how, li, ri, ds, n_left, n_right) do
+    ds = ds || List.duplicate(nil, length(li))
+    triples = Enum.zip_with([li, ri, ds], &List.to_tuple/1)
+
+    triples =
+      case how do
+        :inner -> triples
+        :left -> sort_with_unmatched(triples, li, n_left, 0)
+        :right -> sort_with_unmatched(triples, ri, n_right, 1)
+      end
+
+    {l, r, d} = unzip3(triples)
+    {l, r, d}
   end
 
-  defp rows(:right, li, ri, _n_left, n_right) do
-    pairs = Enum.zip(ri, li) ++ Enum.map(unmatched(ri, n_right), &{&1, nil})
-    {right_rows, left_rows} = pairs |> Enum.sort() |> Enum.unzip()
-    {left_rows, right_rows}
+  # `side` is the tuple position of the preserved side; its unmatched rows get `nil` partners.
+  defp sort_with_unmatched(triples, matched, n, side) do
+    extra =
+      for i <- unmatched(matched, n), do: if(side == 0, do: {i, nil, nil}, else: {nil, i, nil})
+
+    Enum.sort_by(triples ++ extra, fn {l, r, _} ->
+      if side == 0, do: {l, r}, else: {r, l}
+    end)
+  end
+
+  defp unzip3(triples) do
+    {l, r, d} =
+      Enum.reduce(triples, {[], [], []}, fn {l, r, d}, {ls, rs, ds} ->
+        {[l | ls], [r | rs], [d | ds]}
+      end)
+
+    {Enum.reverse(l), Enum.reverse(r), Enum.reverse(d)}
   end
 
   defp unmatched(matched, n) do
