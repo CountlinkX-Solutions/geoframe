@@ -511,6 +511,55 @@ defmodule GeoFrame.GeoSeries do
     |> Series.from_list(dtype: :string)
   end
 
+  # -- binary set operations ------------------------------------------------------------
+
+  @set_op_docs [
+    intersection: "The part shared by both geometries.",
+    union: "All points in either geometry.",
+    difference: "The part of the geometry that is not in `other`.",
+    symmetric_difference: "Points in exactly one of the two geometries."
+  ]
+
+  for {name, doc} <- @set_op_docs do
+    @doc """
+    #{doc} Element-wise; returns a GeoSeries with the CRS of the left side.
+
+    Pairing, null and CRS rules are those of `intersects/2` (`other` may be a series of the
+    same length, or a single geometry / WKT string that broadcasts).
+
+    Supported: polygonal x polygonal in full; line x polygon for `intersection` and
+    `difference` (only the one-dimensional part is kept); points against any geometry for
+    `intersection` and `difference`, and point x point for all four. Every other combination
+    (and `GeometryCollection` input) gives `nil`. Empty results are empty geometries
+    (`POLYGON EMPTY`, `LINESTRING EMPTY`, `MULTIPOINT EMPTY`), not `nil`. Lower-dimensional
+    results are dropped: polygons sharing only an edge intersect in `POLYGON EMPTY` where
+    Shapely returns the shared `LINESTRING`.
+    """
+    @spec unquote(name)(t(), other()) :: t()
+    def unquote(name)(%__MODULE__{ref: left} = series, other) do
+      left
+      |> Native.set_op(other_ref(series, other), unquote(Atom.to_string(name)))
+      |> wrap()
+      |> case do
+        {:ok, result} -> result
+        {:error, message} -> raise ArgumentError, message
+      end
+    end
+  end
+
+  @doc """
+  The union of all non-null geometries as a **one-row** GeoSeries (GeoPandas returns a scalar).
+
+  Polygons are merged with a single `unary_union`, points are merged and deduplicated, and
+  identical lines are merged into a `MultiLineString`. A mix of geometry families gives a
+  `nil` row; no non-null input gives `GEOMETRYCOLLECTION EMPTY`.
+  """
+  @spec union_all(t()) :: t()
+  def union_all(%__MODULE__{ref: ref}) do
+    {:ok, result} = ref |> Native.union_all() |> wrap()
+    result
+  end
+
   defp other_ref(_series, %__MODULE__{ref: ref}), do: ref
 
   defp other_ref(%__MODULE__{} = series, wkt) when is_binary(wkt) do

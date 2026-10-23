@@ -2,7 +2,7 @@
 //! crate; this layer only converts between BEAM terms and core types.
 
 use geoframe_core::{
-    read_geoparquet, write_geoparquet, BufferOptions, GeoColumn, Origin, Predicate, UnaryOp,
+    read_geoparquet, write_geoparquet, BufferOptions, GeoColumn, Origin, Predicate, SetOp, UnaryOp,
 };
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
@@ -132,6 +132,17 @@ fn dwithin(left: Handle, right: Handle, limit: f64) -> Result<Vec<Option<bool>>,
 #[rustler::nif(schedule = "DirtyCpu")]
 fn relate(left: Handle, right: Handle) -> Result<Vec<Option<String>>, String> {
     left.0.relate(&right.0)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn set_op(left: Handle, right: Handle, name: String) -> Result<Handle, String> {
+    let op = SetOp::from_name(&name).ok_or_else(|| format!("unknown set operation: {name}"))?;
+    left.0.set_op(&right.0, op).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn union_all(column: Handle) -> Result<Handle, String> {
+    column.0.union_all().map(wrap)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]

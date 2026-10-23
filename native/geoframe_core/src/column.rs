@@ -261,6 +261,11 @@ impl GeoColumn {
         })
     }
 
+    /// Builds a column from per-row `geo` geometries carrying this column's CRS.
+    pub(crate) fn rebuild(&self, rows: &[Option<Geometry<f64>>]) -> Result<Self, String> {
+        Self::from_geo_rows(rows, self.array.extension_type().metadata().clone())
+    }
+
     /// The generic constructive path: maps every convertible row through `f` and rebuilds a
     /// column with the same CRS. Rows that are null, unrepresentable, make `f` return `None`
     /// or make `f` panic (geometry algorithms can on degenerate input) become null. Output
