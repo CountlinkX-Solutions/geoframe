@@ -1,7 +1,7 @@
 //! Thin Rustler wrapper around `geoframe_core`. All logic and its tests live in the core
 //! crate; this layer only converts between BEAM terms and core types.
 
-use geoframe_core::{read_geoparquet, write_geoparquet, GeoColumn};
+use geoframe_core::{read_geoparquet, write_geoparquet, GeoColumn, Predicate};
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
 /// Resource handle for a GeoArrow geometry column living in Rust memory.
@@ -108,6 +108,28 @@ fn total_bounds(column: Handle) -> Option<(f64, f64, f64, f64)> {
 #[rustler::nif(schedule = "DirtyCpu")]
 fn centroid(column: Handle) -> Result<Handle, String> {
     column.0.centroid().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn predicate(left: Handle, right: Handle, name: String) -> Result<Vec<Option<bool>>, String> {
+    let predicate =
+        Predicate::from_name(&name).ok_or_else(|| format!("unknown predicate: {name}"))?;
+    left.0.predicate(&right.0, predicate)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn distance(left: Handle, right: Handle) -> Result<Vec<Option<f64>>, String> {
+    left.0.distance(&right.0)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn dwithin(left: Handle, right: Handle, limit: f64) -> Result<Vec<Option<bool>>, String> {
+    left.0.dwithin(&right.0, limit)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn relate(left: Handle, right: Handle) -> Result<Vec<Option<String>>, String> {
+    left.0.relate(&right.0)
 }
 
 /// Reads a GeoParquet file. Returns `{geometry, geometry_column, attributes_ipc}` where the
