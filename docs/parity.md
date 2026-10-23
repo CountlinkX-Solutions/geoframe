@@ -17,11 +17,11 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 |---|---|---|---|---|
 | `GeoSeries.from_wkt` | `from_wkt` yes | `from_wkt/2`, `from_wkt!/2` | ✅ | |
 | `GeoSeries.from_wkb` | `from_wkb` yes | `from_wkb/2`, `from_wkb!/2` | ✅ | |
-| `GeoSeries.from_xy` / `points_from_xy` | `point`, `line_string`, `multi_point`, `polygon`... constructors from columns yes | — | ❌ | needs x/y (z) lists -> points |
+| `GeoSeries.from_xy` / `points_from_xy` | `point`, `line_string`, `multi_point`, `polygon`... constructors from columns yes | `from_xy/3`, `GeoFrame.points_from_xy/3` | ✅ | lists or Explorer series; nil/NaN -> null point; `crs:`; `z:` validated then dropped (2D storage) |
 | `GeoSeries.from_file` | — | `GeoFrame.read_file` (GDF only) | 🟡 | series-only variant missing; trivial wrapper |
 | `GeoSeries.from_arrow` | — (geoarrow native) | — | ❌ | geoarrow-array available in core |
 | `GeoSeries.to_wkt` | `to_wkt` yes | `to_wkt/1` | ✅ | |
-| `GeoSeries.to_wkb` (hex option) | `to_wkb` yes | `to_wkb/1` | 🟡 | no `hex:` option |
+| `GeoSeries.to_wkb` (hex option) | `to_wkb` yes | `to_wkb/2` | ✅ | `hex: true` gives upper-case hex strings |
 | `GeoSeries.to_json` | — | `to_geojson/1` | 🟡 | returns list of decoded maps, not a FeatureCollection string |
 | `GeoSeries.to_arrow` | — | — | ❌ | |
 | `GeoSeries.to_file` | — | — | ❌ | trivial wrapper over write_file (needs a GDF) |
@@ -43,22 +43,22 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | `geom_type` | `dimension_of`/dtype | `geom_type/1` | ✅ | |
 | `x`, `y` | `x`,`y` yes | `x/1`, `y/1` | ✅ | nil for non-points (GeoPandas raises) |
 | `z`, `m` | `z`,`m` yes | — | ❌ | GeoFrame is 2D-only (Z/M dropped); needs dimension-aware storage -> large |
-| `get_coordinates` | `coordinates` (x/y lists) | — | ❌ | return DataFrame x,y(+index) |
+| `get_coordinates` | `coordinates` (x/y lists) | `get_coordinates/2` | 🟡 | DataFrame `x`,`y`; `include_index:` adds row position; no `include_z`, `ignore_index`, `index_parts` |
 | `count_coordinates` | yes | `count_coordinates/1` | ✅ | |
-| `count_geometries` | — | — | ❌ | easy |
-| `count_interior_rings` | — | — | ❌ | easy |
-| `get_geometry(index)` | — | — | ❌ | easy (part n of multi) |
+| `count_geometries` | — | `count_geometries/1` | ✅ | null rows are `nil` (Shapely: 0) |
+| `count_interior_rings` | — | `count_interior_rings/1` | ✅ | 0 for non-polygons as Shapely; null rows `nil` |
+| `get_geometry(index)` | — | `get_geometry/2` | 🟡 | scalar integer index only (negative from end); no per-row index array |
 | `get_precision` / `set_precision` | — | — | ❌ | needs grid snapping; low value |
 | `hausdorff_distance` | — | — | ❌ | geo `HausdorffDistance` |
 | `frechet_distance` | — | — | ❌ | geo `FrechetDistance` (line_measures) |
 | `minimum_bounding_radius` | — | — | ❌ | Welzl; geo has no direct trait (compute from circle) |
 | `minimum_clearance` | — | — | ❌ | no geo trait; hard |
 | `offset_curve` | — | — | ❌ | geo-buf crate may provide; otherwise own impl |
-| `interiors` | `interior` yes (rings after first) | — | ❌ | return list/multilinestring per polygon |
+| `interiors` | `interior` yes (rings after first) | `interiors/1` | 🟡 | MultiLineString of holes per polygon (GeoPandas returns a list of rings); nil for non-polygons |
 | `exterior` | `exterior` yes | `exterior/1` | ✅ | nil for non-polygons |
 | `boundary` | `boundary` yes | `boundary/1` | ✅ | |
 | `representative_point` | — | `representative_point/1` | ✅ | geo `InteriorPoint` |
-| — | `mean_coordinate` yes | — | ❌ | mean of vertices (skips ring closing); easy |
+| — | `mean_coordinate` yes | `mean_coordinate/1` | ✅ | vertex mean; polygon ring closing vertex not double counted |
 | — | `is_geographic` yes | — | ❌ | proj4rs; easy |
 | — | `rings_overlap`, `self_intersects` yes | — | ❌ | niche; partial overlap with `is_simple` |
 
@@ -67,17 +67,17 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
 | `is_valid` | `is_valid` yes | `is_valid/1` | ✅ | geo `Validation` |
-| `is_valid_reason` | — | — | ❌ | geo `Validation` already yields reasons; easy |
+| `is_valid_reason` | — | `is_valid_reason/1` | 🟡 | "Valid Geometry" as Shapely; first reason only, in `geo` wording rather than GEOS |
 | `is_empty` | yes | `is_empty/1` | ✅ | |
-| `is_ring` | `is_ring` yes | — | ❌ | easy (closed + simple) |
-| `is_closed` | — | — | ❌ | easy |
+| `is_ring` | `is_ring` yes | `is_ring/1` | ✅ | closed, >= 4 vertices, simple; quadratic check |
+| `is_closed` | — | `is_closed/1` | ✅ | lines and multilines; others false (Shapely) |
 | `is_simple` | `self_intersects` (inverse, lines) | — | ❌ | linestring self-intersection via geo `Intersects`/sweep |
 | `is_ccw` | `is_ccw` yes | — | ❌ | geo `Orient`/`WindingOrder` |
 | `has_z`, `has_m` | via dtype | — | ⛔ | GeoFrame is 2D only (revisit with z/m) |
 | `is_valid_coverage`, `invalid_coverage_edges` | — | — | ❌ | GEOS-only concept; no geo equivalent; low value |
-| — | `null_out_invalid` yes | — | ❌ | trivial given `is_valid`; add as `null_out_invalid` or doc recipe |
-| `isna` / `notna` | null semantics | — | ❌ | easy on `Native.validity` pattern; return Explorer boolean series |
-| `fillna` | — | — | ❌ | needs a geometry fill value; easy |
+| — | `null_out_invalid` yes | `null_out_invalid/1` | ✅ | |
+| `isna` / `notna` | null semantics | `isna/1`, `notna/1` | ✅ | only actual nulls, not empty geometries (GeoPandas >= 0.6) |
+| `fillna` | — | `fillna/2` | ✅ | default `GEOMETRYCOLLECTION EMPTY`; WKT or one-row series; CRS checked |
 | `is_empty` (missing/empty) | yes | ✅ | ✅ | listed above |
 
 ## 4. Binary predicates
@@ -134,7 +134,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | `minimum_bounding_circle` | no | — | ❌ | implement (Welzl) |
 | `maximum_inscribed_circle` | no | — | ❌ | polylabel (geo has `Polylabel`? verify; geo 0.33 has `polylabel` feature) |
 | `minimum_clearance_line` | no | — | ❌ | hard |
-| `extract_unique_points` | no | — | ❌ | easy (CoordsIter + dedupe) |
+| `extract_unique_points` | no | `extract_unique_points/1` | ✅ | MultiPoint in first-seen order |
 | `remove_repeated_points` | no | — | ❌ | geo `RemoveRepeatedPoints` |
 | `reverse` | no | — | ❌ | geo `orient`/reverse; easy |
 | `normalize` | no | — | ❌ | canonical ordering; medium (GEOS-specific order) |
@@ -217,7 +217,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
 | `GeoDataFrame(...)` | DataFrame + geometry column | `GeoDataFrame.new/3` | ✅ | |
-| `from_features` | — | — | ❌ | list of GeoJSON features -> GDF; easy |
+| `from_features` | — | `GeoDataFrame.from_features/2` | 🟡 | list or FeatureCollection; `crs:`, `columns:`; GeoJSON inference; property columns sorted by name (Elixir maps) |
 | `from_arrow` / `to_arrow` | geoarrow native | — | ❌ | |
 | `from_postgis` / `to_postgis` / `read_postgis` | roadmap | — | ❌ | needs Postgrex + WKB; Elixir-side, medium |
 | `to_geo_dict` | — | `to_geojson/1` | 🟡 | features list; no `na`, `show_bbox`, `drop_id` |
@@ -253,9 +253,9 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `points_from_xy` | `point` from columns | — | ❌ | batch 1 |
+| `points_from_xy` | `point` from columns | `GeoFrame.points_from_xy/3` | ✅ | alias of `GeoSeries.from_xy/3` |
 | `geocode`, `reverse_geocode` | — | — | ⛔ | needs network geocoding service (geopy) |
-| `tools.collect` | — | — | ❌ | combine geometries into Multi*; easy |
+| `tools.collect` | — | `collect/2` | ✅ | one-row series; `multi:` option |
 | `tools.clip` | — | — | ❌ | see §5 |
 | `tools.overlay` | — | — | ❌ | see §5 |
 | `tools.sjoin`, `sjoin_nearest` | — | ✅ | ✅ | |
@@ -284,10 +284,10 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | — | `area_geodesic` | — | ❌ | see §2 |
 | — | `wrap_longitude` | — | ❌ | antimeridian wrap; easy-medium |
 | — | `skew`, `skew_about_centroid` | — | ❌ | see §7 |
-| — | `null_out_invalid` | — | ❌ | see §3 |
+| — | `null_out_invalid` | `null_out_invalid/1` | ✅ | see §3 |
 | — | `count_coordinates` | `count_coordinates/1` | ✅ | |
 | — | `is_ccw` | — | ❌ | see §3 |
-| — | `mean_coordinate` | — | ❌ | see §2 |
+| — | `mean_coordinate` | `mean_coordinate/1` | ✅ | see §2 |
 | — | `affine_transform` | — | ❌ | see §7 |
 | — | `rotate_about_centroid`, `scale_about_centroid` | `rotate`/`scale` with `origin: :centroid` | ✅ | |
 | — | `is_geographic` | — | ❌ | |
@@ -361,4 +361,4 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 `plot` (use Kino map), `geocode`/`reverse_geocode`, pandas index alignment (`align=`), `iterfeatures`, Shapely object constructors, persistent `sindex` object, arbitrary-callback `transform`, deprecated `unary_union`.
 
 ---
-Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 55, '🟡': 25, '❌': 104, '⛔': 15}
+Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 70, '🟡': 29, '❌': 85, '⛔': 15}

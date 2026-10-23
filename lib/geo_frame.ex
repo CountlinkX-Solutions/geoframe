@@ -53,6 +53,16 @@ defmodule GeoFrame do
   alias GeoFrame.Native
 
   @doc """
+  Alias of `GeoFrame.GeoSeries.from_xy/3` (GeoPandas `points_from_xy`).
+  """
+  @spec points_from_xy(
+          [number() | nil] | Explorer.Series.t(),
+          [number() | nil] | Explorer.Series.t(),
+          keyword()
+        ) :: GeoSeries.t()
+  defdelegate points_from_xy(x, y, opts \\ []), to: GeoSeries, as: :from_xy
+
+  @doc """
   Spatial join of two `GeoFrame.GeoDataFrame`s. See `GeoFrame.SpatialJoin`.
   """
   @spec sjoin(GeoDataFrame.t(), GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()

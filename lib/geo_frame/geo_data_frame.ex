@@ -94,6 +94,74 @@ defmodule GeoFrame.GeoDataFrame do
   @spec from_wkb!(DataFrame.t(), String.t(), keyword()) :: t()
   def from_wkb!(df, column, opts \\ []), do: df |> from_wkb(column, opts) |> unwrap!()
 
+  @doc """
+  Builds a frame from GeoJSON-like features, like GeoPandas `GeoDataFrame.from_features`.
+
+  `features` is a list of feature maps (`%{"type" => "Feature", "properties" => ..,
+  "geometry" => ..}`) or a `FeatureCollection` map; string or atom keys both work. A bare
+  geometry map counts as one feature. Property types are inferred over all features exactly
+  as `GeoFrame.read_geojson/2` does (booleans, `s64`, `f64`, otherwise strings; nested values
+  as JSON text; a feature `id` becomes a leading `"id"` column when every feature has one).
+  A `nil` geometry is a null row. Elixir maps have no insertion order, so property columns
+  appear sorted by name; use `:columns` to choose the order.
+
+  Options:
+
+    * `:crs` - the CRS of the geometries, `nil` by default (GeoPandas default; GeoJSON files
+      read with `read_geojson/2` get `"OGC:CRS84"` instead).
+    * `:columns` - property columns to keep, in that order; an unknown name is an error.
+    * `:geometry_column` - name of the geometry column (default `"geometry"`).
+
+  Returns `{:error, message}` for input that is not valid GeoJSON.
+  """
+  @spec from_features([map()] | map(), keyword()) :: {:ok, t()} | {:error, String.t()}
+  def from_features(features, opts \\ []) do
+    opts = Keyword.validate!(opts, crs: nil, columns: nil, geometry_column: "geometry")
+    text = features |> feature_collection() |> Jason.encode!()
+
+    with {:ok, {ref, ipc}} <- GeoFrame.Native.read_geojson_text(text, opts[:crs]),
+         {:ok, data} <- GeoFrame.Attributes.load(ipc),
+         {:ok, data} <- select_columns(data, opts[:columns]) do
+      geometry_column = to_string(opts[:geometry_column])
+      geometry_column = unique_geometry_name(data, geometry_column)
+      {:ok, new(data, %GeoSeries{ref: ref}, geometry_column: geometry_column)}
+    end
+  end
+
+  @doc "Like `from_features/2` but raises `ArgumentError` on failure."
+  @spec from_features!([map()] | map(), keyword()) :: t()
+  def from_features!(features, opts \\ []), do: features |> from_features(opts) |> unwrap!()
+
+  defp feature_collection(features) when is_list(features),
+    do: %{"type" => "FeatureCollection", "features" => features}
+
+  defp feature_collection(%{} = map), do: map
+
+  defp select_columns(data, nil), do: {:ok, data}
+
+  defp select_columns(data, columns) when is_list(columns) do
+    columns = Enum.map(columns, &to_string/1)
+
+    case columns -- DataFrame.names(data) do
+      [] -> {:ok, DataFrame.select(data, columns)}
+      missing -> {:error, "columns not found in the features: #{Enum.join(missing, ", ")}"}
+    end
+  end
+
+  # A property may already use the requested geometry column name; GeoJSON reading appends
+  # `_1`, `_2`... in that case, and so do we.
+  defp unique_geometry_name(data, name) do
+    taken = DataFrame.names(data)
+
+    if name in taken do
+      Stream.iterate(1, &(&1 + 1))
+      |> Stream.map(&"#{name}_#{&1}")
+      |> Enum.find(&(&1 not in taken))
+    else
+      name
+    end
+  end
+
   defp build(df, column, opts, encoding) do
     column = to_string(column)
 

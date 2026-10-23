@@ -2,9 +2,9 @@
 //! crate; this layer only converts between BEAM terms and core types.
 
 use geoframe_core::{
-    read_flatgeobuf, read_geojson, read_geoparquet, write_flatgeobuf, write_geojson,
-    write_geoparquet, BufferOptions, GeoColumn, NearestPairs, Origin, Predicate, QueryPredicate,
-    SetOp, UnaryOp, VectorRead,
+    read_flatgeobuf, read_geojson, read_geojson_str, read_geoparquet, write_flatgeobuf,
+    write_geojson, write_geoparquet, BufferOptions, GeoColumn, NearestPairs, Origin, Predicate,
+    QueryPredicate, SetOp, UnaryOp, VectorRead,
 };
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
@@ -275,6 +275,95 @@ fn empty_flags(column: Handle) -> Vec<Option<bool>> {
 #[rustler::nif(schedule = "DirtyCpu")]
 fn count_coordinates(column: Handle) -> Vec<Option<usize>> {
     column.0.count_coordinates()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn from_xy(
+    x: Vec<Option<f64>>,
+    y: Vec<Option<f64>>,
+    crs: Option<String>,
+) -> Result<Handle, String> {
+    GeoColumn::from_xy(&x, &y, crs.as_deref()).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn get_coordinates(column: Handle) -> (Vec<u32>, Vec<f64>, Vec<f64>) {
+    column.0.get_coordinates()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn count_geometries(column: Handle) -> Vec<Option<usize>> {
+    column.0.count_geometries()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn count_interior_rings(column: Handle) -> Vec<Option<usize>> {
+    column.0.count_interior_rings()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn get_geometry(column: Handle, n: i64) -> Result<Handle, String> {
+    column.0.get_geometry(n).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn interiors(column: Handle) -> Result<Handle, String> {
+    column.0.interiors().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn extract_unique_points(column: Handle) -> Result<Handle, String> {
+    column.0.extract_unique_points().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn mean_coordinate(column: Handle) -> Result<Handle, String> {
+    column.0.mean_coordinate().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn collect(column: Handle, multi: bool) -> Result<Handle, String> {
+    column.0.collect(multi).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn null_rows(column: Handle) -> Vec<bool> {
+    column.0.null_rows()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn fill_null(column: Handle, fill: Handle) -> Result<Handle, String> {
+    column.0.fill_null(&fill.0).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn closed_flags(column: Handle) -> Vec<Option<bool>> {
+    column.0.is_closed()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn ring_flags(column: Handle) -> Vec<Option<bool>> {
+    column.0.is_ring()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn valid_reasons(column: Handle) -> Vec<Option<String>> {
+    column.0.is_valid_reason()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn null_out_invalid(column: Handle) -> Result<Handle, String> {
+    column.0.null_out_invalid().map(wrap)
+}
+
+/// Parses GeoJSON text. Returns `{geometry, attributes_ipc}`.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn read_geojson_text<'a>(
+    env: Env<'a>,
+    text: String,
+    crs: Option<String>,
+) -> Result<(Handle, Binary<'a>), String> {
+    read_geojson_str(&text, crs.as_deref()).map(|read| vector_read(env, read))
 }
 
 /// Reads a GeoParquet file. Returns `{geometry, geometry_column, attributes_ipc}` where the
