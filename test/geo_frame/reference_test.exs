@@ -17,7 +17,7 @@ defmodule GeoFrame.ReferenceTest do
   @moduletag :reference
 
   @files ~w(measures unary_predicates binary_predicates constructive constructive_e set_ops
-            affine linear_referencing crs geodesic io parity_i parity_j zm zm_ops)
+            affine linear_referencing crs geodesic io parity_i parity_j zm zm_ops zm_overlay)
   @frame_ops ~w(sjoin sjoin_nearest dissolve union_all)
   @overlay_ops ~w(overlay clip explode intersection_all)
   @collection_ops ~w(make_grid delaunay_triangles voronoi_polygons)

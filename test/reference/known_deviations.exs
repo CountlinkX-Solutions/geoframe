@@ -316,8 +316,109 @@ zm_ops_deviations =
     }
   end)
 
+# Z/M interpolation and overlay operations (file zm_overlay.json).
+zm_overlay_reasons = %{
+  shared:
+    "Two inputs with a vertex at the same XY and different ordinates (a shared edge or corner, identical rings, a line vertex on a polygon vertex): which one GEOS keeps follows its noding order (each output ring can take the other input's value at a touching corner, and the start of an input ring loses its M). GeoFrame takes the first input's value for an intersection and the second's for the other operations, the more frequent choice over random inputs.",
+  clip:
+    "clip_by_rect of a polygon whose edge leaves and re-enters the rectangle: GEOS gives the vertices it adds on the rectangle boundary a Z from its own walk along the boundary (here 60 for 56.67); GeoFrame interpolates along the clipped edge. Lines, points and polygons with every edge crossing once agree."
+}
+
+zm_overlay_deviations = [
+  %{
+    reason: zm_overlay_reasons.shared,
+    doc: "docs/parity.md#z-and-m",
+    op: "union",
+    cases: [
+      "union[conflicts]:z3_a_m|z3_a_zm",
+      "union[conflicts]:z3_a_zm|z3_a_m",
+      "union[conflicts]:z3_adj|z3_a",
+      "union[conflicts]:z3_a|z3_a_m",
+      "union[conflicts]:z3_a|z3_a_zm",
+      "union[conflicts]:z3_a|z3_adj",
+      "union[conflicts]:z3_a|z3_corner",
+      "union[conflicts]:z3_a|z3_l1",
+      "union[conflicts]:z3_a|z3_l2",
+      "union[conflicts]:z3_a|z3_same",
+      "union[conflicts]:z3_corner|z3_a",
+      "union[conflicts]:z3_l1|z3_a",
+      "union[conflicts]:z3_l2|z3_a",
+      "union[conflicts]:z3_same|z3_a"
+    ]
+  },
+  %{
+    reason: zm_overlay_reasons.shared,
+    doc: "docs/parity.md#z-and-m",
+    op: "intersection",
+    cases: [
+      "intersection[conflicts]:z3_a_m|z3_a_zm",
+      "intersection[conflicts]:z3_a_zm|z3_a_m",
+      "intersection[conflicts]:z3_a|z3_a_m",
+      "intersection[conflicts]:z3_a|z3_a_zm",
+      "intersection[conflicts]:z3_a|z3_l1",
+      "intersection[conflicts]:z3_a|z3_l2",
+      "intersection[conflicts]:z3_a|z3_same",
+      "intersection[conflicts]:z3_corner|z3_a",
+      "intersection[conflicts]:z3_l1|z3_a",
+      "intersection[conflicts]:z3_l2|z3_a",
+      "intersection[conflicts]:z3_same|z3_a"
+    ]
+  },
+  %{
+    reason: zm_overlay_reasons.shared,
+    doc: "docs/parity.md#z-and-m",
+    op: "symmetric_difference",
+    cases: [
+      "symmetric_difference[conflicts]:z3_adj|z3_a",
+      "symmetric_difference[conflicts]:z3_a|z3_adj",
+      "symmetric_difference[conflicts]:z3_a|z3_corner",
+      "symmetric_difference[conflicts]:z3_a|z3_l1",
+      "symmetric_difference[conflicts]:z3_a|z3_l2",
+      "symmetric_difference[conflicts]:z3_corner|z3_a",
+      "symmetric_difference[conflicts]:z3_l1|z3_a",
+      "symmetric_difference[conflicts]:z3_l2|z3_a"
+    ]
+  },
+  %{
+    reason: zm_overlay_reasons.shared,
+    doc: "docs/parity.md#z-and-m",
+    op: "difference",
+    cases: [
+      "difference[conflicts]:z3_adj|z3_a",
+      "difference[conflicts]:z3_a|z3_adj",
+      "difference[conflicts]:z3_a|z3_l1",
+      "difference[conflicts]:z3_a|z3_l2"
+    ]
+  },
+  %{
+    reason: zm_overlay_reasons.shared,
+    doc: "docs/parity.md#z-and-m",
+    op: "union_all",
+    cases: [
+      "union_all:z3_a|z3_a_zm"
+    ]
+  },
+  %{
+    reason: zm_overlay_reasons.shared,
+    doc: "docs/parity.md#z-and-m",
+    op: "intersection_all",
+    cases: [
+      "intersection_all:z3_a|z3_a_zm"
+    ]
+  },
+  %{
+    reason: zm_overlay_reasons.clip,
+    doc: "docs/parity.md#z-and-m",
+    op: "clip_by_rect",
+    cases: [
+      "clip_by_rect([2, -1, 12, 5]):z3_tri"
+    ]
+  }
+]
+
 zm_deviations ++
   zm_ops_deviations ++
+  zm_overlay_deviations ++
   [
     %{
       reason:
