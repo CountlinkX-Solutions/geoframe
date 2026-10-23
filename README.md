@@ -42,6 +42,16 @@ Row-changing operations (filter, sort, slice, join) compute row indices once and
 | 4 | Reprojection (`to_crs`) |
 | 5 | Kino: deck.gl map layer fed with GeoArrow buffers, Smart Cells |
 
+## Livebook
+
+With [Kino](https://github.com/livebook-dev/kino) installed, a `GeoFrame.GeoDataFrame` renders
+in Livebook with **Map**, **Table** and **Inspect** tabs (a `GeoFrame.GeoSeries` with **Map**
+and **Inspect**). The map needs the optional `kino_maplibre` package and draws up to 50,000
+features; see `GeoFrame.Kino`. Try the walkthrough in [`notebooks/spike.livemd`](notebooks/spike.livemd).
+
+Livebook has no headless runner, so `elixir scripts/run_livemd.exs notebooks/spike.livemd`
+extracts the notebook's code cells and runs them in order to check they still work.
+
 ## Development
 
 Requires Elixir 1.19 / OTP 28 (see `.tool-versions`) and a Rust toolchain.
