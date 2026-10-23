@@ -610,3 +610,200 @@ fn a_shapefile_without_dbf_reads_geometry_only() {
     assert_eq!(read.geometry.len(), 3);
     assert!(names(&read.attributes_ipc).is_empty());
 }
+
+// -- dbf hardening -----------------------------------------------------------------------
+
+/// A `.dbf` with `fields` identical character fields of `length`, a declared `record_len`
+/// and `body` bytes of record data.
+fn crafted_dbf(fields: usize, length: u8, record_len: u16, records: u32, body: usize) -> Vec<u8> {
+    let header_len = 32 + 32 * fields + 1;
+    let mut bytes = vec![0u8; header_len];
+    bytes[0] = 0x03;
+    bytes[4..8].copy_from_slice(&records.to_le_bytes());
+    bytes[8..10].copy_from_slice(&(header_len as u16).to_le_bytes());
+    bytes[10..12].copy_from_slice(&record_len.to_le_bytes());
+    for i in 0..fields {
+        let d = 32 + 32 * i;
+        bytes[d] = b'A';
+        bytes[d + 11] = b'C';
+        bytes[d + 16] = length;
+    }
+    bytes[header_len - 1] = 0x0D;
+    bytes.extend(std::iter::repeat_n(b' ', body));
+    bytes
+}
+
+#[test]
+fn dbf_record_length_shorter_than_its_fields_is_rejected() {
+    // 2047 one-byte-record descriptors over a 4 KiB body would expand to ~8M cells.
+    let bytes = crafted_dbf(2047, 10, 1, 4096, 4096);
+    let error = crate::dbf::read_dbf(&bytes, crate::dbf::Encoding::Utf8).err();
+    assert!(
+        error.as_ref().is_some_and(|e| e.contains("inconsistent")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn dbf_header_length_shorter_than_its_descriptors_is_rejected() {
+    let mut bytes = crafted_dbf(3, 4, 13, 1, 13);
+    bytes[8..10].copy_from_slice(&40u16.to_le_bytes());
+    assert!(crate::dbf::parse_header(&bytes, crate::dbf::Encoding::Utf8).is_err());
+}
+
+#[test]
+fn dbf_records_without_fields_are_rejected() {
+    let bytes = crafted_dbf(0, 0, 1, 5, 5);
+    assert!(crate::dbf::parse_header(&bytes, crate::dbf::Encoding::Utf8).is_err());
+}
+
+#[test]
+fn dbf_cell_count_is_capped() {
+    let bytes = crafted_dbf(4, 1, 5, 100, 500);
+    assert!(crate::dbf::read_dbf_capped(&bytes, crate::dbf::Encoding::Utf8, 399).is_err());
+    let ok = crate::dbf::read_dbf_capped(&bytes, crate::dbf::Encoding::Utf8, 400);
+    assert_eq!(ok.unwrap().records, 100);
+}
+
+// -- zip members -------------------------------------------------------------------------
+
+#[test]
+fn zip_members_above_the_cap_are_rejected() {
+    use std::io::Write;
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "bomb.zip");
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(&file).unwrap());
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    writer.start_file("bomb.shp", options).unwrap();
+    // 64 KiB of zeros deflates to a few dozen bytes.
+    writer.write_all(&vec![0u8; 64 * 1024]).unwrap();
+    writer.finish().unwrap();
+
+    let error = crate::shapefile_io::load_zip_capped(&file, 1024).err();
+    assert!(
+        error.as_ref().is_some_and(|e| e.contains("limit")),
+        "{error:?}"
+    );
+    // A cap above the member size reads it.
+    assert!(crate::shapefile_io::load_zip_capped(&file, 64 * 1024).is_ok());
+}
+
+// -- sidecar naming ----------------------------------------------------------------------
+
+#[test]
+fn sidecars_follow_the_full_name_unless_the_path_ends_in_shp() {
+    let dir = TempDir::new().unwrap();
+    write_shapefile(
+        &path(&dir, "out.v1"),
+        &sample_points(None),
+        &id_ipc(3),
+        None,
+    )
+    .unwrap();
+    for ext in ["shp", "shx", "dbf", "cpg"] {
+        assert!(dir.path().join(format!("out.v1.{ext}")).exists(), "{ext}");
+    }
+    assert!(!dir.path().join("out.shp").exists());
+    assert_eq!(
+        read_shapefile(&path(&dir, "out.v1.shp"), None)
+            .unwrap()
+            .geometry
+            .len(),
+        3
+    );
+
+    write_shapefile(
+        &path(&dir, "UP.SHP"),
+        &sample_points(None),
+        &id_ipc(3),
+        None,
+    )
+    .unwrap();
+    assert!(dir.path().join("UP.dbf").exists());
+    assert!(!dir.path().join("UP.SHP.dbf").exists());
+}
+
+// -- atomic writes -----------------------------------------------------------------------
+
+fn dir_listing(dir: &TempDir) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_failed_shapefile_write_leaves_existing_files_and_no_temporaries() {
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "a.shp");
+    write_shapefile(&file, &sample_points(None), &id_ipc(3), None).unwrap();
+    let before: Vec<Vec<u8>> = ["shp", "shx", "dbf", "cpg"]
+        .iter()
+        .map(|e| std::fs::read(dir.path().join(format!("a.{e}"))).unwrap())
+        .collect();
+    // A directory squats on one sidecar name, so the write cannot complete.
+    std::fs::remove_file(dir.path().join("a.cpg")).unwrap();
+    std::fs::create_dir(dir.path().join("a.cpg")).unwrap();
+    let points = GeoColumn::from_wkt(&[Some("POINT (9 9)")], None).unwrap();
+    assert!(write_shapefile(&file, &points, &id_ipc(1), None).is_err());
+    for (i, e) in ["shp", "shx", "dbf"].iter().enumerate() {
+        assert_eq!(
+            std::fs::read(dir.path().join(format!("a.{e}"))).unwrap(),
+            before[i],
+            "{e}"
+        );
+    }
+    assert_eq!(dir_listing(&dir), ["a.cpg", "a.dbf", "a.shp", "a.shx"]);
+}
+
+#[test]
+fn a_failed_zip_write_leaves_the_existing_archive() {
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "a.zip");
+    write_shapefile(&file, &sample_points(None), &id_ipc(3), None).unwrap();
+    let before = std::fs::read(&file).unwrap();
+    // Mixed geometry types fail before anything is written.
+    let mixed =
+        GeoColumn::from_wkt(&[Some("POINT (1 1)"), Some("LINESTRING (0 0, 1 1)")], None).unwrap();
+    assert!(write_shapefile(&file, &mixed, &id_ipc(2), None).is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), before);
+    assert_eq!(dir_listing(&dir), ["a.zip"]);
+    assert_eq!(read_shapefile(&file, None).unwrap().geometry.len(), 3);
+}
+
+#[test]
+fn a_successful_write_replaces_files_and_leaves_no_temporaries() {
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "a.shp");
+    write_shapefile(&file, &sample_points(Some("EPSG:3857")), &id_ipc(3), None).unwrap();
+    write_shapefile(&file, &sample_points(None), &id_ipc(3), None).unwrap();
+    assert_eq!(dir_listing(&dir), ["a.cpg", "a.dbf", "a.shp", "a.shx"]);
+}
+
+// -- CRS name mapping --------------------------------------------------------------------
+
+#[test]
+fn non_ascii_utm_names_do_not_panic() {
+    let wkt = r#"PROJCS["WGS_1984_UTM_Zone_17É",GEOGCS["GCS_WGS_1984"],PROJECTION["Transverse_Mercator"]]"#;
+    assert_eq!(prj_wkt_to_crs(wkt), wkt);
+}
+
+#[test]
+fn names_map_only_to_codes_of_the_root_kind() {
+    // A projected root named like a geographic CRS must not become a geographic code.
+    let projected = r#"PROJCS["WGS_84",GEOGCS["GCS_WGS_1984"],PROJECTION["Transverse_Mercator"]]"#;
+    assert_eq!(prj_wkt_to_crs(projected), projected);
+    // A geographic root named like a projected CRS must not become a projected code.
+    let geographic = r#"GEOGCS["WGS_1984_Web_Mercator_Auxiliary_Sphere",DATUM["D_WGS_1984"]]"#;
+    assert_eq!(prj_wkt_to_crs(geographic), geographic);
+    let utm = r#"GEOGCS["WGS_1984_UTM_Zone_17N",DATUM["D_WGS_1984"]]"#;
+    assert_eq!(prj_wkt_to_crs(utm), utm);
+    // The right kinds still map.
+    assert_eq!(
+        prj_wkt_to_crs(r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984"]]"#),
+        "EPSG:4326"
+    );
+}

@@ -231,6 +231,24 @@ pub(crate) fn parse_header(bytes: &[u8], encoding: Encoding) -> Result<Header, S
         });
         pos += 32;
     }
+    let width: usize = fields.iter().map(|f| f.length).sum();
+    if (!fields.is_empty() || records > 0) && record_len < 1 + width {
+        return Err(format!(
+            "the .dbf header is inconsistent: records are {record_len} bytes but its {} fields need {}",
+            fields.len(),
+            1 + width
+        ));
+    }
+    if header_len < 33 + 32 * fields.len() {
+        return Err(format!(
+            "the .dbf header is inconsistent: it is {header_len} bytes but {} field descriptors need {}",
+            fields.len(),
+            33 + 32 * fields.len()
+        ));
+    }
+    if fields.is_empty() && records > 0 {
+        return Err("the .dbf declares records but no fields".to_string());
+    }
     Ok(Header {
         records,
         header_len,
@@ -281,7 +299,19 @@ pub(crate) struct DbfRead {
     pub deleted: Vec<bool>,
 }
 
+/// Largest number of cells (records times fields) a `.dbf` may expand to, 2^28. Real files
+/// stay far below it; it bounds the memory a crafted header can make the reader allocate.
+pub(crate) const MAX_CELLS: usize = 1 << 28;
+
 pub(crate) fn read_dbf(bytes: &[u8], encoding: Encoding) -> Result<DbfRead, String> {
+    read_dbf_capped(bytes, encoding, MAX_CELLS)
+}
+
+pub(crate) fn read_dbf_capped(
+    bytes: &[u8],
+    encoding: Encoding,
+    max_cells: usize,
+) -> Result<DbfRead, String> {
     let header = parse_header(bytes, encoding)?;
     let available = bytes
         .len()
@@ -289,6 +319,12 @@ pub(crate) fn read_dbf(bytes: &[u8], encoding: Encoding) -> Result<DbfRead, Stri
         .checked_div(header.record_len)
         .unwrap_or(0);
     let records = header.records.min(available);
+    if records.saturating_mul(header.fields.len()) > max_cells {
+        return Err(format!(
+            "the .dbf expands to {records} records x {} fields, above the {max_cells} cell limit",
+            header.fields.len()
+        ));
+    }
 
     let types: Vec<DataType> = header
         .fields

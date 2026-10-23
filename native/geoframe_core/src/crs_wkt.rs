@@ -99,7 +99,7 @@ pub(crate) fn prj_wkt_to_crs(wkt: &str) -> String {
     if let Some(code) = root_authority_code(text) {
         return format!("EPSG:{code}");
     }
-    if let Some(code) = root_name(text).and_then(code_for_name) {
+    if let Some(code) = root_name(text).and_then(|name| code_for_name(name, root_kind(text))) {
         return format!("EPSG:{code}");
     }
     text.to_string()
@@ -164,20 +164,56 @@ fn root_name(text: &str) -> Option<&str> {
     Some(&rest[..end])
 }
 
-fn code_for_name(name: &str) -> Option<i64> {
+#[derive(Clone, Copy, PartialEq)]
+enum RootKind {
+    Geographic,
+    Projected,
+    Other,
+}
+
+/// Whether the root node is a geographic (`GEOGCS`) or projected (`PROJCS`) CRS.
+fn root_kind(text: &str) -> RootKind {
+    let keyword = text
+        .split('[')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_uppercase();
+    match keyword.as_str() {
+        "GEOGCS" | "GEOGCRS" | "GEODCRS" | "GEOGRAPHICCRS" => RootKind::Geographic,
+        "PROJCS" | "PROJCRS" | "PROJECTEDCRS" => RootKind::Projected,
+        _ => RootKind::Other,
+    }
+}
+
+/// Maps a CRS name to an EPSG code, only to a code of the root's own kind: a name on a
+/// `PROJCS` never yields a geographic code and the other way round.
+fn code_for_name(name: &str, kind: RootKind) -> Option<i64> {
     let normalized: String = name
         .chars()
         .map(|c| if c == ' ' || c == '-' { '_' } else { c })
         .collect::<String>()
         .to_ascii_uppercase();
-    match normalized.as_str() {
-        "GCS_WGS_1984" | "WGS_84" | "WGS84" => return Some(4326),
-        "GCS_NORTH_AMERICAN_1983" | "NAD83" | "NAD_83" => return Some(4269),
-        "GCS_NORTH_AMERICAN_1927" | "NAD27" | "NAD_27" => return Some(4267),
-        "GCS_ETRS_1989" | "ETRS89" => return Some(4258),
-        "WGS_1984_WEB_MERCATOR_AUXILIARY_SPHERE" | "WGS_84_/_PSEUDO_MERCATOR" => return Some(3857),
-        "BRITISH_NATIONAL_GRID" | "OSGB_1936_/_BRITISH_NATIONAL_GRID" => return Some(27700),
+    match (kind, normalized.as_str()) {
+        (RootKind::Geographic, "GCS_WGS_1984" | "WGS_84" | "WGS84") => return Some(4326),
+        (RootKind::Geographic, "GCS_NORTH_AMERICAN_1983" | "NAD83" | "NAD_83") => {
+            return Some(4269)
+        }
+        (RootKind::Geographic, "GCS_NORTH_AMERICAN_1927" | "NAD27" | "NAD_27") => {
+            return Some(4267)
+        }
+        (RootKind::Geographic, "GCS_ETRS_1989" | "ETRS89") => return Some(4258),
+        (
+            RootKind::Projected,
+            "WGS_1984_WEB_MERCATOR_AUXILIARY_SPHERE" | "WGS_84_/_PSEUDO_MERCATOR",
+        ) => return Some(3857),
+        (RootKind::Projected, "BRITISH_NATIONAL_GRID" | "OSGB_1936_/_BRITISH_NATIONAL_GRID") => {
+            return Some(27700)
+        }
         _ => {}
+    }
+    if kind != RootKind::Projected {
+        return None;
     }
     utm_code(&normalized, "WGS_1984_UTM_ZONE_", 32600, 32700, 60)
         .or_else(|| utm_code(&normalized, "WGS_84_/_UTM_ZONE_", 32600, 32700, 60))
@@ -195,7 +231,7 @@ fn utm_code(
 ) -> Option<i64> {
     let rest = name.strip_prefix(prefix)?;
     let hemisphere = rest.chars().last()?;
-    let zone: i64 = rest[..rest.len() - 1].parse().ok()?;
+    let zone: i64 = rest.strip_suffix(hemisphere)?.parse().ok()?;
     if !(1..=max_zone).contains(&zone) {
         return None;
     }

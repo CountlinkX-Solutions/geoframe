@@ -75,6 +75,15 @@ columns decode to raw EWKB (parsed in Rust, SRID becomes the CRS):
 Without the types module, select `ST_AsEWKB(geom) AS geom`. Tests tagged `:postgis` need
 `GEOFRAME_POSTGIS_URL` (see Development).
 
+## Limits
+
+- Zip archives (zipped Shapefiles): a member may decompress to at most 2 GiB (`MAX_ZIP_MEMBER_BYTES`); larger members are an error.
+- dBase tables (`.dbf`): a table may expand to at most 2^28 cells (records times fields), and its header must be consistent
+  (record length covers the fields, header length covers the descriptors); inconsistent or amplifying headers are an error.
+- Shapefile sidecars are named after the path: a path ending in `.shp` swaps that suffix, any other path gets the extension
+  appended to its full name (`out.v1` writes `out.v1.shp`, `out.v1.dbf`, ...). Shapefile and zip writes go through temporary
+  files and renames, so a failed write leaves existing files as they were.
+
 ## Roadmap
 
 | Phase | Scope |

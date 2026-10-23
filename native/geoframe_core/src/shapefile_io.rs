@@ -20,7 +20,11 @@
 //!
 //! Writing `a.shp` creates `a.shx`, `a.dbf`, `a.cpg` (the encoding) and, when the CRS has a
 //! definition, `a.prj` (see [`crate::crs_wkt`]); a stale `.prj` from an earlier write is
-//! removed when there is no CRS. A path ending in `.zip` reads and writes a zip archive
+//! removed when there is no CRS. Sidecars are named after the path: a path ending in `.shp`
+//! (any case) swaps that suffix, any other path gets the extension appended to its full name
+//! (`out.v1` writes `out.v1.shp`, `out.v1.dbf`, ...). All files are written to temporary
+//! names in the target directory and renamed into place, with pre-existing files restored if
+//! any step fails. A path ending in `.zip` reads and writes a zip archive
 //! holding one shapefile instead. Reading finds the sidecars next to the `.shp` (any case);
 //! a missing `.dbf` gives geometry only.
 
@@ -28,6 +32,7 @@ use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use geo::{Coord, Geometry, LineString, Polygon};
 
@@ -41,7 +46,7 @@ use crate::{GeoColumn, VectorRead};
 // -- reading ------------------------------------------------------------------------------
 
 /// The files of one shapefile, loaded into memory.
-struct Parts {
+pub(crate) struct Parts {
     name: String,
     shp: Vec<u8>,
     shx: Option<Vec<u8>>,
@@ -54,10 +59,26 @@ fn is_zip(path: &str) -> bool {
     path.to_ascii_lowercase().ends_with(".zip")
 }
 
+/// The path of a sidecar file. A path ending in `.shp` (any case) swaps that suffix for
+/// `extension`; any other path gets `.extension` appended to its full name, so `out.v1`
+/// yields `out.v1.shp`, `out.v1.dbf`, and so on.
+fn sidecar_path(path: &Path, extension: &str) -> PathBuf {
+    let text = path.to_string_lossy();
+    let stem = if text.len() >= 4
+        && text.is_char_boundary(text.len() - 4)
+        && text[text.len() - 4..].eq_ignore_ascii_case(".shp")
+    {
+        &text[..text.len() - 4]
+    } else {
+        &text[..]
+    };
+    PathBuf::from(format!("{stem}.{extension}"))
+}
+
 fn sibling(path: &Path, extension: &str) -> Option<PathBuf> {
     [extension.to_string(), extension.to_ascii_uppercase()]
         .into_iter()
-        .map(|e| path.with_extension(e))
+        .map(|e| sidecar_path(path, &e))
         .find(|p| p.is_file())
 }
 
@@ -80,7 +101,15 @@ fn load_parts(path: &str) -> Result<Parts, String> {
     })
 }
 
+/// Largest decompressed size accepted for one zip member, 2 GiB. It bounds the memory a
+/// zip bomb can make the reader allocate.
+pub(crate) const MAX_ZIP_MEMBER_BYTES: u64 = 2 << 30;
+
 fn load_zip(path: &str) -> Result<Parts, String> {
+    load_zip_capped(path, MAX_ZIP_MEMBER_BYTES)
+}
+
+pub(crate) fn load_zip_capped(path: &str, cap: u64) -> Result<Parts, String> {
     let file = fs::File::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("{path} is not a readable zip file: {e}"))?;
@@ -102,22 +131,41 @@ fn load_zip(path: &str) -> Result<Parts, String> {
             ))
         }
     };
-    let mut member = |extension: &str| -> Option<Vec<u8>> {
+    let mut member = |extension: &str| -> Result<Option<Vec<u8>>, String> {
         let wanted = format!("{stem}.{extension}").to_ascii_lowercase();
-        let name = names.iter().find(|n| n.to_ascii_lowercase() == wanted)?;
+        let Some(name) = names.iter().find(|n| n.to_ascii_lowercase() == wanted) else {
+            return Ok(None);
+        };
+        let Ok(entry) = archive.by_name(name) else {
+            return Ok(None);
+        };
+        let too_big = || format!("{path}: member {name:?} is larger than the {cap} byte limit");
+        if entry.size() > cap {
+            return Err(too_big());
+        }
         let mut bytes = Vec::new();
-        archive.by_name(name).ok()?.read_to_end(&mut bytes).ok()?;
-        Some(bytes)
+        // The declared size can lie: bound what is actually decompressed too.
+        if entry.take(cap + 1).read_to_end(&mut bytes).is_err() {
+            return Ok(None);
+        }
+        if bytes.len() as u64 > cap {
+            return Err(too_big());
+        }
+        Ok(Some(bytes))
     };
-    let shp = member("shp").ok_or_else(|| format!("cannot read the .shp in {path}"))?;
+    let shp = member("shp")?.ok_or_else(|| format!("cannot read the .shp in {path}"))?;
+    let shx = member("shx")?;
+    let dbf = member("dbf")?;
+    let prj = member("prj")?.map(|b| String::from_utf8_lossy(&b).into_owned());
+    let cpg = member("cpg")?.map(|b| String::from_utf8_lossy(&b).into_owned());
     Ok(Parts {
         name: Path::new(&stem)
             .file_name()
             .map_or_else(String::new, |s| s.to_string_lossy().into_owned()),
-        shx: member("shx"),
-        dbf: member("dbf"),
-        prj: member("prj").map(|b| String::from_utf8_lossy(&b).into_owned()),
-        cpg: member("cpg").map(|b| String::from_utf8_lossy(&b).into_owned()),
+        shx,
+        dbf,
+        prj,
+        cpg,
         shp,
     })
 }
@@ -410,21 +458,13 @@ fn write_files(
     cpg: Vec<u8>,
 ) -> Result<(), String> {
     let base = Path::new(path);
-    let put = |extension: &str, bytes: &[u8]| {
-        let target = base.with_extension(extension);
-        fs::write(&target, bytes).map_err(|e| format!("cannot write {}: {e}", target.display()))
-    };
-    put("shp", &shp)?;
-    put("shx", &shx)?;
-    put("dbf", &dbf)?;
-    put("cpg", &cpg)?;
-    match prj {
-        Some(wkt) => put("prj", wkt.as_bytes())?,
-        None => {
-            let _ = fs::remove_file(base.with_extension("prj"));
-        }
-    }
-    Ok(())
+    commit_files(vec![
+        (sidecar_path(base, "shp"), Some(shp)),
+        (sidecar_path(base, "shx"), Some(shx)),
+        (sidecar_path(base, "dbf"), Some(dbf)),
+        (sidecar_path(base, "cpg"), Some(cpg)),
+        (sidecar_path(base, "prj"), prj.map(String::into_bytes)),
+    ])
 }
 
 fn write_zip(
@@ -438,8 +478,7 @@ fn write_zip(
     let stem = Path::new(path)
         .file_stem()
         .map_or_else(|| "layer".to_string(), |s| s.to_string_lossy().into_owned());
-    let file = fs::File::create(path).map_err(|e| format!("cannot write {path}: {e}"))?;
-    let mut writer = zip::ZipWriter::new(file);
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
     let mut members: Vec<(&str, Vec<u8>)> =
@@ -453,10 +492,102 @@ fn write_zip(
             .and_then(|()| writer.write_all(&bytes).map_err(zip::result::ZipError::Io))
             .map_err(|e| format!("cannot write {path}: {e}"))?;
     }
-    writer
+    let archive = writer
         .finish()
-        .map(|_| ())
-        .map_err(|e| format!("cannot write {path}: {e}"))
+        .map_err(|e| format!("cannot write {path}: {e}"))?
+        .into_inner();
+    commit_files(vec![(PathBuf::from(path), Some(archive))])
+}
+
+static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// A hidden sibling name in the target's directory, so a rename never crosses file systems.
+fn scratch_path(target: &Path, role: &str) -> PathBuf {
+    let name = target
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    target.with_file_name(format!(
+        ".{name}.geoframe-{}-{n}.{role}",
+        std::process::id()
+    ))
+}
+
+/// Writes every `(target, Some(bytes))` and removes every `(target, None)` as one unit: the
+/// bytes go to temporary files first, existing targets are moved aside, and the new files are
+/// renamed into place. On any failure the new files and temporaries are removed and the moved
+/// files restored, so a failed write leaves existing files as they were.
+fn commit_files(files: Vec<(PathBuf, Option<Vec<u8>>)>) -> Result<(), String> {
+    let fail = |target: &Path, e: std::io::Error| format!("cannot write {}: {e}", target.display());
+    for (target, _) in &files {
+        if target.is_dir() {
+            return Err(format!(
+                "cannot write {}: it is a directory",
+                target.display()
+            ));
+        }
+    }
+    let mut temps: Vec<(usize, PathBuf)> = Vec::new();
+    let cleanup = |temps: &[(usize, PathBuf)]| {
+        for (_, temp) in temps {
+            let _ = fs::remove_file(temp);
+        }
+    };
+    for (index, (target, bytes)) in files.iter().enumerate() {
+        let Some(bytes) = bytes else { continue };
+        let temp = scratch_path(target, "tmp");
+        let written = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()));
+        if let Err(e) = written {
+            let _ = fs::remove_file(&temp);
+            cleanup(&temps);
+            return Err(fail(target, e));
+        }
+        temps.push((index, temp));
+    }
+
+    let mut backups: Vec<(PathBuf, PathBuf)> = Vec::new(); // (target, backup)
+    let mut placed: Vec<PathBuf> = Vec::new();
+    let result = (|| -> Result<(), String> {
+        for (index, (target, bytes)) in files.iter().enumerate() {
+            if target.exists() {
+                let backup = scratch_path(target, "bak");
+                fs::rename(target, &backup).map_err(|e| fail(target, e))?;
+                backups.push((target.clone(), backup));
+            }
+            if bytes.is_some() {
+                let temp = temps
+                    .iter()
+                    .find(|(i, _)| *i == index)
+                    .map(|(_, t)| t)
+                    .expect("a temporary per written file");
+                fs::rename(temp, target).map_err(|e| fail(target, e))?;
+                placed.push(target.clone());
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            for (_, backup) in &backups {
+                let _ = fs::remove_file(backup);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            for target in &placed {
+                let _ = fs::remove_file(target);
+            }
+            for (target, backup) in &backups {
+                let _ = fs::rename(backup, target);
+            }
+            cleanup(&temps);
+            Err(e)
+        }
+    }
 }
 
 // -- .shp / .shx encoding --------------------------------------------------------------------
