@@ -238,6 +238,20 @@ defmodule GeoFrame.GeoDataFrame do
     DataFrame.names(data) ++ [column]
   end
 
+  @doc "Number of columns, counting the geometry column."
+  @spec n_columns(t()) :: non_neg_integer()
+  def n_columns(%__MODULE__{data: data}), do: DataFrame.n_columns(data) + 1
+
+  @doc "`{rows, columns}`, counting the geometry column."
+  @spec shape(t()) :: {non_neg_integer(), non_neg_integer()}
+  def shape(gdf), do: {n_rows(gdf), n_columns(gdf)}
+
+  @doc "Column dtypes by name; the geometry column maps to `:geometry`."
+  @spec dtypes(t()) :: %{String.t() => atom() | tuple()}
+  def dtypes(%__MODULE__{data: data, geometry_column: column}) do
+    Map.put(DataFrame.dtypes(data), column, :geometry)
+  end
+
   @doc "The CRS of the geometry, or `nil`."
   @spec crs(t()) :: String.t() | nil
   def crs(%__MODULE__{geometry: geometry}), do: GeoSeries.crs(geometry)
@@ -308,6 +322,85 @@ defmodule GeoFrame.GeoDataFrame do
   def sort_with(%__MODULE__{} = gdf, fun, opts \\ []) when is_function(fun, 1) do
     by_positions(gdf, &DataFrame.sort_with(&1, fun, opts), gdf.data)
   end
+
+  @doc """
+  Keeps rows matching a query, like `Explorer.DataFrame.filter/2`.
+
+  Expands to `filter_with/2` with `Explorer.Query.query/1`, so `require` this module first.
+  The query sees the attribute columns only: the geometry is not a column in it. Use `^`
+  to interpolate Elixir values.
+
+      require GeoFrame.GeoDataFrame
+      limit = 10
+      GeoFrame.GeoDataFrame.filter(gdf, pop > ^limit)
+  """
+  defmacro filter(gdf, query) do
+    quote do
+      require Explorer.Query
+      GeoFrame.GeoDataFrame.filter_with(unquote(gdf), Explorer.Query.query(unquote(query)))
+    end
+  end
+
+  @doc """
+  Sorts rows by a query, like `Explorer.DataFrame.sort_by/3`; `opts` are passed through.
+
+  Expands to `sort_with/3` with `Explorer.Query.query/1`. The query sees the attribute
+  columns only, and the geometry follows its row.
+  """
+  defmacro sort_by(gdf, query, opts \\ []) do
+    quote do
+      require Explorer.Query
+
+      GeoFrame.GeoDataFrame.sort_with(
+        unquote(gdf),
+        Explorer.Query.query(unquote(query)),
+        unquote(opts)
+      )
+    end
+  end
+
+  @doc """
+  Keeps the first row of each distinct combination of attribute values, like
+  `Explorer.DataFrame.distinct/2`; the geometry follows its row.
+
+  `columns` (default all attribute columns) selects the columns compared; the geometry is
+  never compared, and naming it is harmless.
+  """
+  @spec distinct(t(), term()) :: t()
+  def distinct(gdf, columns \\ ..) do
+    names = distinct_columns(gdf, columns)
+
+    by_positions(gdf, &DataFrame.distinct(&1, names, keep_all: true), gdf.data)
+  end
+
+  defp distinct_columns(%__MODULE__{data: data}, ..), do: DataFrame.names(data)
+
+  defp distinct_columns(%__MODULE__{data: data, geometry_column: geo}, columns) do
+    data |> DataFrame.select(without_geometry(columns, geo)) |> DataFrame.names()
+  end
+
+  @doc """
+  Drops rows with a null in any of `columns` (default all attribute columns), like
+  `Explorer.DataFrame.drop_nil/2`. A null geometry does not count; check it with
+  `GeoFrame.GeoSeries.notna/1` with `take/2` if needed.
+  """
+  @spec drop_nil(t(), term()) :: t()
+  def drop_nil(gdf, columns \\ ..) do
+    by_positions(gdf, &DataFrame.drop_nil(&1, columns), gdf.data)
+  end
+
+  @doc """
+  A random sample of rows, like `Explorer.DataFrame.sample/3`: `n_or_frac` is a row count
+  or a fraction. Options (`:replace`, `:shuffle`, `:seed`) are passed through.
+  """
+  @spec sample(t(), number(), keyword()) :: t()
+  def sample(gdf, n_or_frac, opts \\ []) do
+    by_positions(gdf, &DataFrame.sample(&1, n_or_frac, opts))
+  end
+
+  @doc "Randomly reorders the rows; `opts` (`:seed`) are passed through."
+  @spec shuffle(t(), keyword()) :: t()
+  def shuffle(gdf, opts \\ []), do: by_positions(gdf, &DataFrame.shuffle(&1, opts))
 
   # Runs `op` on a dataframe carrying a temporary row-position column and applies the
   # resulting positions to both sides. `source` is the attribute data `op` should see;
@@ -448,6 +541,19 @@ defmodule GeoFrame.GeoDataFrame do
   # -- attribute operations -------------------------------------------------------------
 
   @doc """
+  Adds or replaces attribute columns from a query, like `Explorer.DataFrame.mutate/2`.
+
+  Expands to `mutate_with/2` with `Explorer.Query.query/1`. The query sees the attribute
+  columns only. Raises `ArgumentError` if the result would contain the geometry column's name.
+  """
+  defmacro mutate(gdf, mutations) do
+    quote do
+      require Explorer.Query
+      GeoFrame.GeoDataFrame.mutate_with(unquote(gdf), Explorer.Query.query(unquote(mutations)))
+    end
+  end
+
+  @doc """
   Adds or replaces attribute columns via `Explorer.DataFrame.mutate_with/2`.
 
   Raises `ArgumentError` if the result would contain the geometry column's name.
@@ -463,12 +569,63 @@ defmodule GeoFrame.GeoDataFrame do
   """
   @spec select(t(), term()) :: t()
   def select(%__MODULE__{data: data, geometry_column: geo} = gdf, columns) do
-    columns =
-      if is_list(columns) and Enum.all?(columns, &(is_binary(&1) or is_atom(&1))),
-        do: Enum.reject(columns, &(to_string(&1) == geo)),
-        else: columns
+    %{gdf | data: DataFrame.select(data, without_geometry(columns, geo))}
+  end
 
-    %{gdf | data: DataFrame.select(data, columns)}
+  @doc """
+  Drops attribute columns (anything `Explorer.DataFrame.discard/2` accepts). The geometry
+  is never discarded, and naming it in `columns` is harmless, like in `select/2`.
+  """
+  @spec discard(t(), term()) :: t()
+  def discard(%__MODULE__{data: data, geometry_column: geo} = gdf, columns) do
+    %{gdf | data: DataFrame.discard(data, without_geometry(columns, geo))}
+  end
+
+  # A plain name or list of names loses the geometry's name (the geometry is not an
+  # attribute column); ranges, regexes and the like pass through.
+  defp without_geometry(column, geo) when is_binary(column) or is_atom(column),
+    do: without_geometry([column], geo)
+
+  defp without_geometry(columns, geo) do
+    if is_list(columns) and Enum.all?(columns, &(is_binary(&1) or is_atom(&1))),
+      do: Enum.reject(columns, &(to_string(&1) == geo)),
+      else: columns
+  end
+
+  @doc """
+  Adds or replaces the attribute column `name` with a series, list, or tensor, like
+  `Explorer.DataFrame.put/4`. Raises `ArgumentError` for the geometry column's name or a
+  value whose length differs from the row count.
+  """
+  @spec put(t(), String.t() | atom(), Series.t() | list() | Nx.Tensor.t()) :: t()
+  def put(%__MODULE__{data: data} = gdf, name, values) do
+    if to_string(name) == gdf.geometry_column do
+      raise ArgumentError, "column #{inspect(gdf.geometry_column)} is reserved for the geometry"
+    end
+
+    if has_columns?(data) do
+      %{gdf | data: DataFrame.put(data, name, values)}
+    else
+      series = if is_list(values), do: Series.from_list(values), else: values
+
+      if Series.size(series) != n_rows(gdf) do
+        raise ArgumentError,
+              "series has #{Series.size(series)} rows but the frame has #{n_rows(gdf)} rows"
+      end
+
+      %{gdf | data: DataFrame.new([{to_string(name), series}])}
+    end
+  end
+
+  @doc """
+  An attribute column as a series. The geometry column's name returns the
+  `GeoFrame.GeoSeries` instead.
+  """
+  @spec pull(t(), String.t() | atom() | integer()) :: Series.t() | GeoSeries.t()
+  def pull(%__MODULE__{geometry: geometry, geometry_column: geo} = gdf, column) do
+    if (is_binary(column) or is_atom(column)) and to_string(column) == geo,
+      do: geometry,
+      else: DataFrame.pull(gdf.data, column)
   end
 
   @doc """

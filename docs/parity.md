@@ -280,7 +280,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `explode` | no | `explode/2` | ✅ | see §6 |
 | `dissolve`, `sjoin`, `sjoin_nearest` | no | ✅/🟡 | see §9/§11 | |
 | `clip`, `overlay` | no | `clip/3`, `overlay/3` (also on `GeoFrame`) | ✅ | see §5 |
-| pandas ops (`head`, `tail`, `take`, `select`, `rename`, filter, sort, mutate) | polars | `head`, `tail`, `take`, `slice`, `select`, `rename`, `filter_with`, `sort_with`, `mutate_with` | ✅ | wraps Explorer; GDF-level delegation exists for `area`, `length`, `bounds`, `centroid` only; others via `gdf.geometry` |
+| pandas ops (`head`, `tail`, `take`, `select`, `rename`, filter, sort, mutate, `drop_duplicates`, `dropna`, `sample`, `shape`, `dtypes`) | polars | `head`, `tail`, `take`, `slice`, `select`, `discard`, `rename`, `put`, `pull`, `filter`/`filter_with`, `sort_by`/`sort_with`, `mutate`/`mutate_with`, `distinct`, `drop_nil`, `sample`, `shuffle`, `shape`, `n_columns`, `dtypes` | ✅ | wraps Explorer; `filter`/`mutate`/`sort_by` are macros (`require GeoFrame.GeoDataFrame`) whose query sees attribute columns only; geometry follows every row change; `pull(gdf, geometry_column)` returns the GeoSeries, `dtypes` maps it to `:geometry`; GDF-level delegation of geometry methods exists for `area`, `length`, `bounds`, `centroid` only; others via `gdf.geometry` |
 | index/merge/groupby/apply/concat of GDFs | polars | `GeoFrame.concat/1`, `GeoDataFrame.concat_rows/1`, `GeoSeries.concat/1` | 🟡 | row-wise concat done (CRS and geometry column must match); merge/join of GDFs missing (only through Explorer on `.data`) |
 
 ## 13. I/O
