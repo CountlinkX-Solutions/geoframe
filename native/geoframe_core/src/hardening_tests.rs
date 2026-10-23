@@ -304,3 +304,116 @@ fn union_groups_rejects_oversized_group_counts_and_ids_before_allocating() {
     let err = s.union_groups(&[0, 2], 2).unwrap_err();
     assert!(err.contains("out of range"), "{err}");
 }
+
+// -- 8. atomic writes -----------------------------------------------------------------------
+
+fn leftovers(dir: &TempDir) -> Vec<String> {
+    std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".tmp-"))
+        .collect()
+}
+
+#[test]
+fn a_failed_write_keeps_the_existing_file_and_removes_only_the_temp_file() {
+    use std::io::Write;
+    let dir = TempDir::new().unwrap();
+    let target = path(&dir, "out.bin");
+    std::fs::write(&target, b"original").unwrap();
+    let err = crate::atomic::write_atomic(&target, |mut file| {
+        file.write_all(b"partial").unwrap();
+        Err("encoding failed".to_string())
+    })
+    .unwrap_err();
+    assert_eq!(err, "encoding failed");
+    assert_eq!(std::fs::read(&target).unwrap(), b"original");
+    assert!(leftovers(&dir).is_empty());
+}
+
+#[test]
+fn a_successful_write_replaces_the_file() {
+    use std::io::Write;
+    let dir = TempDir::new().unwrap();
+    let target = path(&dir, "out.bin");
+    std::fs::write(&target, b"original").unwrap();
+    crate::atomic::write_atomic(&target, |mut file| {
+        file.write_all(b"new").map_err(|e| e.to_string())
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    assert!(leftovers(&dir).is_empty());
+}
+
+#[test]
+fn every_writer_leaves_an_unreplaceable_destination_untouched() {
+    use crate::{
+        write_feather, write_geojson, write_geoparquet, FeatherCompression, GeometryEncoding,
+    };
+    let geometry = col(&[Some("POINT (1 2)")]);
+    let attrs = ipc(vec![(
+        "id",
+        std::sync::Arc::new(arrow_array::Int64Array::from(vec![1])) as arrow_array::ArrayRef,
+    )]);
+    // A non-empty directory cannot be replaced by a file, so the final rename fails.
+    let dir = TempDir::new().unwrap();
+    for name in ["a.geojson", "a.parquet", "a.feather", "a.fgb"] {
+        let target = path(&dir, name);
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(format!("{target}/keep"), b"x").unwrap();
+    }
+    let results = [
+        write_geojson(&path(&dir, "a.geojson"), &geometry, &attrs, true),
+        write_geoparquet(&path(&dir, "a.parquet"), &geometry, "geometry", &attrs),
+        write_feather(
+            &path(&dir, "a.feather"),
+            &geometry,
+            "geometry",
+            &attrs,
+            GeometryEncoding::Wkb,
+            FeatherCompression::Uncompressed,
+        ),
+        write_flatgeobuf(&path(&dir, "a.fgb"), &geometry, &attrs, "t", false),
+    ];
+    for result in results {
+        assert!(result.is_err());
+    }
+    for name in ["a.geojson", "a.parquet", "a.feather", "a.fgb"] {
+        assert!(std::path::Path::new(&path(&dir, name))
+            .join("keep")
+            .exists());
+    }
+    assert!(leftovers(&dir).is_empty());
+}
+
+#[test]
+fn every_writer_replaces_an_existing_file() {
+    use crate::{
+        write_feather, write_geojson, write_geoparquet, FeatherCompression, GeometryEncoding,
+    };
+    let geometry = col(&[Some("POINT (1 2)")]);
+    let attrs = ipc(vec![(
+        "id",
+        std::sync::Arc::new(arrow_array::Int64Array::from(vec![1])) as arrow_array::ArrayRef,
+    )]);
+    let dir = TempDir::new().unwrap();
+    for name in ["b.geojson", "b.parquet", "b.feather", "b.fgb"] {
+        std::fs::write(path(&dir, name), b"old").unwrap();
+    }
+    write_geojson(&path(&dir, "b.geojson"), &geometry, &attrs, true).unwrap();
+    write_geoparquet(&path(&dir, "b.parquet"), &geometry, "geometry", &attrs).unwrap();
+    write_feather(
+        &path(&dir, "b.feather"),
+        &geometry,
+        "geometry",
+        &attrs,
+        GeometryEncoding::Wkb,
+        FeatherCompression::Uncompressed,
+    )
+    .unwrap();
+    write_flatgeobuf(&path(&dir, "b.fgb"), &geometry, &attrs, "t", false).unwrap();
+    for name in ["b.geojson", "b.parquet", "b.feather", "b.fgb"] {
+        assert_ne!(std::fs::read(path(&dir, name)).unwrap(), b"old");
+    }
+    assert!(leftovers(&dir).is_empty());
+}

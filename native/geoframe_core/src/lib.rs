@@ -3,6 +3,7 @@
 
 mod affine;
 mod arrow_io;
+mod atomic;
 mod attributes;
 pub(crate) mod column;
 mod ewkb;

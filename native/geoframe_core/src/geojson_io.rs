@@ -208,13 +208,9 @@ pub fn write_geojson(
         check_crs(geometry.crs().as_deref())?;
     }
     let table = Table::from_ipc(attributes_ipc, geometry.len())?;
-    let file = File::create(path).map_err(|e| format!("cannot create {path}: {e}"))?;
-    let result = write_features(file, geometry, &table);
-    if let Err(message) = result {
-        let _ = std::fs::remove_file(path);
-        return Err(format!("cannot write {path}: {message}"));
-    }
-    Ok(())
+    crate::atomic::write_atomic(path, |file| {
+        write_features(file, geometry, &table).map_err(|m| format!("cannot write {path}: {m}"))
+    })
 }
 
 fn write_features(file: File, geometry: &GeoColumn, table: &Table) -> Result<(), String> {

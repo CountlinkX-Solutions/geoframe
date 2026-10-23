@@ -360,9 +360,10 @@ pub fn write_flatgeobuf(
     }))
     .unwrap_or_else(|_| Err("FlatGeobuf encoder failed".to_string()))?;
 
-    std::fs::write(path, outcome).map_err(|e| {
-        let _ = std::fs::remove_file(path);
-        format!("cannot write {path}: {e}")
+    crate::atomic::write_atomic(path, |mut file| {
+        use std::io::Write;
+        file.write_all(&outcome)
+            .map_err(|e| format!("cannot write {path}: {e}"))
     })
 }
 
