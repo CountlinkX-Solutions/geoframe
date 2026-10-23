@@ -240,3 +240,168 @@ mod geojson {
         assert_eq!(out[1]["coordinates"], serde_json::json!([1.0, 2.0, 3.0]));
     }
 }
+
+// -- FlatGeobuf ---------------------------------------------------------------------------
+
+mod flatgeobuf {
+    use super::*;
+    use crate::{read_flatgeobuf, write_flatgeobuf};
+
+    fn header_flags(file: &str) -> (bool, bool) {
+        let input = std::io::BufReader::new(std::fs::File::open(file).unwrap());
+        let reader = ::flatgeobuf::FgbReader::open(input).unwrap();
+        (reader.header().has_z(), reader.header().has_m())
+    }
+
+    fn round_trip(
+        dir: &TempDir,
+        name: &str,
+        geometry: &GeoColumn,
+        index: bool,
+    ) -> (String, GeoColumn) {
+        let file = path(dir, name);
+        write_flatgeobuf(
+            &file,
+            geometry,
+            &no_attributes(geometry.len()),
+            "layer",
+            index,
+        )
+        .unwrap();
+        let back = read_flatgeobuf(&file, None).unwrap().geometry;
+        (file, back)
+    }
+
+    #[test]
+    fn z_sets_the_header_flag_and_round_trips_every_family() {
+        let dir = TempDir::new().unwrap();
+        for (i, rows) in [
+            vec![Some("POINT Z (1 2 3)"), None, Some("POINT Z (4 5 6)")],
+            vec![Some("LINESTRING Z (0 0 1, 1 1 2)")],
+            vec![Some(
+                "POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 0 1), (1 1 5, 2 1 5, 2 2 5, 1 1 5))",
+            )],
+            vec![Some("MULTIPOINT Z ((0 0 1), (1 1 2))")],
+            vec![Some("MULTILINESTRING Z ((0 0 1, 1 1 2), (2 2 3, 3 3 4))")],
+            vec![Some(
+                "MULTIPOLYGON Z (((0 0 1, 4 0 1, 4 4 1, 0 0 1)), ((9 9 7, 9 8 7, 8 8 7, 9 9 7)))",
+            )],
+            vec![Some(
+                "GEOMETRYCOLLECTION Z (POINT Z (1 2 3), LINESTRING Z (0 0 1, 1 1 2))",
+            )],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let g = col(&rows);
+            let (file, back) = round_trip(&dir, &format!("z{i}.fgb"), &g, false);
+            assert_eq!(header_flags(&file), (true, false), "{rows:?}");
+            assert_eq!(wkt(&back), wkt(&g), "{rows:?}");
+            assert_eq!(back.has_z(), g.has_z());
+        }
+    }
+
+    #[test]
+    fn m_and_zm_round_trip_with_their_header_flags() {
+        let dir = TempDir::new().unwrap();
+        for (name, rows, flags) in [
+            (
+                "m",
+                vec![
+                    Some("LINESTRING M (0 0 1, 1 1 2)"),
+                    Some("LINESTRING M (2 2 3, 3 3 4)"),
+                ],
+                (false, true),
+            ),
+            (
+                "zm",
+                vec![Some("POLYGON ZM ((0 0 1 5, 4 0 2 6, 4 4 3 7, 0 0 1 5))")],
+                (true, true),
+            ),
+            ("pm", vec![Some("POINT M (1 2 7)")], (false, true)),
+            ("pzm", vec![Some("POINT ZM (1 2 3 4)")], (true, true)),
+        ] {
+            let g = col(&rows);
+            let (file, back) = round_trip(&dir, &format!("{name}.fgb"), &g, false);
+            assert_eq!(header_flags(&file), flags, "{name}");
+            assert_eq!(wkt(&back), wkt(&g), "{name}");
+            assert_eq!(
+                (back.has_z(), back.has_m()),
+                (g.has_z(), g.has_m()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_two_dimensional_file_has_no_flags() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[Some("POINT (1 2)")]);
+        let (file, back) = round_trip(&dir, "plain.fgb", &g, true);
+        assert_eq!(header_flags(&file), (false, false));
+        assert_eq!(back.has_z(), [false]);
+    }
+
+    #[test]
+    fn rows_of_different_dimensions_are_promoted_to_the_widest() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[
+            Some("POINT Z (1 2 3)"),
+            Some("POINT (4 5)"),
+            Some("POINT M (6 7 8)"),
+        ]);
+        let (file, back) = round_trip(&dir, "mix.fgb", &g, false);
+        assert_eq!(header_flags(&file), (true, true));
+        assert_eq!(back.has_z(), [true; 3]);
+        assert_eq!(back.has_m(), [true; 3]);
+        let z = back.z();
+        assert_eq!(z[0], Some(3.0));
+        assert_eq!(z[1], None); // NaN reads as null
+        assert_eq!(back.m()[2], Some(8.0));
+    }
+
+    #[test]
+    fn indexed_files_and_bbox_reads_keep_z() {
+        let dir = TempDir::new().unwrap();
+        let g = col(&[Some("POINT Z (1 1 10)"), Some("POINT Z (50 50 20)")]);
+        let file = path(&dir, "idx.fgb");
+        write_flatgeobuf(&file, &g, &no_attributes(2), "layer", true).unwrap();
+        let hit = read_flatgeobuf(&file, Some([40.0, 40.0, 60.0, 60.0]))
+            .unwrap()
+            .geometry;
+        assert_eq!(hit.z(), [Some(20.0)]);
+    }
+
+    /// A file that declares Z (or M) but whose feature lacks the ordinates must be an error.
+    fn declared_but_absent(has_z: bool, has_m: bool) -> String {
+        use ::flatgeobuf::{FgbWriter, FgbWriterOptions, GeometryType};
+        let options = FgbWriterOptions {
+            write_index: false,
+            detect_type: false,
+            has_z,
+            has_m,
+            ..Default::default()
+        };
+        let mut writer =
+            FgbWriter::create_with_options("l", GeometryType::LineString, options).unwrap();
+        let line = geo::Geometry::LineString(geo::LineString::from(vec![(0.0, 0.0), (1.0, 1.0)]));
+        writer.add_feature_geom(line, |_| {}).unwrap();
+        let mut bytes = Vec::new();
+        writer.write(&mut bytes).unwrap();
+        let dir = TempDir::new().unwrap();
+        let file = path(&dir, "bad.fgb");
+        std::fs::write(&file, bytes).unwrap();
+        let result = read_flatgeobuf(&file, None);
+        result
+            .err()
+            .expect("an error, not a panic or a silent 2D read")
+    }
+
+    #[test]
+    fn declared_ordinates_missing_from_a_feature_are_an_error() {
+        for (z, m) in [(true, false), (false, true), (true, true)] {
+            let message = declared_but_absent(z, m);
+            assert!(message.contains("ordinate"), "{message}");
+        }
+    }
+}

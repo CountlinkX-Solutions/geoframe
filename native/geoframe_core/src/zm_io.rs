@@ -327,3 +327,123 @@ fn write_geometry<G: GeometryTrait<T = f64>>(out: &mut String, geometry: &G) -> 
     out.push('}');
     true
 }
+
+// -- geo_traits -> geozero ----------------------------------------------------------------
+
+/// A geometry as a geozero source that keeps Z and M: coordinates are emitted with every
+/// ordinate the processor asks for (NaN where the geometry has none), so a 2D geometry written
+/// into a 3D dataset is promoted instead of producing a short ordinate array.
+pub(crate) struct Source<'a, G>(pub &'a G);
+
+impl<G: GeometryTrait<T = f64>> geozero::GeozeroGeometry for Source<'_, G> {
+    fn process_geom<P: geozero::GeomProcessor>(
+        &self,
+        processor: &mut P,
+    ) -> geozero::error::Result<()> {
+        process(self.0, 0, processor)
+    }
+}
+
+fn emit<C: CoordTrait<T = f64>, P: geozero::GeomProcessor>(
+    coord: &C,
+    idx: usize,
+    processor: &mut P,
+) -> geozero::error::Result<()> {
+    let v = vertex(coord);
+    if processor.multi_dim() {
+        let dims = processor.dimensions();
+        processor.coordinate(
+            v.x,
+            v.y,
+            dims.z.then_some(v.z),
+            dims.m.then_some(v.m),
+            None,
+            None,
+            idx,
+        )
+    } else {
+        processor.xy(v.x, v.y, idx)
+    }
+}
+
+fn emit_line<L: LineStringTrait<T = f64>, P: geozero::GeomProcessor>(
+    line: &L,
+    tagged: bool,
+    idx: usize,
+    processor: &mut P,
+) -> geozero::error::Result<()> {
+    processor.linestring_begin(tagged, line.num_coords(), idx)?;
+    for (i, coord) in line.coords().enumerate() {
+        emit(&coord, i, processor)?;
+    }
+    processor.linestring_end(tagged, idx)
+}
+
+fn emit_polygon<Y: PolygonTrait<T = f64>, P: geozero::GeomProcessor>(
+    polygon: &Y,
+    tagged: bool,
+    idx: usize,
+    processor: &mut P,
+) -> geozero::error::Result<()> {
+    let rings = polygon.exterior().into_iter().chain(polygon.interiors());
+    processor.polygon_begin(
+        tagged,
+        polygon.num_interiors() + usize::from(polygon.exterior().is_some()),
+        idx,
+    )?;
+    for (i, ring) in rings.enumerate() {
+        emit_line(&ring, false, i, processor)?;
+    }
+    processor.polygon_end(tagged, idx)
+}
+
+fn process<G: GeometryTrait<T = f64>, P: geozero::GeomProcessor>(
+    geometry: &G,
+    idx: usize,
+    processor: &mut P,
+) -> geozero::error::Result<()> {
+    match geometry.as_type() {
+        GeometryType::Point(point) => {
+            processor.point_begin(idx)?;
+            if let Some(coord) = point.coord() {
+                emit(&coord, 0, processor)?;
+            }
+            processor.point_end(idx)
+        }
+        GeometryType::MultiPoint(multi) => {
+            processor.multipoint_begin(multi.num_points(), idx)?;
+            for (i, point) in multi.points().enumerate() {
+                if let Some(coord) = point.coord() {
+                    emit(&coord, i, processor)?;
+                }
+            }
+            processor.multipoint_end(idx)
+        }
+        GeometryType::LineString(line) => emit_line(line, true, idx, processor),
+        GeometryType::MultiLineString(multi) => {
+            processor.multilinestring_begin(multi.num_line_strings(), idx)?;
+            for (i, line) in multi.line_strings().enumerate() {
+                emit_line(&line, false, i, processor)?;
+            }
+            processor.multilinestring_end(idx)
+        }
+        GeometryType::Polygon(polygon) => emit_polygon(polygon, true, idx, processor),
+        GeometryType::MultiPolygon(multi) => {
+            processor.multipolygon_begin(multi.num_polygons(), idx)?;
+            for (i, polygon) in multi.polygons().enumerate() {
+                emit_polygon(&polygon, false, i, processor)?;
+            }
+            processor.multipolygon_end(idx)
+        }
+        GeometryType::GeometryCollection(collection) => {
+            processor.geometrycollection_begin(collection.num_geometries(), idx)?;
+            for (i, member) in collection.geometries().enumerate() {
+                process(&member, i, processor)?;
+            }
+            processor.geometrycollection_end(idx)
+        }
+        _ => Err(geozero::error::GeozeroError::Geometry(
+            "unsupported geometry type".to_string(),
+        )),
+    }
+}
