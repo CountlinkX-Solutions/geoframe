@@ -1,0 +1,49 @@
+# Differential reference tests
+
+`test/geo_frame/reference_test.exs` compares GeoFrame, operation by operation, with the
+results of GeoPandas 1.2 / Shapely 2.2 (GEOS 3.14) / pyproj 3.8 on a fixed corpus of
+geometries. **CI needs no Python**: the reference results are committed as JSON in
+`test/reference/fixtures/`.
+
+## Files
+
+| File | Role |
+|---|---|
+| `generate.py` | Dev-only generator. Fixed corpus (points, lines, polygons with holes, multi geometries, collections, empties, an invalid bowtie, degenerate cases, touching/overlapping/disjoint pairs, lon/lat geometries near Miami and far apart). Computes every supported operation with GeoPandas/Shapely/pyproj. Deterministic: no randomness, sorted JSON keys, full-precision numbers, 12-decimal WKT. |
+| `fixtures/*.json` | Generated output, one file per category: `measures`, `unary_predicates`, `binary_predicates`, `constructive`, `set_ops`, `affine`, `linear_referencing`, `crs`, `geodesic`, `io`, `frames` (sjoin, sjoin_nearest, dissolve), plus `corpus.json` (the geometries and the tool versions). |
+| `known_deviations.exs` | Machine-readable list of known differences (op, case ids, reason, link to `docs/parity.md#reference-testing`). |
+| `../support/reference.ex` | The comparison engine (test-only module `GeoFrame.Reference`). |
+
+## Comparison rules
+
+* Numbers: relative and absolute tolerance 1e-9. Geodesic measures: 1e-6 (pyproj `Geod` against
+  `geographiclib-rs`). `to_crs`: 1e-6 projected units, 1e-9 degrees (proj4rs against PROJ).
+* Geometries: topological equality (`geom_equals`); exact vertex equality within 1e-9
+  (`geom_equals_exact`) where order matters (`reverse`, `interpolate`, affine, `simplify`,
+  `segmentize`, `to_crs`, ...). Overlay results also pass when within 1e-6 (Hausdorff distance and
+  area), because `geo`'s boolean operations snap intersection points to an integer grid.
+  `buffer` compares the geometry type and the area within 2 %, since vertex counts differ.
+  `representative_point` only has to lie in the input.
+* Booleans and strings: exact.
+* Null and empty inputs: GeoFrame returns `nil` where GeoPandas returns `False`/`0`/`NaN`; that
+  whole class is one documented deviation.
+
+## Known deviations policy
+
+A case listed in `known_deviations.exs` is asserted to **still deviate**. When a deviation is
+fixed the suite fails with the list of stale entries, so the entry (and its note in
+`docs/parity.md`) must be removed. A differing case that is not listed fails the suite.
+
+## Regenerating
+
+```sh
+python -m venv ~/.venvs/geopandas-ref
+~/.venvs/geopandas-ref/bin/pip install geopandas==1.2.0 shapely==2.2.0 pyproj==3.8.0 pyarrow pyogrio
+~/.venvs/geopandas-ref/bin/python -I test/reference/generate.py
+mix test test/geo_frame/reference_test.exs
+```
+
+Run twice and the fixtures are byte-identical. A summary table (cases, agree, documented
+deviations) is printed with `REFERENCE_REPORT=1 mix test test/geo_frame/reference_test.exs`.
+Upgrading GeoPandas/Shapely changes the pinned versions asserted by the suite; regenerate,
+rerun, and reclassify any new difference (fix it, or add it to `known_deviations.exs`).

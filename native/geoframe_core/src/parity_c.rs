@@ -461,6 +461,26 @@ fn thin_line(l: &LineString<f64>, tolerance: f64) -> LineString<f64> {
     LineString::new(thin(&l.0, tolerance))
 }
 
+/// GEOS never reduces a line below two points: a line that collapsed to one point keeps it twice.
+fn pad_collapsed_line(g: &Geometry<f64>) -> Geometry<f64> {
+    match g {
+        Geometry::LineString(l) if l.0.len() == 1 => {
+            Geometry::LineString(LineString::new(vec![l.0[0], l.0[0]]))
+        }
+        Geometry::MultiLineString(m) => Geometry::MultiLineString(MultiLineString::new(
+            m.0.iter()
+                .map(
+                    |l| match pad_collapsed_line(&Geometry::LineString(l.clone())) {
+                        Geometry::LineString(padded) => padded,
+                        _ => l.clone(),
+                    },
+                )
+                .collect(),
+        )),
+        other => other.clone(),
+    }
+}
+
 fn thin_one(g: &Geometry<f64>, tolerance: f64) -> Geometry<f64> {
     match g {
         Geometry::LineString(l) => Geometry::LineString(thin_line(l, tolerance)),
@@ -505,11 +525,12 @@ impl GeoColumn {
             ));
         }
         self.map_geometry(|g| {
-            Some(if tolerance == 0.0 {
+            let thinned = if tolerance == 0.0 {
                 g.remove_repeated_points()
             } else {
                 map_members(g, &|m| thin_one(m, tolerance))
-            })
+            };
+            Some(map_members(&thinned, &pad_collapsed_line))
         })
     }
 
