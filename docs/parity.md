@@ -16,10 +16,11 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 Since batch V every operation GeoFrame shares with GeoPandas is checked against the real library:
 `test/reference/generate.py` (dev-only; GeoPandas 1.2.0, Shapely 2.2.0, GEOS 3.14.1, pyproj 3.8.0) computes
 the results for a fixed corpus and commits them as JSON in `test/reference/fixtures/`;
-`test/geo_frame/reference_test.exs` compares GeoFrame with them in CI without Python (11 044 cases
-across 82 operations, including sjoin, sjoin_nearest, dissolve and union_all on small frames and, since batch B,
+`test/geo_frame/reference_test.exs` compares GeoFrame with them in CI without Python (11 792 cases
+across 91 operations, including sjoin, sjoin_nearest, dissolve and union_all on small frames and, since batch B,
 `overlay` (all five `how`s, with and without `keep_geom_type`, on polygon, line and point frames), `clip`, `clip_by_rect`,
-`explode` and `intersection_all`). 10 785 cases agree, 259 are documented deviations (222 of them the
+`explode` and `intersection_all`; since batch E also concave hull, bounding shapes, inscribed circle, Delaunay,
+constrained Delaunay, Voronoi and `make_grid`). 11 501 cases agree, 291 are documented deviations (238 of them the
 null/empty class) and none is unexplained. Known differences
 are listed in `test/reference/known_deviations.exs` and the suite asserts that each one still deviates. See
 `test/reference/README.md` for the tolerances and how to regenerate. Documented deviations:
@@ -41,6 +42,14 @@ are listed in `test/reference/known_deviations.exs` and the suite asserts that e
   deviations and the mixed-family `dissolve` one). Remaining: `GeometryCollection` input gives `nil` for `union`,
   `difference` and `symmetric_difference` (storage flattens nested collections). Results agree within 1e-6, not
   bit-exactly: `geo`'s boolean operations snap intersection points to an integer grid (about 1e-8 of the extent).
+- **Batch E.** Sixteen documented cases, all on degenerate or tied input: the concave hull of the symmetric
+  `e_ring` point set (equal edge lengths erode in another order); `minimum_rotated_rectangle` of triangles and
+  symmetric shapes (several equal-area minimal rectangles); `minimum_bounding_circle` of `LINESTRING (1 1, 1 1)`
+  (GEOS: `POLYGON EMPTY`); `maximum_inscribed_circle` of an invalid bowtie; vertex snapping with a `tolerance` on
+  clustered input (GEOS snaps against the endpoints of the triangle edge a new vertex lands on, GeoFrame against
+  every kept vertex in lexicographic order); Voronoi sides of near-cocircular rounded points. Triangle sets are
+  compared exactly, falling back to "same count, same union" because cocircular points have several valid
+  triangulations; `maximum_inscribed_circle` is a search, so its radius is compared within the tolerance.
 - **Tolerances.** `to_crs` against PROJ: within 1e-6 projected units (1e-9 degrees back), including the Florida
   East (ftUS) transverse Mercator. Geodesic area, length and point distance: within 1e-6 of `pyproj.Geod`.
 
@@ -166,10 +175,11 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `simplify_coverage` | no | — | ❌ | needs topology-preserving shared edges; hard; geo `SimplifyVw` is not coverage-aware |
 | `make_valid` | no | `make_valid/1` | 🟡 | geo `MakeValid`; polygons only; differs from GEOS in vertex detail; leaves a zero-area collinear polygon unchanged |
 | `representative_point` | no | ✅ | ✅ | see §2 |
-| `concave_hull` | no | — | ❌ | geo `ConcaveHull` (`ratio`, `allow_holes` -> only ratio) |
-| `minimum_rotated_rectangle` | no | — | ❌ | geo `MinimumRotatedRect` |
-| `minimum_bounding_circle` | no | — | ❌ | implement (Welzl) |
-| `maximum_inscribed_circle` | no | — | ❌ | polylabel (geo has `Polylabel`? verify; geo 0.33 has `polylabel` feature) |
+| `concave_hull` | no | `concave_hull/2` | ✅ | `ratio:`, `allow_holes:`; port of the GEOS/JTS border erosion over the spade Delaunay triangulation (geo's `ConcaveHull` is a different algorithm with a different parameter); point/line for <3 or collinear vertices; exactly tied edge lengths can erode in another order than GEOS (documented) |
+| `minimum_rotated_rectangle` | no | `minimum_rotated_rectangle/1` | ✅ | geo `MinimumRotatedRect`; point/line for degenerate input; shapes with several equal-area minimal rectangles (any triangle) can pick another one than GEOS |
+| `minimum_bounding_circle` | no | `minimum_bounding_circle/1` | ✅ | own Welzl; the 32-gon Shapely draws (buffered center, quad_segs 8, starts east, clockwise); point for radius 0 |
+| `minimum_bounding_radius` | no | `minimum_bounding_radius/1` | ✅ | same Welzl; `0.0` for a point |
+| `maximum_inscribed_circle` | no | `maximum_inscribed_circle/2` | ✅ | `tolerance:`; the JTS/GEOS cell search (geo has no polylabel); line from center to nearest boundary point; polygons only (others `nil`) |
 | `minimum_clearance_line` | no | — | ❌ | hard |
 | `extract_unique_points` | no | `extract_unique_points/1` | ✅ | MultiPoint in first-seen order |
 | `remove_repeated_points` | no | `remove_repeated_points/2` | ✅ | `tolerance`; own thinning keeps first and last vertex; 0 uses geo |
@@ -181,13 +191,13 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `force_3d` | dtype | — | ⛔ | no Z storage |
 | `snap` | no | — | ❌ | no geo trait; hard |
 | `shortest_line` | no | `shortest_line/2` | ✅ | composed from `ClosestPoint` both ways plus segment crossings; ties may differ from GEOS |
-| `sample_points` | no | — | ❌ | random points in polygons; needs rand; medium |
-| `make_grid` (tools) | no | — | ❌ | pure construction; easy |
+| `sample_points` | no | `sample_points/3` | 🟡 | `seed:`, per-row sizes, polygons and lines, MultiPoint per row; SplitMix64 (no `rand` dependency), so a seed is reproducible but is not NumPy's stream; the `pointpats` methods (`cluster_poisson`, ...) are not available |
+| `make_grid` (GeoPandas 1.2, also `tools.make_grid`) | no | `make_grid/3` | ✅ | square and hexagon, centers/corners/polygons, `offset:`, `intersect:`, `flat_topped:`; follows the NumPy layout index for index (arange, meshgrid, hexagon corner grouping), 144 reference cases agree element by element |
 | `transform` (apply function to coordinates) | no | — | ⛔ | arbitrary callbacks over NIF coordinates; `to_crs`/affine cover real uses |
 | `build_area` / `polygonize` | `polygon_from_rings` (different) | — | ❌ | no geo equivalent; hard (noding) |
-| `delaunay_triangles` | no | — | ❌ | geo `TriangulateDelaunay` (spade) |
-| `constrained_delaunay_triangles` | no | — | ❌ | geo `TriangulateSpade` constrained |
-| `voronoi_polygons` | no | — | ❌ | geo `Voronoi` (spade) |
+| `delaunay_triangles` | no | `delaunay_triangles/2` | ✅ | `tolerance:`, `only_edges:`; like GeoPandas the whole series is one point cloud and the result has one row per triangle (or edge); cocircular points allow several triangulations, so the triangle set can differ from GEOS (compared by union); tolerance snapping differs on clustered input (documented) |
+| `constrained_delaunay_triangles` | no | `constrained_delaunay_triangles/1` | ✅ | per row, a `GeometryCollection` of triangles filling each polygon (holes respected); other types give an empty collection; cocircular vertices allow several triangulations |
+| `voronoi_polygons` | no | `voronoi_polygons/2` | ✅ | `tolerance:`, `extend_to:`, `only_edges:` (and Shapely's `ordered:`: cells always come in vertex order); whole series is one cloud, one row per cell; built from the spade triangulation with exact half-plane clipping to GEOS' envelope (not `geo::Voronoi`, whose clip and rays differ); tolerance snapping differs on clustered input (documented) |
 | `explode` | no | `explode/2` | ✅ | `{parts, positions}` (the pandas index becomes the parallel list of source rows); `index_parts: true` adds part numbers; collections explode one level |
 | `get_geometry` / `geometry` parts | no | — | ❌ | see §2 |
 
@@ -296,7 +306,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `tools.clip` | — | `GeoFrame.clip/3` | ✅ | see §5 |
 | `tools.overlay` | — | `GeoFrame.overlay/3` | ✅ | see §5 |
 | `tools.sjoin`, `sjoin_nearest` | — | ✅ | ✅ | |
-| `tools.make_grid` | — | — | ❌ | easy |
+| `tools.make_grid` | — | `GeoSeries.make_grid/3` | ✅ | see §6 |
 | `tools.geocode` | — | — | ⛔ | |
 
 ## 15. Plotting / interaction
@@ -370,10 +380,11 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 - Crates: `geo::Skew`, `AffineOps`/`AffineTransform`, `proj4rs`.
 - Difficulty: low.
 
-## Batch E - Constructive geometry (medium value, medium)
+## Batch E - Constructive geometry (done)
 - Members: `concave_hull`, `minimum_rotated_rectangle`, `minimum_bounding_circle`, `minimum_bounding_radius`, `maximum_inscribed_circle`, `make_grid`, `delaunay_triangles`, `constrained_delaunay_triangles`, `voronoi_polygons`, `sample_points`.
 - Crates: `ConcaveHull`, `MinimumRotatedRect`, `Voronoi`/`TriangulateDelaunay`/`TriangulateSpade` (spade), `polylabel` (check geo feature flag) for inscribed circle, `rand` for sampling; bounding circle via own Welzl.
 - Difficulty: medium (Voronoi/Delaunay are collection-valued: decide on output shape).
+- Status: done (issue #46). `make_grid` is a GeoPandas 1.2 member (square and hexagon) and was added to the batch. Own code instead of the planned crates: the concave hull is a port of the GEOS/JTS algorithm (geo's `ConcaveHull` takes a concavity, not Shapely's ratio, and has no holes), the bounding circle is Welzl, the inscribed circle is the JTS cell search (geo has no polylabel), Voronoi cells are half-plane clipped from the spade triangulation, and sampling uses SplitMix64 (no `rand` dependency). Like GeoPandas, `delaunay_triangles` and `voronoi_polygons` treat the whole series as one point cloud and return one row per triangle, cell or edge. Deviations: see the *Batch E* item under Reference testing.
 
 ## Batch F - Geodesic measurement (medium value, medium)
 - Members: `area_geodesic`, geodesic `length`, geodesic `distance` (a `method:` option), `GeoSeries.dwithin` geodesic variant optional.
@@ -400,4 +411,4 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 `plot` (use Kino map), `geocode`/`reverse_geocode`, pandas index alignment (`align=`), `iterfeatures`, Shapely object constructors, persistent `sindex` object, arbitrary-callback `transform`, deprecated `unary_union`.
 
 ---
-Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 114, '🟡': 29, '❌': 42, '⛔': 15}
+Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 124, '🟡': 30, '❌': 32, '⛔': 15}
