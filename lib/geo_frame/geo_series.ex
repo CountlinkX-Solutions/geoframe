@@ -65,6 +65,46 @@ defmodule GeoFrame.GeoSeries do
   def from_wkb!(rows, opts \\ []), do: rows |> from_wkb(opts) |> unwrap!()
 
   @doc """
+  Encodes the series as an Arrow IPC **stream** (a binary) holding one table with a
+  `geometry` column. The field carries the GeoArrow extension metadata
+  (`ARROW:extension:name` = `geoarrow.wkb` or a native `geoarrow.*` name,
+  `ARROW:extension:metadata` with the CRS as PROJJSON), so `pyarrow`, GeoPandas
+  (`GeoSeries.from_arrow`) and other GeoArrow readers consume it directly.
+
+  There is no Arrow C Data Interface binding on the BEAM, so IPC bytes are the interchange
+  (one copy).
+
+  Option `:geometry_encoding` - `:wkb` (default) or `:geoarrow`. The native encoding needs
+  one geometry kind (a type and its multi variant may mix and become the multi type) and
+  raises `ArgumentError` for mixed kinds or collections. Other failures also raise.
+  """
+  @spec to_arrow(t(), keyword()) :: binary()
+  def to_arrow(%__MODULE__{} = series, opts \\ []),
+    do: GeoFrame.Formats.series_to_arrow(series, opts)
+
+  @doc """
+  Decodes an Arrow IPC stream with a geometry column into a series.
+
+  Accepts WKB (`geoarrow.wkb` or a plain binary column), WKT (`geoarrow.wkt` or a plain
+  string column) and every native GeoArrow extension type (point, linestring, polygon and
+  the multi types, interleaved or separated coordinates). The geometry column is found from
+  the `geo` schema metadata, else the first GeoArrow extension column, else a column named
+  `"geometry"`.
+
+  Options: `:geometry` - the geometry column name when it cannot be detected; `:crs` - a
+  CRS used only when the data carries none.
+
+  Returns `{:error, message}` for invalid IPC data or a stream without a geometry column.
+  """
+  @spec from_arrow(binary(), keyword()) :: {:ok, t()} | {:error, String.t()}
+  def from_arrow(bytes, opts \\ []) when is_binary(bytes),
+    do: GeoFrame.Formats.series_from_arrow(bytes, opts)
+
+  @doc "Like `from_arrow/2` but raises `ArgumentError` on failure."
+  @spec from_arrow!(binary(), keyword()) :: t()
+  def from_arrow!(bytes, opts \\ []), do: bytes |> from_arrow(opts) |> unwrap!()
+
+  @doc """
   Builds a series of points from coordinate columns, like GeoPandas `points_from_xy`.
 
   `x` and `y` are lists or `Explorer.Series` of equal length. A row is a null geometry when

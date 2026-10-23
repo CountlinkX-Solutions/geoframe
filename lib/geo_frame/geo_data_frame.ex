@@ -179,6 +179,35 @@ defmodule GeoFrame.GeoDataFrame do
     end
   end
 
+  # -- Arrow interchange ----------------------------------------------------------------
+
+  @doc """
+  Encodes the frame as an Arrow IPC **stream** (a binary): the attribute columns followed by
+  the geometry column, whose field carries GeoArrow extension metadata with the CRS as
+  PROJJSON (and a GeoParquet-style `geo` entry in the schema metadata). GeoPandas reads it
+  with `GeoDataFrame.from_arrow(pyarrow.ipc.open_stream(bytes).read_all())`.
+
+  Option `:geometry_encoding` - `:wkb` (default) or `:geoarrow`; see
+  `GeoFrame.GeoSeries.to_arrow/2`. Failures raise `ArgumentError`.
+  """
+  @spec to_arrow(t(), keyword()) :: binary()
+  def to_arrow(%__MODULE__{} = gdf, opts \\ []), do: GeoFrame.Formats.to_arrow(gdf, opts)
+
+  @doc """
+  Decodes an Arrow IPC stream into a frame; see `GeoFrame.GeoSeries.from_arrow/2` for the
+  accepted geometry encodings. All other columns become attributes.
+
+  Options: `:columns` - attribute columns to keep; `:geometry` - the geometry column when it
+  cannot be detected; `:crs` - a CRS used only when the data carries none.
+  """
+  @spec from_arrow(binary(), keyword()) :: {:ok, t()} | {:error, String.t()}
+  def from_arrow(bytes, opts \\ []) when is_binary(bytes),
+    do: GeoFrame.Formats.from_arrow(bytes, opts)
+
+  @doc "Like `from_arrow/2` but raises `ArgumentError` on failure."
+  @spec from_arrow!(binary(), keyword()) :: t()
+  def from_arrow!(bytes, opts \\ []), do: bytes |> from_arrow(opts) |> unwrap!()
+
   # -- accessors ------------------------------------------------------------------------
 
   @doc "The attribute dataframe (without geometry)."

@@ -1,23 +1,165 @@
 defmodule GeoFrame.Formats do
   @moduledoc false
-  # GeoJSON and FlatGeobuf readers/writers and the extension/driver dispatch behind
-  # `GeoFrame.read_file/2` and `GeoFrame.write_file/3`. Public documentation lives on the
-  # delegating functions in `GeoFrame`.
+  # GeoParquet, Feather, Arrow IPC, GeoJSON and FlatGeobuf readers/writers and the
+  # extension/driver dispatch behind `GeoFrame.read_file/2` and `GeoFrame.write_file/3`.
+  # Public documentation lives on the delegating functions in `GeoFrame`.
 
   alias GeoFrame.Attributes
   alias GeoFrame.GeoDataFrame
   alias GeoFrame.GeoSeries
   alias GeoFrame.Native
 
-  @drivers [:parquet, :geojson, :flatgeobuf]
+  @drivers [:parquet, :geojson, :flatgeobuf, :feather]
 
   @extensions %{
     ".parquet" => :parquet,
     ".geoparquet" => :parquet,
     ".geojson" => :geojson,
     ".json" => :geojson,
-    ".fgb" => :flatgeobuf
+    ".fgb" => :flatgeobuf,
+    ".feather" => :feather,
+    ".arrow" => :feather
   }
+
+  @parquet_compressions [:snappy, :zstd, :gzip, :lz4, :brotli, :none]
+  @feather_compressions [:lz4, :zstd, :uncompressed]
+  @encodings [:wkb, :geoarrow]
+  @schema_versions ["1.0.0", "1.1.0"]
+
+  # -- GeoParquet -----------------------------------------------------------------------
+
+  def read_parquet(path, opts) do
+    validate_options!(opts, [:columns, :bbox])
+    columns = opts |> Keyword.get(:columns) |> normalize_columns()
+    bbox = opts |> Keyword.get(:bbox) |> normalize_bbox!() |> check_bbox_order!()
+
+    with {:ok, {ref, name, ipc}} <- Native.read_parquet(to_string(path), columns, bbox) do
+      assemble_named(ref, name, ipc)
+    end
+  end
+
+  def write_parquet(%GeoDataFrame{} = gdf, path, opts) do
+    validate_options!(opts, [
+      :compression,
+      :compression_level,
+      :row_group_size,
+      :geometry_encoding,
+      :write_covering_bbox,
+      :schema_version
+    ])
+
+    compression = enum!(opts, :compression, @parquet_compressions, :snappy)
+    level = optional_integer!(opts, :compression_level)
+    row_group_size = optional_positive_integer!(opts, :row_group_size)
+    encoding = enum!(opts, :geometry_encoding, @encodings, :wkb)
+    covering = boolean!(opts, :write_covering_bbox, false)
+    version = enum!(opts, :schema_version, @schema_versions, "1.1.0")
+
+    with {:ok, ipc} <- Attributes.dump(gdf.data),
+         {:ok, _} <-
+           Native.write_parquet(
+             gdf.geometry.ref,
+             gdf.geometry_column,
+             ipc,
+             to_string(path),
+             {Atom.to_string(compression), level, row_group_size, Atom.to_string(encoding),
+              covering, version}
+           ) do
+      :ok
+    end
+  end
+
+  # -- Feather and Arrow IPC ------------------------------------------------------------
+
+  def read_feather(path, opts) do
+    validate_options!(opts, [:columns, :geometry])
+    columns = opts |> Keyword.get(:columns) |> normalize_columns()
+    geometry = opts |> Keyword.get(:geometry) |> optional_string()
+
+    with {:ok, {ref, name, ipc}} <- Native.read_feather_file(to_string(path), columns, geometry) do
+      assemble_named(ref, name, ipc)
+    end
+  end
+
+  def write_feather(%GeoDataFrame{} = gdf, path, opts) do
+    validate_options!(opts, [:compression, :geometry_encoding])
+    compression = enum!(opts, :compression, @feather_compressions, :lz4)
+    encoding = enum!(opts, :geometry_encoding, @encodings, :wkb)
+
+    with {:ok, ipc} <- Attributes.dump(gdf.data),
+         {:ok, _} <-
+           Native.write_feather_file(
+             gdf.geometry.ref,
+             gdf.geometry_column,
+             ipc,
+             to_string(path),
+             Atom.to_string(encoding),
+             Atom.to_string(compression)
+           ) do
+      :ok
+    end
+  end
+
+  def to_arrow(%GeoDataFrame{} = gdf, opts) do
+    validate_options!(opts, [:geometry_encoding])
+    encoding = enum!(opts, :geometry_encoding, @encodings, :wkb)
+
+    with {:ok, ipc} <- Attributes.dump(gdf.data),
+         {:ok, bytes} <-
+           Native.to_arrow_stream(
+             gdf.geometry.ref,
+             gdf.geometry_column,
+             ipc,
+             Atom.to_string(encoding)
+           ) do
+      bytes
+    else
+      {:error, message} -> raise ArgumentError, message
+    end
+  end
+
+  def series_to_arrow(%GeoSeries{ref: ref}, opts) do
+    validate_options!(opts, [:geometry_encoding])
+    encoding = enum!(opts, :geometry_encoding, @encodings, :wkb)
+
+    case Native.to_arrow_stream(ref, "geometry", <<>>, Atom.to_string(encoding)) do
+      {:ok, bytes} -> bytes
+      {:error, message} -> raise ArgumentError, message
+    end
+  end
+
+  def from_arrow(bytes, opts) when is_binary(bytes) do
+    validate_options!(opts, [:columns, :geometry, :crs])
+    columns = opts |> Keyword.get(:columns) |> normalize_columns()
+    geometry = opts |> Keyword.get(:geometry) |> optional_string()
+    crs = Keyword.get(opts, :crs)
+
+    with {:ok, {ref, name, ipc}} <- Native.from_arrow_stream(bytes, columns, geometry),
+         {:ok, gdf} <- assemble_named(ref, name, ipc) do
+      {:ok, default_crs(gdf, crs)}
+    end
+  end
+
+  def series_from_arrow(bytes, opts) when is_binary(bytes) do
+    validate_options!(opts, [:geometry, :crs])
+    geometry = opts |> Keyword.get(:geometry) |> optional_string()
+
+    with {:ok, {ref, _name, _ipc}} <- Native.from_arrow_stream(bytes, [], geometry) do
+      series = %GeoSeries{ref: ref}
+
+      case {GeoSeries.crs(series), Keyword.get(opts, :crs)} do
+        {nil, crs} when is_binary(crs) -> {:ok, GeoSeries.set_crs(series, crs)}
+        _ -> {:ok, series}
+      end
+    end
+  end
+
+  # An explicit `crs:` only fills in a missing CRS: the table's own metadata wins.
+  defp default_crs(%GeoDataFrame{} = gdf, crs) when is_binary(crs) do
+    if GeoDataFrame.crs(gdf) == nil, do: GeoDataFrame.set_crs(gdf, crs), else: gdf
+  end
+
+  defp default_crs(gdf, _crs), do: gdf
 
   # -- GeoJSON --------------------------------------------------------------------------
 
@@ -71,6 +213,7 @@ defmodule GeoFrame.Formats do
       :parquet -> GeoFrame.read_parquet(path, opts)
       :geojson -> read_geojson(path, opts)
       :flatgeobuf -> read_flatgeobuf(path, opts)
+      :feather -> read_feather(path, opts)
     end
   end
 
@@ -81,6 +224,7 @@ defmodule GeoFrame.Formats do
       :parquet -> GeoFrame.write_parquet(gdf, path, opts)
       :geojson -> write_geojson(gdf, path, opts)
       :flatgeobuf -> write_flatgeobuf(gdf, path, opts)
+      :feather -> write_feather(gdf, path, opts)
     end
   end
 
@@ -110,12 +254,18 @@ defmodule GeoFrame.Formats do
 
         raise ArgumentError,
               "cannot infer the format of #{inspect(to_string(path))} (#{shown}); " <>
-                "use .parquet, .geoparquet, .geojson, .json or .fgb, or pass driver: " <>
+                "use .parquet, .geoparquet, .geojson, .json, .fgb, .feather or .arrow, or pass driver: " <>
                 "#{Enum.map_join(@drivers, " | ", &inspect/1)}"
     end
   end
 
   # -- helpers --------------------------------------------------------------------------
+
+  defp assemble_named(ref, name, ipc) do
+    with {:ok, data} <- Attributes.load(ipc) do
+      {:ok, GeoDataFrame.new(data, %GeoSeries{ref: ref}, geometry_column: name)}
+    end
+  end
 
   defp assemble(ref, ipc, opts) do
     with {:ok, data} <- Attributes.load(ipc),
@@ -148,6 +298,63 @@ defmodule GeoFrame.Formats do
 
   defp normalize_bbox!(other),
     do: raise(ArgumentError, "bbox must be {minx, miny, maxx, maxy}, got: #{inspect(other)}")
+
+  defp check_bbox_order!(nil), do: nil
+
+  defp check_bbox_order!({minx, miny, maxx, maxy} = bbox) do
+    if minx <= maxx and miny <= maxy,
+      do: bbox,
+      else:
+        raise(
+          ArgumentError,
+          "bbox must have minx <= maxx and miny <= maxy, got: #{inspect(bbox)}"
+        )
+  end
+
+  defp normalize_columns(nil), do: nil
+  defp normalize_columns(columns) when is_list(columns), do: Enum.map(columns, &to_string/1)
+
+  defp optional_string(nil), do: nil
+  defp optional_string(value), do: to_string(value)
+
+  defp enum!(opts, key, allowed, default) do
+    value = Keyword.get(opts, key, default)
+
+    if value in allowed do
+      value
+    else
+      raise ArgumentError,
+            "invalid #{inspect(key)} value #{inspect(value)}; expected one of #{inspect(allowed)}"
+    end
+  end
+
+  defp optional_integer!(opts, key) do
+    case Keyword.get(opts, key) do
+      nil -> nil
+      value when is_integer(value) -> value
+      other -> raise ArgumentError, "#{inspect(key)} must be an integer, got: #{inspect(other)}"
+    end
+  end
+
+  defp optional_positive_integer!(opts, key) do
+    case Keyword.get(opts, key) do
+      nil ->
+        nil
+
+      value when is_integer(value) and value > 0 ->
+        value
+
+      other ->
+        raise ArgumentError, "#{inspect(key)} must be a positive integer, got: #{inspect(other)}"
+    end
+  end
+
+  defp boolean!(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_boolean(value) -> value
+      other -> raise ArgumentError, "#{inspect(key)} must be a boolean, got: #{inspect(other)}"
+    end
+  end
 
   defp validate_options!(opts, allowed) do
     unknown = Keyword.keys(opts) -- allowed
