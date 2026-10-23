@@ -573,6 +573,73 @@ fn wrap_longitude(column: Handle) -> Result<Handle, String> {
     column.0.wrap_longitude().map(wrap)
 }
 
+#[rustler::nif(schedule = "DirtyCpu")]
+fn interpolate(
+    column: Handle,
+    distance: Vec<Option<f64>>,
+    normalized: bool,
+) -> Result<Handle, String> {
+    column.0.interpolate(&distance, normalized).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn project(left: Handle, right: Handle, normalized: bool) -> Result<Vec<Option<f64>>, String> {
+    left.0.project(&right.0, normalized)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn segmentize(column: Handle, max_segment_length: f64) -> Result<Handle, String> {
+    column.0.segmentize(max_segment_length).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn remove_repeated_points(column: Handle, tolerance: f64) -> Result<Handle, String> {
+    column.0.remove_repeated_points(tolerance).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn reverse(column: Handle) -> Result<Handle, String> {
+    column.0.reverse().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn orient_polygons(column: Handle, exterior_cw: bool) -> Result<Handle, String> {
+    column.0.orient_polygons(exterior_cw).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn ccw_flags(column: Handle) -> Vec<Option<bool>> {
+    column.0.is_ccw()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn hausdorff_distance(
+    left: Handle,
+    right: Handle,
+    densify: Option<f64>,
+) -> Result<Vec<Option<f64>>, String> {
+    left.0.hausdorff_distance(&right.0, densify)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn frechet_distance(
+    left: Handle,
+    right: Handle,
+    densify: Option<f64>,
+) -> Result<Vec<Option<f64>>, String> {
+    left.0.frechet_distance(&right.0, densify)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn shortest_line(left: Handle, right: Handle) -> Result<Handle, String> {
+    left.0.shortest_line(&right.0).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn line_merge(column: Handle, directed: bool) -> Result<Handle, String> {
+    column.0.line_merge(directed).map(wrap)
+}
+
 #[rustler::nif]
 fn geographic(column: Handle) -> Option<bool> {
     column.0.is_geographic()
