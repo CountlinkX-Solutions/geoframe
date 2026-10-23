@@ -203,6 +203,32 @@ impl GeoColumn {
             guarded(|| union_all_rows(self.geo_rows().into_iter().flatten().collect())).flatten();
         self.rebuild(&[result])
     }
+
+    /// Grouped [`union_all`](Self::union_all): row `i` belongs to group `group_ids[i]`
+    /// (`< n_groups`), and the result has one row per group with the same CRS. Null rows are
+    /// skipped; a group without non-null rows gives `GEOMETRYCOLLECTION EMPTY`, and a group
+    /// whose rows cannot be unioned gives null, exactly as `union_all` does.
+    pub fn union_groups(&self, group_ids: &[u32], n_groups: usize) -> Result<GeoColumn, String> {
+        if group_ids.len() != self.len() {
+            return Err(format!(
+                "group_ids has {} entries but the column has {} rows",
+                group_ids.len(),
+                self.len()
+            ));
+        }
+        let mut buckets: Vec<Vec<Geometry<f64>>> = vec![Vec::new(); n_groups];
+        for (geom, &id) in self.geo_rows().into_iter().zip(group_ids) {
+            let bucket = buckets
+                .get_mut(id as usize)
+                .ok_or_else(|| format!("group id {id} out of range for {n_groups} groups"))?;
+            bucket.extend(geom);
+        }
+        let rows: Vec<Option<Geometry<f64>>> = buckets
+            .into_iter()
+            .map(|rows| guarded(|| union_all_rows(rows)).flatten())
+            .collect();
+        self.rebuild(&rows)
+    }
 }
 
 fn union_all_rows(rows: Vec<Geometry<f64>>) -> Option<Geometry<f64>> {

@@ -117,4 +117,8 @@ defmodule GeoFrame do
   defp error_message(reason) when is_binary(reason), do: reason
   defp error_message(%{__exception__: true} = error), do: Exception.message(error)
   defp error_message(reason), do: inspect(reason)
+
+  @doc "Group-wise union with attribute aggregation; see `GeoFrame.Dissolve.dissolve/2`."
+  @spec dissolve(GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
+  defdelegate dissolve(gdf, opts \\ []), to: GeoFrame.Dissolve
 end

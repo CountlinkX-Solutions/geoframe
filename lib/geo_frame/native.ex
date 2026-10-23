@@ -27,6 +27,7 @@ defmodule GeoFrame.Native do
   def relate(_left, _right), do: err()
   def set_op(_left, _right, _name), do: err()
   def union_all(_ref), do: err()
+  def union_groups(_ref, _group_ids, _n_groups), do: err()
   def unary(_ref, _name), do: err()
   def buffer(_ref, _distance, _cap, _join, _quad_segs, _mitre_limit), do: err()
   def simplify(_ref, _tolerance, _preserve_topology), do: err()

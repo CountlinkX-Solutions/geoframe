@@ -215,6 +215,10 @@ defmodule GeoFrame.GeoDataFrame do
   @spec sjoin_nearest(t(), t(), keyword()) :: t()
   defdelegate sjoin_nearest(left, right, opts \\ []), to: GeoFrame.SpatialJoin
 
+  @doc "Group-wise union with attribute aggregation; see `GeoFrame.Dissolve.dissolve/2`."
+  @spec dissolve(t(), keyword()) :: t()
+  defdelegate dissolve(gdf, opts \\ []), to: GeoFrame.Dissolve
+
   # -- attribute operations -------------------------------------------------------------
 
   @doc """

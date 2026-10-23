@@ -211,3 +211,48 @@ fn union_all_points_lines_and_edge_cases() {
         vec![Some("GEOMETRYCOLLECTION EMPTY".to_string())]
     );
 }
+
+const SQ0: &str = "POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))";
+const SQ1: &str = "POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))";
+const SQ2: &str = "POLYGON ((5 5, 6 5, 6 6, 5 6, 5 5))";
+
+#[test]
+fn union_groups_unions_adjacent_squares_per_group() {
+    let c = col(&[Some(SQ0), Some(SQ2), Some(SQ1)]);
+    let out = c.union_groups(&[0, 1, 0], 2).unwrap();
+    assert_eq!(out.len(), 2);
+    let areas = out.area();
+    assert!((areas[0].unwrap() - 2.0).abs() < 1e-12);
+    assert!((areas[1].unwrap() - 1.0).abs() < 1e-12);
+    assert_eq!(out.geom_type()[0], Some("Polygon".to_string()));
+}
+
+#[test]
+fn union_groups_empty_group_and_null_rows() {
+    let c = col(&[Some(SQ0), None, None]);
+    let out = c.union_groups(&[0, 1, 1], 3).unwrap();
+    let wkt = out.to_wkt().unwrap();
+    assert!(wkt[0].as_deref().unwrap().starts_with("POLYGON"));
+    assert_eq!(wkt[1].as_deref(), Some("GEOMETRYCOLLECTION EMPTY"));
+    assert_eq!(wkt[2].as_deref(), Some("GEOMETRYCOLLECTION EMPTY"));
+}
+
+#[test]
+fn union_groups_matches_union_all_and_keeps_crs() {
+    let c = GeoColumn::from_wkt(&[Some(SQ0), Some(SQ1)], Some("EPSG:3857")).unwrap();
+    let out = c.union_groups(&[0, 0], 1).unwrap();
+    assert_eq!(out.crs(), Some("EPSG:3857".to_string()));
+    assert_eq!(
+        out.to_wkt().unwrap(),
+        c.union_all().unwrap().to_wkt().unwrap()
+    );
+}
+
+#[test]
+fn union_groups_validates_inputs() {
+    let c = col(&[Some(SQ0), Some(SQ1)]);
+    assert!(c.union_groups(&[0], 1).is_err());
+    assert!(c.union_groups(&[0, 2], 2).is_err());
+    assert!(c.union_groups(&[], 0).is_err());
+    assert_eq!(col(&[]).union_groups(&[], 0).unwrap().len(), 0);
+}
