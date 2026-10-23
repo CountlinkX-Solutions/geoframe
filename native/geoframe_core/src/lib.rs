@@ -1,6 +1,7 @@
 //! Pure-Rust geometry core for GeoFrame. Holds no Rustler/BEAM dependencies so it can be
 //! unit-tested with `cargo test` and reused outside Elixir.
 
+mod affine;
 mod attributes;
 pub(crate) mod column;
 mod flatgeobuf_io;
@@ -20,11 +21,13 @@ pub use flatgeobuf_io::{read_flatgeobuf, write_flatgeobuf};
 pub use geojson_io::{read_geojson, read_geojson_str, write_geojson};
 pub use parquet_io::{read_geoparquet, write_geoparquet, GeoParquetRead};
 pub use predicates::Predicate;
-pub use reproject::normalize_crs;
+pub use reproject::{crs_is_geographic, normalize_crs};
 pub use set_ops::SetOp;
 pub use sindex::{NearestPairs, QueryPredicate};
 pub use unary::{BufferOptions, Origin, UnaryOp};
 
+#[cfg(test)]
+mod affine_tests;
 #[cfg(test)]
 mod flatgeobuf_tests;
 #[cfg(test)]

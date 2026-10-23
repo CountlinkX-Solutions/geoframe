@@ -402,56 +402,242 @@ defmodule GeoFrame.GeoSeries do
   @doc """
   Shifts every coordinate by `xoff` and `yoff`. Output is 2D.
 
+  Each offset is a number, or a list or `Explorer.Series` with one entry per row (a `nil`
+  entry nulls that row).
+
       iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1 1)"])
       iex> s |> GeoFrame.GeoSeries.translate(2, 3) |> GeoFrame.GeoSeries.to_wkt()
       ["POINT(3 4)"]
   """
-  @spec translate(t(), number(), number()) :: t()
-  def translate(%__MODULE__{ref: ref}, xoff, yoff) when is_number(xoff) and is_number(yoff) do
-    ref |> Native.translate(xoff * 1.0, yoff * 1.0) |> wrap() |> unwrap!()
+  @spec translate(t(), param(), param()) :: t()
+  def translate(%__MODULE__{ref: ref} = series, xoff, yoff) do
+    if is_number(xoff) and is_number(yoff) do
+      ref |> Native.translate(xoff * 1.0, yoff * 1.0) |> wrap() |> unwrap!()
+    else
+      n = size(series)
+
+      ref
+      |> Native.translate_rows(param!(xoff, n, "xoff"), param!(yoff, n, "yoff"))
+      |> wrap()
+      |> unwrap!()
+    end
   end
 
   @doc """
   Scales by `xfact` and `yfact` about `:origin` (negative factors mirror).
 
   `:origin` is `:center` (default; the centre of each geometry's bounding box, as in
-  GeoPandas), `:centroid`, or an `{x, y}` pair used for every row. Output is 2D.
+  GeoPandas), `:centroid`, an `{x, y}` pair used for every row, or a list with one `{x, y}`
+  (or `nil`) per row. The factors are numbers, lists or `Explorer.Series` (see `translate/3`).
+  Output is 2D.
   """
-  @spec scale(t(), number(), number(), keyword()) :: t()
-  def scale(%__MODULE__{ref: ref}, xfact, yfact, opts \\ [])
-      when is_number(xfact) and is_number(yfact) do
-    {origin, ox, oy} = origin!(opts)
-    ref |> Native.scale(xfact * 1.0, yfact * 1.0, origin, ox, oy) |> wrap() |> unwrap!()
+  @spec scale(t(), param(), param(), keyword()) :: t()
+  def scale(%__MODULE__{ref: ref} = series, xfact, yfact, opts \\ []) do
+    case origin!(opts, size(series)) do
+      {:scalar, origin, ox, oy} when is_number(xfact) and is_number(yfact) ->
+        ref |> Native.scale(xfact * 1.0, yfact * 1.0, origin, ox, oy) |> wrap() |> unwrap!()
+
+      {_, origin, ox, oy} ->
+        n = size(series)
+
+        ref
+        |> Native.scale_rows(
+          param!(xfact, n, "xfact"),
+          param!(yfact, n, "yfact"),
+          origin,
+          row_coords(ox, n),
+          row_coords(oy, n)
+        )
+        |> wrap()
+        |> unwrap!()
+    end
   end
 
   @doc """
   Rotates counter-clockwise by `angle` **degrees** about `:origin`.
 
-  `:origin` accepts the same values as in `scale/4` and defaults to `:center`. Output is 2D.
+  `:origin` accepts the same values as in `scale/4` and defaults to `:center`; `angle` is a
+  number, list or `Explorer.Series`. Output is 2D.
   """
-  @spec rotate(t(), number(), keyword()) :: t()
-  def rotate(%__MODULE__{ref: ref}, angle, opts \\ []) when is_number(angle) do
-    {origin, ox, oy} = origin!(opts)
-    ref |> Native.rotate(angle * 1.0, origin, ox, oy) |> wrap() |> unwrap!()
+  @spec rotate(t(), param(), keyword()) :: t()
+  def rotate(%__MODULE__{ref: ref} = series, angle, opts \\ []) do
+    case origin!(opts, size(series)) do
+      {:scalar, origin, ox, oy} when is_number(angle) ->
+        ref |> Native.rotate(angle * 1.0, origin, ox, oy) |> wrap() |> unwrap!()
+
+      {_, origin, ox, oy} ->
+        n = size(series)
+
+        ref
+        |> Native.rotate_rows(
+          param!(angle, n, "angle"),
+          origin,
+          row_coords(ox, n),
+          row_coords(oy, n)
+        )
+        |> wrap()
+        |> unwrap!()
+    end
   end
 
-  defp origin!(opts) do
+  @doc """
+  Shears by `xs` along x and `ys` along y about `:origin` (Shapely `skew`; x' = x + tan(xs) *
+  (y - y0), y' = y + tan(ys) * (x - x0)).
+
+  Options: `:origin` as in `scale/4` (default `:center`), `:use_radians` (default `false`,
+  angles are degrees). `xs` and `ys` are numbers, lists or `Explorer.Series`. Output is 2D.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 0 2)"])
+      iex> skewed = GeoFrame.GeoSeries.skew(s, 45, 0, origin: {0, 0})
+      iex> expected = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 2 2)"])
+      iex> skewed |> GeoFrame.GeoSeries.geom_equals_exact(expected, 1.0e-9) |> Explorer.Series.to_list()
+      [true]
+  """
+  @spec skew(t(), param(), param(), keyword()) :: t()
+  def skew(%__MODULE__{ref: ref} = series, xs, ys, opts \\ []) do
+    {use_radians, opts} = Keyword.pop(opts, :use_radians, false)
+    n = size(series)
+    {_, origin, ox, oy} = origin!(opts, n)
+
+    ref
+    |> Native.skew_rows(
+      param!(xs, n, "xs"),
+      param!(ys, n, "ys"),
+      origin,
+      row_coords(ox, n),
+      row_coords(oy, n),
+      use_radians == true
+    )
+    |> wrap()
+    |> unwrap!()
+  end
+
+  @doc """
+  Applies the 2D affine matrix `[a, b, d, e, xoff, yoff]` (Shapely order) to every
+  coordinate: `x' = a*x + b*y + xoff`, `y' = d*x + e*y + yoff`.
+
+  Only the 6-element 2D form is accepted; the 12-element 3D form raises `ArgumentError`
+  because geometries are stored in 2D.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1 2)"])
+      iex> s |> GeoFrame.GeoSeries.affine_transform([0, 1, 1, 0, 0, 0]) |> GeoFrame.GeoSeries.to_wkt()
+      ["POINT(2 1)"]
+  """
+  @spec affine_transform(t(), [number()]) :: t()
+  def affine_transform(%__MODULE__{ref: ref}, matrix) when is_list(matrix) do
+    cond do
+      Kernel.length(matrix) == 12 ->
+        raise ArgumentError,
+              "the 12-element 3D affine matrix is not supported (geometries are 2D); " <>
+                "pass the 6 numbers [a, b, d, e, xoff, yoff]"
+
+      Kernel.length(matrix) != 6 or not Enum.all?(matrix, &is_number/1) ->
+        raise ArgumentError,
+              "affine_transform needs 6 numbers [a, b, d, e, xoff, yoff], got: #{inspect(matrix)}"
+
+      true ->
+        ref |> Native.affine_transform(Enum.map(matrix, &(&1 * 1.0))) |> wrap() |> unwrap!()
+    end
+  end
+
+  @doc """
+  Wraps every x into `[-180, 180)` (so `180` becomes `-180`), like GeoPolars
+  `wrap_longitude`. Only coordinates move: geometries are not split at the antimeridian.
+
+  The series must have a geographic CRS or none (then degrees are assumed); a projected CRS
+  raises `ArgumentError`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (190 10)"], crs: "EPSG:4326")
+      iex> s |> GeoFrame.GeoSeries.wrap_longitude() |> GeoFrame.GeoSeries.to_wkt()
+      ["POINT(-170 10)"]
+  """
+  @spec wrap_longitude(t()) :: t()
+  def wrap_longitude(%__MODULE__{ref: ref}),
+    do: ref |> Native.wrap_longitude() |> wrap() |> unwrap!()
+
+  @doc """
+  Whether the series' CRS is geographic (lon/lat): `true` for `EPSG:4326`, `OGC:CRS84` and any
+  other longlat EPSG code, `false` for projected CRSs, `nil` without a CRS or when the CRS
+  cannot be resolved.
+  """
+  @spec is_geographic(t()) :: boolean() | nil
+  # GeoPandas-compatible name, see is_valid/1.
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+  def is_geographic(%__MODULE__{ref: ref}), do: Native.geographic(ref)
+
+  # A per-row parameter: one number, or a list / series with one entry per row.
+  @typedoc "A number, or a list or `Explorer.Series` with one number (or `nil`) per row."
+  @type param :: number() | [number() | nil] | Series.t()
+
+  defp param!(value, n, _name) when is_number(value), do: List.duplicate(value * 1.0, n)
+
+  defp param!(%Series{} = series, n, name), do: series |> Series.to_list() |> param!(n, name)
+
+  defp param!(values, n, name) when is_list(values) do
+    if Kernel.length(values) != n do
+      raise ArgumentError,
+            "#{name} has length #{Kernel.length(values)} but the series has #{n} rows (length mismatch)"
+    end
+
+    Enum.map(values, fn
+      nil -> nil
+      v when is_number(v) -> v * 1.0
+      other -> raise ArgumentError, "#{name} must hold numbers or nil, got: #{inspect(other)}"
+    end)
+  end
+
+  defp param!(other, _n, name) do
+    raise ArgumentError,
+          "#{name} must be a number, a list or an Explorer.Series, got: #{inspect(other)}"
+  end
+
+  # Per-row coordinate lists for the row NIFs; a scalar origin is repeated for every row.
+  defp row_coords(coords, _n) when is_list(coords), do: coords
+
+  defp row_coords(scalar, n), do: List.duplicate(scalar, n)
+
+  defp origin!(opts, n) do
     opts = Keyword.validate!(opts, origin: :center)
 
     case opts[:origin] do
       :center ->
-        {"center", 0.0, 0.0}
+        {:scalar, "center", 0.0, 0.0}
 
       :centroid ->
-        {"centroid", 0.0, 0.0}
+        {:scalar, "centroid", 0.0, 0.0}
 
       {x, y} when is_number(x) and is_number(y) ->
-        {"coord", x * 1.0, y * 1.0}
+        {:scalar, "coord", x * 1.0, y * 1.0}
+
+      origins when is_list(origins) ->
+        row_origins!(origins, n)
 
       other ->
         raise ArgumentError,
-              ":origin must be :center, :centroid or {x, y}, got: #{inspect(other)}"
+              ":origin must be :center, :centroid, {x, y} or a list of {x, y}, got: " <>
+                inspect(other)
     end
+  end
+
+  defp row_origins!(origins, n) do
+    if Kernel.length(origins) != n do
+      raise ArgumentError,
+            "origin has length #{Kernel.length(origins)} but the series has #{n} rows (length mismatch)"
+    end
+
+    pairs =
+      Enum.map(origins, fn
+        nil ->
+          {nil, nil}
+
+        {x, y} when is_number(x) and is_number(y) ->
+          {x * 1.0, y * 1.0}
+
+        other ->
+          raise ArgumentError, "origin entries must be {x, y} or nil, got: #{inspect(other)}"
+      end)
+
+    {:rows, "coord", Enum.map(pairs, &elem(&1, 0)), Enum.map(pairs, &elem(&1, 1))}
   end
 
   defp enum!(opts, key, allowed) do

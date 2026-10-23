@@ -155,7 +155,7 @@ defmodule GeoFrame.UnaryOpsTest do
 
     test "invalid arguments raise ArgumentError" do
       sq = s([@square])
-      assert_raise FunctionClauseError, fn -> GeoSeries.translate(sq, "1", 0) end
+      assert_raise ArgumentError, fn -> GeoSeries.translate(sq, "1", 0) end
       assert_raise ArgumentError, fn -> GeoSeries.scale(sq, 1, 1, origin: :nowhere) end
       assert_raise ArgumentError, fn -> GeoSeries.rotate(sq, 10, origin: {1, :a}) end
     end

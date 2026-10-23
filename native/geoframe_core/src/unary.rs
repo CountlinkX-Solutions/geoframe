@@ -109,7 +109,7 @@ pub enum Origin {
 }
 
 impl Origin {
-    fn resolve(&self, geom: &Geometry<f64>) -> Option<Coord<f64>> {
+    pub(crate) fn resolve(&self, geom: &Geometry<f64>) -> Option<Coord<f64>> {
         match self {
             Self::Center => geom.bounding_rect().map(|r| r.center()),
             Self::Centroid => geom.centroid().map(Point::into),
