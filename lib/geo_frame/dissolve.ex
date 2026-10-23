@@ -166,13 +166,39 @@ defmodule GeoFrame.Dissolve do
     if columns == [] do
       DataFrame.new([])
     else
-      data
-      |> DataFrame.put(gid_col, Series.from_list(gids, dtype: {:s, 64}))
-      |> DataFrame.group_by(gid_col)
-      |> DataFrame.summarise_with(&summaries(&1, columns))
+      keyed = DataFrame.put(data, gid_col, Series.from_list(gids, dtype: {:s, 64}))
+
+      # pandas `first`/`last` return the first/last non-null value of each group, which the
+      # lazy group expressions cannot filter for; those columns are aggregated separately
+      # over their non-null rows and joined back (a group with only nulls stays null).
+      {skipping, plain} = Enum.split_with(aggs, fn {_, func} -> func in [:first, :last] end)
+      base_columns = Enum.map(by, &{&1, :first}) ++ plain
+
+      base =
+        if base_columns == [] do
+          keyed |> DataFrame.distinct([gid_col]) |> DataFrame.select([gid_col])
+        else
+          grouped_summary(keyed, gid_col, base_columns)
+        end
+
+      skipping
+      |> Enum.reduce(base, fn {name, func}, acc ->
+        part =
+          keyed
+          |> DataFrame.drop_nil([name])
+          |> grouped_summary(gid_col, [{name, func}])
+
+        DataFrame.join(acc, part, on: gid_col, how: :left)
+      end)
       |> DataFrame.sort_with(& &1[gid_col])
       |> DataFrame.select(Enum.map(columns, &elem(&1, 0)))
     end
+  end
+
+  defp grouped_summary(keyed, gid_col, columns) do
+    keyed
+    |> DataFrame.group_by(gid_col)
+    |> DataFrame.summarise_with(&summaries(&1, columns))
   end
 
   defp summaries(df, columns) do
