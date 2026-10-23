@@ -20,6 +20,7 @@
 //! are null or cannot be expressed as a `geo` geometry (for example empty points).
 //! Computations go through [`geo`] types and drop Z/M ordinates; storage keeps them.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -27,6 +28,7 @@ use geo::{Area, BoundingRect, Centroid, Geometry, Validation};
 use geoarrow_array::array::GeometryArray;
 use geoarrow_array::builder::GeometryBuilder;
 use geoarrow_array::cast::{to_wkb, to_wkt};
+use geoarrow_array::scalar::Geometry as Scalar;
 use geoarrow_array::{GeoArrowArray, GeoArrowArrayAccessor, IntoArrow};
 use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 use geoarrow_schema::{Crs, GeometryType, Metadata};
@@ -240,17 +242,47 @@ impl GeoColumn {
 
     /// Centroids as a point column with the same CRS; null where undefined.
     pub fn centroid(&self) -> Result<Self, String> {
-        let centroids: Vec<Option<geo::Point<f64>>> = self.map_geo(|g| g.centroid());
-        let metadata = self.array.extension_type().metadata().clone();
+        self.map_geometry(|g| g.centroid().map(Geometry::Point))
+    }
+
+    /// Builds a column from per-row `geo` geometries (`None` = null) with the given metadata.
+    fn from_geo_rows(
+        rows: &[Option<Geometry<f64>>],
+        metadata: Arc<Metadata>,
+    ) -> Result<Self, String> {
         let mut builder = GeometryBuilder::new(GeometryType::new(metadata));
-        for point in &centroids {
+        for row in rows {
             builder
-                .push_geometry(point.as_ref())
+                .push_geometry(row.as_ref())
                 .map_err(|e| e.to_string())?;
         }
         Ok(Self {
             array: builder.finish(),
         })
+    }
+
+    /// The generic constructive path: maps every convertible row through `f` and rebuilds a
+    /// column with the same CRS. Rows that are null, unrepresentable, make `f` return `None`
+    /// or make `f` panic (geometry algorithms can on degenerate input) become null. Output
+    /// is 2D: Z/M ordinates are not carried through `geo`.
+    pub(crate) fn map_geometry(
+        &self,
+        f: impl Fn(&Geometry<f64>) -> Option<Geometry<f64>>,
+    ) -> Result<Self, String> {
+        let rows = self.map_geo(|g| catch_unwind(AssertUnwindSafe(|| f(g))).ok().flatten());
+        let metadata = self.array.extension_type().metadata().clone();
+        Self::from_geo_rows(&rows, metadata)
+    }
+
+    /// Maps each non-null stored scalar through `f`, including rows `geo` cannot represent
+    /// (such as empty points), which `geo_rows` hides. Null rows give `None`.
+    pub(crate) fn map_scalars<T>(&self, f: impl Fn(&Scalar<'_>) -> T) -> Vec<Option<T>> {
+        (0..self.len())
+            .map(|i| match self.array.get(i) {
+                Ok(Some(scalar)) => Some(f(&scalar)),
+                _ => None,
+            })
+            .collect()
     }
 }
 

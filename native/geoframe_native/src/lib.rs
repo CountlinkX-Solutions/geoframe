@@ -1,7 +1,9 @@
 //! Thin Rustler wrapper around `geoframe_core`. All logic and its tests live in the core
 //! crate; this layer only converts between BEAM terms and core types.
 
-use geoframe_core::{read_geoparquet, write_geoparquet, GeoColumn, Predicate};
+use geoframe_core::{
+    read_geoparquet, write_geoparquet, BufferOptions, GeoColumn, Origin, Predicate, UnaryOp,
+};
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
 /// Resource handle for a GeoArrow geometry column living in Rust memory.
@@ -130,6 +132,100 @@ fn dwithin(left: Handle, right: Handle, limit: f64) -> Result<Vec<Option<bool>>,
 #[rustler::nif(schedule = "DirtyCpu")]
 fn relate(left: Handle, right: Handle) -> Result<Vec<Option<String>>, String> {
     left.0.relate(&right.0)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn unary(column: Handle, name: String) -> Result<Handle, String> {
+    let op = UnaryOp::from_name(&name).ok_or_else(|| format!("unknown operation: {name}"))?;
+    column.0.unary(op).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn buffer(
+    column: Handle,
+    distance: f64,
+    cap: String,
+    join: String,
+    quad_segs: u32,
+    mitre_limit: f64,
+) -> Result<Handle, String> {
+    let options = BufferOptions {
+        cap,
+        join,
+        quad_segs,
+        mitre_limit,
+    };
+    column.0.buffer(distance, &options).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn simplify(column: Handle, tolerance: f64, preserve_topology: bool) -> Result<Handle, String> {
+    column.0.simplify(tolerance, preserve_topology).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn translate(column: Handle, xoff: f64, yoff: f64) -> Result<Handle, String> {
+    column.0.translate(xoff, yoff).map(wrap)
+}
+
+/// `origin` is `"center"`, `"centroid"` or `"coord"` (then `ox`/`oy` apply).
+fn parse_origin(origin: &str, ox: f64, oy: f64) -> Result<Origin, String> {
+    match origin {
+        "center" => Ok(Origin::Center),
+        "centroid" => Ok(Origin::Centroid),
+        "coord" => Ok(Origin::Coord(ox, oy)),
+        other => Err(format!("unknown origin: {other}")),
+    }
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn scale(
+    column: Handle,
+    xfact: f64,
+    yfact: f64,
+    origin: String,
+    ox: f64,
+    oy: f64,
+) -> Result<Handle, String> {
+    let origin = parse_origin(&origin, ox, oy)?;
+    column.0.scale(xfact, yfact, &origin).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn rotate(
+    column: Handle,
+    degrees: f64,
+    origin: String,
+    ox: f64,
+    oy: f64,
+) -> Result<Handle, String> {
+    let origin = parse_origin(&origin, ox, oy)?;
+    column.0.rotate(degrees, &origin).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn x(column: Handle) -> Vec<Option<f64>> {
+    column.0.x()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn y(column: Handle) -> Vec<Option<f64>> {
+    column.0.y()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn geom_type(column: Handle) -> Vec<Option<String>> {
+    column.0.geom_type()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn empty_flags(column: Handle) -> Vec<Option<bool>> {
+    column.0.is_empty_rows()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn count_coordinates(column: Handle) -> Vec<Option<usize>> {
+    column.0.count_coordinates()
 }
 
 /// Reads a GeoParquet file. Returns `{geometry, geometry_column, attributes_ipc}` where the
