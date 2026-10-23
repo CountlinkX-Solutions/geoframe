@@ -3,8 +3,9 @@
 #     mix run scripts/write_io_samples.exs <output-dir>
 #     ~/.venvs/geopandas-ref/bin/python -I test/reference/check_geoframe_io.py <output-dir>
 #
-# or run both with `scripts/crosscheck_io.sh`. Writes feather, GeoParquet and Arrow IPC stream
-# files plus `expected.json` (CRS, WKT and attributes of each file).
+# or run both with `scripts/crosscheck_io.sh`. Writes feather, GeoParquet, Arrow IPC stream,
+# Shapefile (plain and zipped) and GeoPackage files plus `expected.json` (CRS, WKT and
+# attributes of each file).
 
 alias Explorer.DataFrame
 alias GeoFrame.GeoDataFrame
@@ -88,7 +89,9 @@ write = fn files, name, gdf, writer, extra ->
           for(
             col <- DataFrame.names(GeoDataFrame.data(gdf)),
             into: %{},
-            do: {col, gdf |> GeoDataFrame.data() |> DataFrame.pull(col) |> Explorer.Series.to_list()}
+            do:
+              {col,
+               gdf |> GeoDataFrame.data() |> DataFrame.pull(col) |> Explorer.Series.to_list()}
           )
       },
       Map.new(Keyword.take(extra, [:covering]), fn {k, v} -> {Atom.to_string(k), v} end)
@@ -188,6 +191,244 @@ files =
   write.(files, "geoarrow_polygons.arrows", polys, stream.(geometry_encoding: :geoarrow),
     kind: "arrows",
     native: true
+  )
+
+# -- Shapefile and GeoPackage ---------------------------------------------------------------
+
+shapefile = fn opts -> fn gdf, path -> GeoFrame.write_shapefile(gdf, path, opts) end end
+
+gpkg = fn opts -> fn gdf, path -> GeoFrame.write_gpkg(gdf, path, opts) end end
+
+# Same as `write`, but the expected columns are given (field names change on the way) and the
+# expectation never reads the file back.
+write_vector = fn files, name, gdf, writer, extra ->
+  path = Path.join(dir, name)
+  :ok = writer.(gdf, path)
+
+  columns =
+    extra[:columns] ||
+      for(
+        col <- DataFrame.names(GeoDataFrame.data(gdf)),
+        into: %{},
+        do: {col, gdf |> GeoDataFrame.data() |> DataFrame.pull(col) |> Explorer.Series.to_list()}
+      )
+
+  entry =
+    %{
+      "file" => name,
+      "kind" => extra[:kind],
+      "crs" => GeoDataFrame.crs(gdf),
+      "wkt" => extra[:wkt] || gdf |> GeoDataFrame.geometry() |> GeoSeries.to_wkt(),
+      "columns" => columns,
+      "native" => false
+    }
+    |> Map.merge(
+      Map.new(Keyword.take(extra, [:layer, :geometry_types]), fn {k, v} ->
+        {Atom.to_string(k), v}
+      end)
+    )
+
+  [entry | files]
+end
+
+files = write_vector.(files, "points.shp", points, shapefile.([]), kind: "shapefile")
+
+files =
+  write_vector.(
+    files,
+    "points_3857.shp",
+    GeoDataFrame.set_crs(points, "EPSG:3857"),
+    shapefile.([]),
+    kind: "shapefile"
+  )
+
+files =
+  write_vector.(
+    files,
+    "points_utm17n.shp",
+    GeoDataFrame.set_crs(points, "EPSG:32617"),
+    shapefile.([]),
+    kind: "shapefile"
+  )
+
+files =
+  write_vector.(
+    files,
+    "points_nad83.shp",
+    GeoDataFrame.set_crs(points, "EPSG:4269"),
+    shapefile.([]),
+    kind: "shapefile"
+  )
+
+files =
+  write_vector.(files, "points_nocrs.shp", GeoDataFrame.set_crs(points, nil), shapefile.([]),
+    kind: "shapefile"
+  )
+
+files = write_vector.(files, "points_bundle.zip", points, shapefile.([]), kind: "shapefile")
+
+polys_mixed =
+  frame.(
+    [
+      "POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0), (1 1, 2 1, 2 2, 1 1))",
+      "MULTIPOLYGON (((10 10, 10 11, 11 11, 10 10)), ((20 20, 20 21, 21 21, 20 20)))",
+      nil,
+      "POLYGON ((5 5, 5 6, 6 6, 5 5))",
+      "POLYGON ((7 7, 7 9, 9 9, 7 7))"
+    ],
+    "EPSG:4326"
+  )
+
+files = write_vector.(files, "polygons.shp", polys_mixed, shapefile.([]), kind: "shapefile")
+
+lines =
+  frame.(
+    [
+      "LINESTRING (0 0, 3 4, 6 4)",
+      "MULTILINESTRING ((0 0, 1 1), (5 5, 6 6, 7 5))",
+      nil,
+      "LINESTRING (10 10, 11 11)",
+      "LINESTRING (20 20, 21 22)"
+    ],
+    "EPSG:4326"
+  )
+
+files = write_vector.(files, "lines.shp", lines, shapefile.([]), kind: "shapefile")
+
+multipoints =
+  frame.(
+    [
+      "MULTIPOINT (1 2, 3 4)",
+      "MULTIPOINT (5 6)",
+      nil,
+      "MULTIPOINT (7 8, 9 10, 11 12)",
+      "MULTIPOINT (0 0, 1 1)"
+    ],
+    "EPSG:4326"
+  )
+
+files = write_vector.(files, "multipoints.shp", multipoints, shapefile.([]), kind: "shapefile")
+
+latin =
+  GeoDataFrame.new(
+    DataFrame.new(name: ["café", "ñandú", nil]),
+    GeoSeries.from_wkt!(["POINT (1 1)", "POINT (2 2)", "POINT (3 3)"], crs: "EPSG:4326")
+  )
+
+files =
+  write_vector.(files, "latin1.shp", latin, shapefile.(encoding: "ISO-8859-1"), kind: "shapefile")
+
+long =
+  GeoDataFrame.new(
+    DataFrame.new(
+      population_total: [1, 2],
+      population_urban: [3, 4],
+      population_rural: [5, 6],
+      short: [7, 8]
+    ),
+    GeoSeries.from_wkt!(["POINT (1 1)", "POINT (2 2)"], crs: "EPSG:4326")
+  )
+
+files =
+  write_vector.(files, "long_names.shp", long, shapefile.([]),
+    kind: "shapefile",
+    columns: %{
+      "population" => [1, 2],
+      "populati_1" => [3, 4],
+      "populati_2" => [5, 6],
+      "short" => [7, 8]
+    }
+  )
+
+dates =
+  GeoDataFrame.new(
+    DataFrame.new(
+      day: Explorer.Series.from_list([~D[2020-01-02], nil, ~D[1999-12-31]]),
+      stamp: Explorer.Series.from_list([~N[2020-01-02 03:04:05], nil, ~N[2021-03-04 00:00:00]])
+    ),
+    GeoSeries.from_wkt!(["POINT (1 1)", "POINT (2 2)", "POINT (3 3)"], crs: "EPSG:4326")
+  )
+
+files = write_vector.(files, "dates.shp", dates, shapefile.([]), kind: "shapefile")
+files = write_vector.(files, "dates.gpkg", dates, gpkg.([]), kind: "gpkg")
+
+files =
+  write_vector.(files, "points.gpkg", points, gpkg.(layer: "pts"), kind: "gpkg", layer: "pts")
+
+files =
+  write_vector.(
+    files,
+    "points_3857.gpkg",
+    GeoDataFrame.set_crs(points, "EPSG:3857"),
+    gpkg.(layer: "pts"),
+    kind: "gpkg",
+    layer: "pts"
+  )
+
+files =
+  write_vector.(
+    files,
+    "points_utm17n.gpkg",
+    GeoDataFrame.set_crs(points, "EPSG:32617"),
+    gpkg.(layer: "pts"),
+    kind: "gpkg",
+    layer: "pts"
+  )
+
+files =
+  write_vector.(
+    files,
+    "points_nocrs.gpkg",
+    GeoDataFrame.set_crs(points, nil),
+    gpkg.(layer: "pts"),
+    kind: "gpkg",
+    layer: "pts"
+  )
+
+files =
+  write_vector.(files, "points_noindex.gpkg", points, gpkg.(layer: "pts", spatial_index: false),
+    kind: "gpkg",
+    layer: "pts"
+  )
+
+files =
+  write_vector.(files, "mixed_types.gpkg", mixed, gpkg.(layer: "mixed"),
+    kind: "gpkg",
+    layer: "mixed"
+  )
+
+files =
+  write_vector.(files, "polygons.gpkg", polys_mixed, gpkg.(layer: "polys"),
+    kind: "gpkg",
+    layer: "polys"
+  )
+
+# A two-layer file: both layers are checked.
+files =
+  write_vector.(files, "multi.gpkg", points, gpkg.(layer: "pts"), kind: "gpkg", layer: "pts")
+
+:ok = GeoFrame.write_gpkg(lines, Path.join(dir, "multi.gpkg"), layer: "lines")
+
+files =
+  write_vector.(files, "multi.gpkg", lines, fn _gdf, _path -> :ok end,
+    kind: "gpkg",
+    layer: "lines"
+  )
+
+appended =
+  GeoDataFrame.concat_rows([points, points])
+
+files =
+  write_vector.(
+    files,
+    "appended.gpkg",
+    appended,
+    fn _gdf, path ->
+      :ok = GeoFrame.write_gpkg(points, path, layer: "pts")
+      GeoFrame.write_gpkg(points, path, layer: "pts", mode: :a)
+    end,
+    kind: "gpkg",
+    layer: "pts"
   )
 
 File.write!(Path.join(dir, "expected.json"), Jason.encode!(Enum.reverse(files), pretty: true))
