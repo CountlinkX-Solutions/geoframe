@@ -158,6 +158,36 @@ fn relate(left: Handle, right: Handle) -> Result<Vec<Option<String>>, String> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn relate_pattern(
+    left: Handle,
+    right: Handle,
+    pattern: String,
+) -> Result<Vec<Option<bool>>, String> {
+    left.0.relate_pattern(&right.0, &pattern)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn equals_exact(left: Handle, right: Handle, tolerance: f64) -> Result<Vec<Option<bool>>, String> {
+    left.0.equals_exact(&right.0, tolerance)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn equals_identical(left: Handle, right: Handle) -> Result<Vec<Option<bool>>, String> {
+    left.0.equals_identical(&right.0)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn bbox_intersection(column: Handle, bbox: (f64, f64, f64, f64)) -> Result<Vec<u32>, String> {
+    column.0.bbox_intersection([bbox.0, bbox.1, bbox.2, bbox.3])
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn concat(columns: Vec<Handle>) -> Result<Handle, String> {
+    let refs: Vec<&GeoColumn> = columns.iter().map(|c| &c.0).collect();
+    GeoColumn::concat(&refs).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn set_op(left: Handle, right: Handle, name: String) -> Result<Handle, String> {
     let op = SetOp::from_name(&name).ok_or_else(|| format!("unknown set operation: {name}"))?;
     left.0.set_op(&right.0, op).map(wrap)

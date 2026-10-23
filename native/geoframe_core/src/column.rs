@@ -239,6 +239,33 @@ impl GeoColumn {
         })
     }
 
+    /// Appends the rows of `columns` in order. Every column must have the same CRS (both
+    /// unset counts as equal); a mismatch or an empty list is an error.
+    pub fn concat(columns: &[&GeoColumn]) -> Result<Self, String> {
+        let first = columns
+            .first()
+            .ok_or_else(|| "concat needs at least one column".to_string())?;
+        if let Some(other) = columns.iter().find(|c| c.crs() != first.crs()) {
+            return Err(format!(
+                "CRS mismatch: {:?} and {:?}; reproject or set the CRS first",
+                first.crs(),
+                other.crs()
+            ));
+        }
+        let mut builder = GeometryBuilder::new(first.array.extension_type().clone());
+        for column in columns {
+            for i in 0..column.len() {
+                let scalar = column.array.get(i).map_err(|e| e.to_string())?;
+                builder
+                    .push_geometry(scalar.as_ref())
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(Self {
+            array: builder.finish(),
+        })
+    }
+
     pub fn to_wkt(&self) -> Result<Vec<Option<String>>, String> {
         let wkt = to_wkt::<i32>(&self.array).map_err(|e| e.to_string())?;
         Ok(wkt

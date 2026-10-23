@@ -738,7 +738,13 @@ defmodule GeoFrame.GeoSeries do
     geom_equals: """
     Topological equality: both geometries describe the same set of points, regardless of vertex
     order, start vertex, ring orientation or redundant vertices. Named `geom_equals` after
-    GeoPandas' `geom_equals` (the exact-coordinate comparison is not provided).
+    GeoPandas' `geom_equals`; see `geom_equals_exact/3` and `geom_equals_identical/2` for the
+    structural comparisons.
+    """,
+    contains_properly: """
+    Whether `other` lies in the interior of the geometry with no contact with its boundary
+    (DE-9IM `T**FF*FF*`). Stricter than `contains/2`: a polygon contains a line that starts
+    on its edge but does not contain it properly.
     """
   ]
 
@@ -795,7 +801,8 @@ defmodule GeoFrame.GeoSeries do
   predicate over every pair, only faster.
 
   `predicate` is one of `:intersects` (default), `:within`, `:contains`, `:touches`,
-  `:crosses`, `:overlaps`, `:covers`, `:covered_by`, `:geom_equals` or `:dwithin`. The
+  `:crosses`, `:overlaps`, `:covers`, `:covered_by`, `:geom_equals`, `:contains_properly` or
+  `:dwithin` (see `sindex_valid_query_predicates/0`). The
   predicate reads `left.predicate(right)`: `:within` means the left geometry is within the
   right one. `:disjoint` is rejected because a spatial index cannot answer it.
 
@@ -867,6 +874,176 @@ defmodule GeoFrame.GeoSeries do
     |> unwrap!()
     |> Series.from_list(dtype: :string)
   end
+
+  @doc """
+  Whether each pair's DE-9IM matrix matches `pattern`, like Shapely `relate_pattern`.
+
+  `pattern` is nine characters (case-insensitive) from `T` (any intersection), `F` (none),
+  `*` (anything), or `0`, `1`, `2` (exactly that dimension). For example `"FF*F1****"`
+  matches polygons that touch along an edge. Anything else raises `ArgumentError`.
+  Pairing, null and CRS rules are those of `intersects/2`.
+
+  ## Example
+
+      iex> a = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))"])
+      iex> b = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((4 0, 8 0, 8 4, 4 4, 4 0))"])
+      iex> GeoFrame.GeoSeries.relate_pattern(a, b, "FF*F1****") |> Explorer.Series.to_list()
+      [true]
+  """
+  @spec relate_pattern(t(), other(), String.t()) :: Series.t()
+  def relate_pattern(%__MODULE__{ref: left} = series, other, pattern) when is_binary(pattern) do
+    left |> Native.relate_pattern(other_ref(series, other), pattern) |> boolean_series()
+  end
+
+  @doc """
+  Structural equality: same geometry type and structure, with every vertex in the same order
+  and within `tolerance` (planar distance, inclusive) of its counterpart. Shapely
+  `equals_exact`.
+
+  Unlike `geom_equals/2` a reversed ring or a different start vertex is a difference, and NaN
+  never equals NaN. `tolerance` must be a finite, non-negative number. Pairing, null and CRS
+  rules are those of `intersects/2`.
+
+  ## Example
+
+      iex> a = GeoFrame.GeoSeries.from_wkt!(["POINT (1 1)"])
+      iex> b = GeoFrame.GeoSeries.from_wkt!(["POINT (1.0004 1)"])
+      iex> GeoFrame.GeoSeries.geom_equals_exact(a, b, 0.001) |> Explorer.Series.to_list()
+      [true]
+  """
+  @spec geom_equals_exact(t(), other(), number()) :: Series.t()
+  def geom_equals_exact(%__MODULE__{ref: left} = series, other, tolerance)
+      when is_number(tolerance) do
+    left |> Native.equals_exact(other_ref(series, other), tolerance * 1.0) |> boolean_series()
+  end
+
+  @doc """
+  Exact equality of structure and coordinates, without tolerance; NaN coordinates are equal
+  to each other. Shapely `equals_identical`. Pairing, null and CRS rules are those of
+  `intersects/2`.
+  """
+  @spec geom_equals_identical(t(), other()) :: Series.t()
+  def geom_equals_identical(%__MODULE__{ref: left} = series, other) do
+    left |> Native.equals_identical(other_ref(series, other)) |> boolean_series()
+  end
+
+  @valid_query_predicates ~w(intersects within contains touches crosses overlaps covers
+                             covered_by geom_equals contains_properly dwithin)a
+
+  @doc """
+  The predicate names `sindex_query/4` (and `GeoFrame.GeoDataFrame.sjoin/3`) accept, like
+  GeoPandas `sindex.valid_query_predicates` (`:disjoint` is excluded, and GeoPandas' `nil`
+  default is spelled `:intersects`).
+  """
+  @spec sindex_valid_query_predicates() :: [atom()]
+  def sindex_valid_query_predicates, do: @valid_query_predicates
+
+  @doc """
+  Zero-based positions of the rows whose bounding box intersects `{minx, miny, maxx, maxy}`
+  (edges inclusive), in row order. Like GeoPandas `sindex.intersection(bounds)`: it is an
+  envelope test, not an exact intersection (see `cx/5` for that). Null and empty rows never
+  match. Raises `ArgumentError` for an inverted box. A linear scan over the bounds.
+  """
+  @spec sindex_intersection(t(), {number(), number(), number(), number()}) ::
+          [non_neg_integer()]
+  def sindex_intersection(%__MODULE__{ref: ref}, {minx, miny, maxx, maxy} = bbox)
+      when is_number(minx) and is_number(miny) and is_number(maxx) and is_number(maxy) do
+    ref
+    |> Native.bbox_intersection(
+      bbox
+      |> Tuple.to_list()
+      |> Enum.map(&(&1 * 1.0))
+      |> List.to_tuple()
+    )
+    |> unwrap!()
+  end
+
+  @doc """
+  Rows whose geometry intersects the box `xmin..xmax` by `ymin..ymax`, like GeoPandas
+  `s.cx[xmin:xmax, ymin:ymax]`.
+
+  A `nil` bound is unbounded: it takes the matching side of `total_bounds/1`. The test is the
+  exact `intersects/2` against the box polygon (touching the edge counts). Returns a
+  `GeoSeries` of the selected rows in their original order; null rows are dropped.
+
+  ## Example
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1 1)", "POINT (9 9)"])
+      iex> GeoFrame.GeoSeries.cx(s, 0, 0, 2, 2) |> GeoFrame.GeoSeries.to_wkt()
+      ["POINT(1 1)"]
+  """
+  @spec cx(t(), number() | nil, number() | nil, number() | nil, number() | nil) :: t()
+  def cx(%__MODULE__{} = series, xmin, ymin, xmax, ymax) do
+    take(series, cx_positions(series, xmin, ymin, xmax, ymax))
+  end
+
+  @doc """
+  The zero-based row positions `cx/5` selects, for aligning other data with the selection.
+  """
+  @spec cx_positions(t(), number() | nil, number() | nil, number() | nil, number() | nil) ::
+          [non_neg_integer()]
+  def cx_positions(%__MODULE__{} = series, xmin, ymin, xmax, ymax) do
+    {bx0, by0, bx1, by1} = total_bounds(series) || {nil, nil, nil, nil}
+    box = {xmin || bx0, ymin || by0, xmax || bx1, ymax || by1}
+
+    cond do
+      # no non-empty geometry to take the unbounded sides from, so nothing can intersect
+      Tuple.to_list(box) |> Enum.any?(&is_nil/1) ->
+        []
+
+      not valid_box?(box) ->
+        raise ArgumentError,
+              "invalid box: expected xmin <= xmax and ymin <= ymax, got " <>
+                inspect({xmin, ymin, xmax, ymax})
+
+      true ->
+        positions_intersecting(series, box)
+    end
+  end
+
+  defp valid_box?({x0, y0, x1, y1}), do: x0 <= x1 and y0 <= y1
+
+  defp positions_intersecting(series, {x0, y0, x1, y1}) do
+    series
+    |> intersects(box_wkt(x0, y0, x1, y1))
+    |> Series.to_list()
+    |> Enum.with_index()
+    |> Enum.flat_map(fn
+      {true, index} -> [index]
+      _ -> []
+    end)
+  end
+
+  defp box_wkt(x0, y0, x1, y1) do
+    [a, b, c, d] = Enum.map([x0, y0, x1, y1], &wkt_number/1)
+    "POLYGON ((#{a} #{b}, #{c} #{b}, #{c} #{d}, #{a} #{d}, #{a} #{b}))"
+  end
+
+  defp wkt_number(value),
+    do: :erlang.float_to_binary(value * 1.0, [{:decimals, 17}, :compact])
+
+  @doc """
+  Appends the rows of several series in order, like `pandas.concat` on GeoSeries.
+
+  Every series must have the same CRS (both unset counts as equal); a mismatch or an empty
+  list raises `ArgumentError`.
+  """
+  @spec concat([t()]) :: t()
+  def concat([_ | _] = series) do
+    unless Enum.all?(series, &match?(%__MODULE__{}, &1)) do
+      raise ArgumentError, "concat expects only GeoSeries, got: #{inspect(series)}"
+    end
+
+    series
+    |> Enum.map(& &1.ref)
+    |> Native.concat()
+    |> wrap()
+    |> unwrap!()
+  end
+
+  def concat(other),
+    do:
+      raise(ArgumentError, "concat expects a non-empty list of GeoSeries, got: #{inspect(other)}")
 
   # -- binary set operations ------------------------------------------------------------
 

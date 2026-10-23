@@ -45,6 +45,8 @@ pub enum Predicate {
     CoveredBy,
     /// Topological equality: same point set regardless of vertex order or start vertex.
     Equals,
+    /// Contains with no boundary contact: DE-9IM `T**FF*FF*`.
+    ContainsProperly,
 }
 
 impl Predicate {
@@ -61,9 +63,40 @@ impl Predicate {
             "covers" => Self::Covers,
             "covered_by" => Self::CoveredBy,
             "geom_equals" => Self::Equals,
+            "contains_properly" => Self::ContainsProperly,
             _ => return None,
         })
     }
+}
+
+/// DE-9IM pattern of `contains_properly`: interiors meet, nothing of `other` touches the
+/// boundary or exterior of `self`.
+const CONTAINS_PROPERLY: &str = "T**FF*FF*";
+
+/// Checks that `pattern` is nine characters of `T F * 0 1 2` (case-insensitive).
+pub(crate) fn validate_pattern(pattern: &str) -> Result<(), String> {
+    let valid = pattern.chars().count() == 9
+        && pattern
+            .chars()
+            .all(|c| matches!(c.to_ascii_uppercase(), 'T' | 'F' | '*' | '0' | '1' | '2'));
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid DE-9IM pattern {pattern:?}: expected 9 characters from T, F, *, 0, 1, 2"
+        ))
+    }
+}
+
+/// Whether a nine-character DE-9IM `code` satisfies a validated `pattern`.
+fn pattern_matches(code: &str, pattern: &str) -> bool {
+    code.chars()
+        .zip(pattern.chars())
+        .all(|(actual, wanted)| match wanted.to_ascii_uppercase() {
+            '*' => true,
+            'T' => actual != 'F',
+            other => actual == other,
+        })
 }
 
 /// A DE-9IM matrix read in the order (left row geometry, right geometry).
@@ -86,6 +119,7 @@ impl De9im {
             Predicate::Crosses => m.is_crosses(),
             Predicate::Overlaps => m.is_overlaps(),
             Predicate::Equals => m.is_equal_topo(),
+            Predicate::ContainsProperly => pattern_matches(&self.code(), CONTAINS_PROPERLY),
             Predicate::Contains if t => m.is_within(),
             Predicate::Contains => m.is_contains(),
             Predicate::Within if t => m.is_contains(),
@@ -268,6 +302,16 @@ impl GeoColumn {
             .into_iter()
             .map(|d| d.map(|d| d <= limit))
             .collect())
+    }
+
+    /// Whether each pair's DE-9IM matrix matches `pattern` (`T F * 0 1 2`, nine characters).
+    pub fn relate_pattern(
+        &self,
+        other: &GeoColumn,
+        pattern: &str,
+    ) -> Result<Vec<Option<bool>>, String> {
+        validate_pattern(pattern)?;
+        self.relate_pairs(other, |m| pattern_matches(&m.code(), pattern))
     }
 
     /// The DE-9IM string (`"212101212"`) relating each pair, left geometry first.

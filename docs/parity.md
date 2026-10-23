@@ -94,12 +94,12 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | `covers` | no | `covers/2` | ✅ | |
 | `covered_by` | no | `covered_by/2` | ✅ | |
 | `geom_equals` | no | `geom_equals/2` | ✅ | topological equality |
-| `geom_equals_exact` | no | — | ❌ | tolerance coordinate compare; easy |
-| `geom_equals_identical` | no | — | ❌ | easy |
-| `contains_properly` | no | — | ❌ | geo has `contains_properly` module; verify trait |
+| `geom_equals_exact` | no | `geom_equals_exact/3` | ✅ | structure + vertex order, planar tolerance (inclusive) |
+| `geom_equals_identical` | no | `geom_equals_identical/2` | ✅ | exact coordinates, NaN equals NaN |
+| `contains_properly` | no | `contains_properly/2` | ✅ | DE-9IM `T**FF*FF*`; also a `sindex_query`/`sjoin` predicate |
 | `dwithin` | no | `dwithin/2,3` | ✅ | planar |
 | `relate` | no | `relate/2` | ✅ | DE-9IM string |
-| `relate_pattern` | no | — | ❌ | easy on top of `relate` (pattern match in Rust or Elixir) |
+| `relate_pattern` | no | `relate_pattern/3` | ✅ | validated 9-char pattern (`T F * 0 1 2`, case-insensitive) |
 | `align=` parameter on all binary ops | — | — | ⛔ | pandas index alignment; GeoFrame pairs by position |
 
 ## 5. Set-theoretic / overlay
@@ -205,12 +205,12 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | `sindex` / `has_sindex` | no | (internal rstar) | ⛔ | built per call, not a persistent object |
 | `sindex.query` | no | `sindex_query/4` | 🟡 | returns `{left_idx, right_idx}`; predicates incl. `:dwithin` w/ `:distance`; no `sort`, no single-geometry/array-of-geometry input mode |
 | `sindex.nearest` | no | `sindex_nearest/3` | ✅ | `:max_distance`, `:exclusive`, returns distances |
-| `sindex.intersection` (bbox) | no | — | ❌ | bbox-only query; easy via rstar |
-| `sindex.valid_query_predicates` | no | — | ❌ | trivial constant |
+| `sindex.intersection` (bbox) | no | `sindex_intersection/2` | ✅ | envelope test, linear scan over bounds (no persistent tree) |
+| `sindex.valid_query_predicates` | no | `sindex_valid_query_predicates/0` | ✅ | list of atoms; `:disjoint` excluded |
 | `sindex.size`, `sindex.is_empty` | no | — | ⛔ | no persistent index object |
 | `sjoin` | no | `sjoin/3` | ✅ | `how` inner/left/right, `predicate`, `distance`, suffixes |
 | `sjoin_nearest` | no | `sjoin_nearest/3` | ✅ | `max_distance`, `distance_col`, `exclusive`, `how` |
-| `GeoSeries.cx` / `GeoDataFrame.cx` | no | `read_flatgeobuf(bbox:)` only | ❌ | coordinate indexer; add `bbox_filter`/`cx`-like function |
+| `GeoSeries.cx` / `GeoDataFrame.cx` | no | `GeoSeries.cx/5`, `GeoDataFrame.cx/5` (+ `read_flatgeobuf(bbox:)`) | ✅ | `nil` bound = unbounded; exact `intersects` against the box |
 
 ## 12. GeoDataFrame specifics
 
@@ -231,7 +231,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | `dissolve`, `sjoin`, `sjoin_nearest` | no | ✅/🟡 | see §9/§11 | |
 | `clip`, `overlay` | no | — | ❌ | |
 | pandas ops (`head`, `tail`, `take`, `select`, `rename`, filter, sort, mutate) | polars | `head`, `tail`, `take`, `slice`, `select`, `rename`, `filter_with`, `sort_with`, `mutate_with` | ✅ | wraps Explorer; GDF-level delegation exists for `area`, `length`, `bounds`, `centroid` only; others via `gdf.geometry` |
-| index/merge/groupby/apply/concat of GDFs | polars | — | 🟡 | concat/merge/join of GDFs missing (only through Explorer on `.data`); `concat` is a likely gap |
+| index/merge/groupby/apply/concat of GDFs | polars | `GeoFrame.concat/1`, `GeoDataFrame.concat_rows/1`, `GeoSeries.concat/1` | 🟡 | row-wise concat done (CRS and geometry column must match); merge/join of GDFs missing (only through Explorer on `.data`) |
 
 ## 13. I/O
 
@@ -274,8 +274,8 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `testing.assert_geoseries_equal` | — | — | ❌ | add `GeoFrame.Testing`: exact/`check_less_precise`, `check_crs`; uses `geom_equals`/`geom_equals_exact` |
-| `testing.assert_geodataframe_equal` | — | — | ❌ | same |
+| `testing.assert_geoseries_equal` | — | `GeoFrame.Testing.assert_geoseries_equal/3` | ✅ | topological by default, `check_less_precise` uses exact with 1e-6; `check_crs`, `check_geom_type`, `normalize` |
+| `testing.assert_geodataframe_equal` | — | `GeoFrame.Testing.assert_geodataframe_equal/3` | ✅ | adds `check_dtype`; column order must match |
 
 ## 17. GeoPolars-only members not covered elsewhere
 
@@ -361,4 +361,4 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 `plot` (use Kino map), `geocode`/`reverse_geocode`, pandas index alignment (`align=`), `iterfeatures`, Shapely object constructors, persistent `sindex` object, arbitrary-callback `transform`, deprecated `unary_union`.
 
 ---
-Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 70, '🟡': 29, '❌': 85, '⛔': 15}
+Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 79, '🟡': 29, '❌': 76, '⛔': 15}

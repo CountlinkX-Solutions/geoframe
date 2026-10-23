@@ -288,6 +288,53 @@ defmodule GeoFrame.GeoDataFrame do
     end)
   end
 
+  @doc """
+  Rows whose geometry intersects the box, like GeoPandas `gdf.cx[xmin:xmax, ymin:ymax]`.
+  `nil` bounds are unbounded; see `GeoFrame.GeoSeries.cx/5`. Attributes stay aligned.
+  """
+  @spec cx(t(), number() | nil, number() | nil, number() | nil, number() | nil) :: t()
+  def cx(%__MODULE__{geometry: geometry} = gdf, xmin, ymin, xmax, ymax) do
+    take(gdf, GeoSeries.cx_positions(geometry, xmin, ymin, xmax, ymax))
+  end
+
+  @doc """
+  Stacks frames row-wise, like `pandas.concat`/`GeoDataFrame` concatenation.
+
+  Attribute columns follow `Explorer.DataFrame.concat_rows/1` (same names and compatible
+  dtypes, else it raises). Every frame must use the same geometry column name and CRS, or
+  `ArgumentError` is raised. The CRS check runs before any data is copied.
+  """
+  @spec concat_rows([t()]) :: t()
+  def concat_rows([%__MODULE__{geometry_column: column} | _] = frames) do
+    unless Enum.all?(frames, &match?(%__MODULE__{geometry_column: ^column}, &1)) do
+      raise ArgumentError,
+            "all frames must use the same geometry column name (#{inspect(column)})"
+    end
+
+    geometry = frames |> Enum.map(& &1.geometry) |> GeoSeries.concat()
+
+    data =
+      case Enum.filter(frames, &has_columns?(&1.data)) do
+        [] ->
+          DataFrame.new([])
+
+        with_columns when Kernel.length(with_columns) == Kernel.length(frames) ->
+          DataFrame.concat_rows(Enum.map(frames, & &1.data))
+
+        _ ->
+          raise ArgumentError, "cannot concatenate frames with and without attribute columns"
+      end
+
+    new(data, geometry, geometry_column: column)
+  end
+
+  def concat_rows(other),
+    do:
+      raise(
+        ArgumentError,
+        "concat_rows expects a non-empty list of GeoDataFrames, got: #{inspect(other)}"
+      )
+
   @doc "Spatial join; see `GeoFrame.SpatialJoin.sjoin/3`."
   @spec sjoin(t(), t(), keyword()) :: t()
   defdelegate sjoin(left, right, opts \\ []), to: GeoFrame.SpatialJoin
