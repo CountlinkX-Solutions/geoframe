@@ -3,8 +3,8 @@
 
 use geoframe_core::{
     read_flatgeobuf, read_geojson, read_geojson_str, read_geoparquet, write_flatgeobuf,
-    write_geojson, write_geoparquet, BufferOptions, GeoColumn, NearestPairs, Origin, Predicate,
-    QueryPredicate, SetOp, UnaryOp, VectorRead,
+    write_geojson, write_geoparquet, BufferOptions, GeoColumn, GridFeature, GridType, NearestPairs,
+    Origin, Predicate, QueryPredicate, SetOp, UnaryOp, VectorRead,
 };
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
@@ -681,6 +681,94 @@ fn shortest_line(left: Handle, right: Handle) -> Result<Handle, String> {
 #[rustler::nif(schedule = "DirtyCpu")]
 fn line_merge(column: Handle, directed: bool) -> Result<Handle, String> {
     column.0.line_merge(directed).map(wrap)
+}
+
+// -- batch E: constructive geometry ----------------------------------------------------
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn concave_hull(column: Handle, ratio: f64, allow_holes: bool) -> Result<Handle, String> {
+    column.0.concave_hull(ratio, allow_holes).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn minimum_rotated_rectangle(column: Handle) -> Result<Handle, String> {
+    column.0.minimum_rotated_rectangle().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn minimum_bounding_circle(column: Handle) -> Result<Handle, String> {
+    column.0.minimum_bounding_circle().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn minimum_bounding_radius(column: Handle) -> Vec<Option<f64>> {
+    column.0.minimum_bounding_radius()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn maximum_inscribed_circle(column: Handle, tolerance: Option<f64>) -> Result<Handle, String> {
+    column.0.maximum_inscribed_circle(tolerance).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn delaunay_triangles(column: Handle, tolerance: f64, only_edges: bool) -> Result<Handle, String> {
+    column.0.delaunay_triangles(tolerance, only_edges).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn constrained_delaunay_triangles(column: Handle) -> Result<Handle, String> {
+    column.0.constrained_delaunay_triangles().map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn voronoi_polygons(
+    column: Handle,
+    tolerance: f64,
+    extend_to: Option<Handle>,
+    only_edges: bool,
+    ordered: bool,
+) -> Result<Handle, String> {
+    column
+        .0
+        .voronoi_polygons(
+            tolerance,
+            extend_to.as_ref().map(|h| &h.0),
+            only_edges,
+            ordered,
+        )
+        .map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn sample_points(column: Handle, sizes: Vec<usize>, seed: Option<u64>) -> Result<Handle, String> {
+    column.0.sample_points(&sizes, seed).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn make_grid(
+    column: Handle,
+    cell_size: f64,
+    grid_type: String,
+    feature_type: String,
+    offset: Option<(f64, f64)>,
+    intersect: bool,
+    flat_topped: bool,
+) -> Result<Handle, String> {
+    let grid_type =
+        GridType::from_name(&grid_type).ok_or_else(|| format!("unknown grid_type: {grid_type}"))?;
+    let feature = GridFeature::from_name(&feature_type)
+        .ok_or_else(|| format!("unknown feature_type: {feature_type}"))?;
+    column
+        .0
+        .make_grid(
+            cell_size,
+            grid_type,
+            feature,
+            offset,
+            intersect,
+            flat_topped,
+        )
+        .map(wrap)
 }
 
 #[rustler::nif]

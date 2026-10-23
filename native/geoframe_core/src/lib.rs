@@ -12,6 +12,7 @@ mod noding;
 mod parity_a;
 mod parity_b;
 mod parity_c;
+mod parity_e;
 mod parity_f;
 mod parity_h;
 mod parquet_io;
@@ -25,6 +26,7 @@ pub use attributes::VectorRead;
 pub use column::GeoColumn;
 pub use flatgeobuf_io::{read_flatgeobuf, write_flatgeobuf};
 pub use geojson_io::{read_geojson, read_geojson_str, write_geojson};
+pub use parity_e::{GridFeature, GridType};
 pub use parquet_io::{read_geoparquet, write_geoparquet, GeoParquetRead};
 pub use predicates::Predicate;
 pub use reproject::{crs_is_geographic, normalize_crs};
@@ -44,6 +46,8 @@ mod parity_a_tests;
 mod parity_b_tests;
 #[cfg(test)]
 mod parity_c_tests;
+#[cfg(test)]
+mod parity_e_tests;
 #[cfg(test)]
 mod parity_f_tests;
 #[cfg(test)]
