@@ -1070,6 +1070,22 @@ fn minimum_clearance_line(column: Handle) -> Result<Handle, String> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn polygonize(column: Handle, node: bool) -> Result<(Handle, Handle, Handle, Handle), String> {
+    let out = column.0.polygonize(node)?;
+    Ok((
+        wrap(out.polygons),
+        wrap(out.cuts),
+        wrap(out.dangles),
+        wrap(out.invalid),
+    ))
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn build_area(column: Handle, node: bool) -> Result<Handle, String> {
+    column.0.build_area(node).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn offset_curve(
     column: Handle,
     distances: Vec<Option<f64>>,

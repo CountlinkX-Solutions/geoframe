@@ -215,4 +215,83 @@ defmodule GeoFrame.ParityJTest do
       end
     end
   end
+
+  describe "polygonize/2" do
+    test "returns one polygon per face of the linework" do
+      series =
+        s([
+          "LINESTRING (0 0, 4 4)",
+          "LINESTRING (0 4, 4 0)",
+          "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)"
+        ])
+
+      result = GeoSeries.polygonize(series)
+
+      assert GeoSeries.size(result) == 4
+      assert result |> GeoSeries.area() |> list() == [4.0, 4.0, 4.0, 4.0]
+      assert result |> GeoSeries.geom_type() |> list() == List.duplicate("Polygon", 4)
+    end
+
+    test "full: true also returns cut edges, dangles and invalid rings" do
+      series =
+        s([
+          "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)",
+          "LINESTRING (4 2, 6 2)",
+          "LINESTRING (0 2, 2 2)",
+          "LINESTRING (6 2, 8 2, 8 4, 6 4, 6 2)"
+        ])
+
+      {polygons, cuts, dangles, invalid} = GeoSeries.polygonize(series, full: true)
+
+      assert GeoSeries.size(polygons) == 2
+      assert GeoSeries.to_wkt(cuts) == ["LINESTRING(4 2,6 2)"]
+      assert GeoSeries.to_wkt(dangles) == ["LINESTRING(0 2,2 2)"]
+      assert GeoSeries.size(invalid) == 0
+    end
+
+    test "node: false takes the lines as they are" do
+      series = s(["LINESTRING (0 0, 4 4, 4 0, 0 4, 0 0)"])
+
+      {polygons, _cuts, _dangles, invalid} = GeoSeries.polygonize(series, node: false, full: true)
+      assert GeoSeries.size(polygons) == 0
+      assert GeoSeries.size(invalid) == 1
+      assert GeoSeries.size(GeoSeries.polygonize(series)) == 2
+    end
+
+    test "keeps the CRS and ignores null rows and non-lines" do
+      series = s(["LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)", nil, "POINT (1 1)"], crs: "EPSG:4326")
+      result = GeoSeries.polygonize(series)
+      assert GeoSeries.size(result) == 1
+      assert GeoSeries.crs(result) == "EPSG:4326"
+    end
+
+    test "rejects unknown options" do
+      assert_raise ArgumentError, fn -> GeoSeries.polygonize(s(["POINT (0 0)"]), bogus: 1) end
+    end
+  end
+
+  describe "build_area/2" do
+    test "turns an inner ring into a hole" do
+      series =
+        s(["LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)", "LINESTRING (2 2, 4 2, 4 4, 2 4, 2 2)"])
+
+      result = GeoSeries.build_area(series)
+      assert GeoSeries.size(result) == 1
+      assert result |> GeoSeries.area() |> list() == [96.0]
+    end
+
+    test "merges faces that share an edge and ignores points" do
+      series =
+        s([
+          "LINESTRING (0 0, 4 4)",
+          "LINESTRING (0 4, 4 0)",
+          "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)",
+          "POINT (9 9)"
+        ])
+
+      result = GeoSeries.build_area(series)
+      assert result |> GeoSeries.area() |> list() == [16.0]
+      assert GeoSeries.size(GeoSeries.build_area(s(["POINT (0 0)"]))) == 0
+    end
+  end
 end

@@ -1482,6 +1482,65 @@ defmodule GeoFrame.GeoSeries do
     left |> Native.shared_paths(other_ref(series, other)) |> wrap() |> unwrap!()
   end
 
+  @doc """
+  Polygons formed by the linework of the whole series (GeoPandas `polygonize`).
+
+  All geometries are used together and only their lines and rings count (points are ignored,
+  null rows skipped). Lines that do not close a polygon are left out. The result has one row
+  per polygon, in no particular order, shells clockwise and holes counter-clockwise like
+  GEOS; a polygon lying inside another's hole is a polygon of its own.
+
+  Options:
+
+    * `:node` - `true` (default) merges the polygons of the input, drops lines inside them and
+      nodes the linework (splits it wherever lines cross or touch) first; `false` takes every
+      line as one edge from its first to its last vertex, so crossings that are not vertices
+      of both lines are ignored.
+    * `:full` - `true` returns `{polygons, cuts, dangles, invalid_rings}`, four series: the
+      polygons, the edges that join two parts of the linework (cut edges), the edges that end
+      in a dead end (dangles), and the rings that cross themselves.
+
+  Raises when the noding needs over 50,000,000 segment pairs. Deviation: the collinear
+  vertices at which merged input polygons met are dropped (see `docs/parity.md`).
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)", "LINESTRING (0 0, 4 4)"])
+      iex> s |> GeoFrame.GeoSeries.polygonize() |> GeoFrame.GeoSeries.size()
+      2
+  """
+  @spec polygonize(t(), keyword()) :: t() | {t(), t(), t(), t()}
+  def polygonize(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, node: true, full: false)
+
+    {polygons, cuts, dangles, invalid} =
+      ref |> Native.polygonize(opts[:node] == true) |> unwrap!()
+
+    polygons = %__MODULE__{ref: polygons}
+
+    if opts[:full] == true do
+      {polygons, %__MODULE__{ref: cuts}, %__MODULE__{ref: dangles}, %__MODULE__{ref: invalid}}
+    else
+      polygons
+    end
+  end
+
+  @doc """
+  The area enclosed by the linework of the whole series, even-odd (GeoPandas `build_area`):
+  polygons as `polygonize/2` finds them, but a ring inside a ring becomes a hole, a ring inside
+  that an island again, and polygons sharing an edge merge. All geometries are used together;
+  the result has one row per polygon (none when the linework encloses nothing).
+
+  Option `:node` as for `polygonize/2`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0, 10 10, 0 10, 0 0)", "LINESTRING (2 2, 4 2, 4 4, 2 4, 2 2)"])
+      iex> s |> GeoFrame.GeoSeries.build_area() |> GeoFrame.GeoSeries.area() |> Explorer.Series.to_list()
+      [96.0]
+  """
+  @spec build_area(t(), keyword()) :: t()
+  def build_area(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, node: true)
+    ref |> Native.build_area(opts[:node] == true) |> wrap() |> unwrap!()
+  end
+
   @max_quad_segs 10_000
 
   @doc """
@@ -1556,7 +1615,7 @@ defmodule GeoFrame.GeoSeries do
     ref
     |> Native.minimum_clearance()
     |> Enum.map(fn
-      value when is_float(value) and value >= 1.7976931348623157e308 -> :infinity
+      value when is_float(value) and value > 1.0e300 -> :infinity
       value -> value
     end)
     |> float_series()

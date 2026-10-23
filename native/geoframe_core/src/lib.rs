@@ -25,6 +25,7 @@ mod parity_h;
 mod parity_i;
 mod parity_j;
 mod parquet_io;
+mod polygonize;
 mod predicates;
 mod projjson;
 mod reproject;
@@ -54,6 +55,7 @@ pub use parquet_io::{
     geoparquet_metadata, read_geoparquet, read_geoparquet_filtered, write_geoparquet,
     write_geoparquet_with, GeoParquetRead, ParquetOptions,
 };
+pub use polygonize::Polygonized;
 pub use predicates::Predicate;
 pub use reproject::{crs_equivalent, crs_is_geographic, normalize_crs};
 pub use set_ops::SetOp;
@@ -95,6 +97,8 @@ mod parity_i_tests;
 mod parity_j_tests;
 #[cfg(test)]
 mod parquet_tests;
+#[cfg(test)]
+mod polygonize_tests;
 #[cfg(test)]
 mod predicates_tests;
 #[cfg(test)]
