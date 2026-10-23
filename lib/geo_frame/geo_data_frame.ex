@@ -1,0 +1,338 @@
+defmodule GeoFrame.GeoDataFrame do
+  @moduledoc """
+  A dataframe of attributes paired with a geometry column.
+
+  A `%GeoDataFrame{}` holds an `Explorer.DataFrame` with the attribute columns only and a
+  `GeoFrame.GeoSeries` with the geometries, which live in Rust memory. The geometry column
+  is *not* part of the Explorer dataframe; it has a name (`:geometry_column`, default
+  `"geometry"`) that is reserved among the attribute names.
+
+  ## Row alignment
+
+  Every operation that changes rows computes the row positions once and applies them to
+  both sides (`GeoSeries.take/2` and `Explorer.DataFrame.slice/2`), so attribute and
+  geometry rows can never drift apart. `filter_with/2` and `sort_with/2` add a temporary
+  row-position column to the attributes, let Explorer do the work, read the resulting
+  positions back, and remove the column again. The temporary column is invisible in the
+  result, and its name is chosen so that it cannot collide with an existing column.
+
+  ## Column order
+
+  `names/1`, `to_explorer/2`, and the `Table.Reader` view list the attribute columns in
+  their dataframe order and the geometry column last.
+
+  ## Example
+
+      iex> data = Explorer.DataFrame.new(id: [1, 2])
+      iex> geometry = GeoFrame.GeoSeries.from_wkt!(["POINT (0 0)", "POINT (5 5)"])
+      iex> gdf = GeoFrame.GeoDataFrame.new(data, geometry)
+      iex> GeoFrame.GeoDataFrame.names(gdf)
+      ["id", "geometry"]
+  """
+
+  alias Explorer.DataFrame
+  alias Explorer.Series
+  alias GeoFrame.GeoSeries
+
+  @enforce_keys [:data, :geometry]
+  defstruct [:data, :geometry, geometry_column: "geometry"]
+
+  @type t :: %__MODULE__{
+          data: DataFrame.t(),
+          geometry: GeoSeries.t(),
+          geometry_column: String.t()
+        }
+
+  @temp_index "__geoframe_row__"
+  @preview_rows 5
+
+  # -- constructors ---------------------------------------------------------------------
+
+  @doc """
+  Pairs an attribute dataframe with a geometry series.
+
+  Options: `:geometry_column` - the geometry column name (default `"geometry"`).
+
+  Raises `ArgumentError` when row counts differ or `data` already has a column with the
+  geometry column's name. A `data` without columns is accepted for any row count.
+  """
+  @spec new(DataFrame.t(), GeoSeries.t(), keyword()) :: t()
+  def new(%DataFrame{} = data, %GeoSeries{} = geometry, opts \\ []) do
+    column = opts |> Keyword.get(:geometry_column, "geometry") |> to_string()
+    rows = GeoSeries.size(geometry)
+
+    if has_columns?(data) and DataFrame.n_rows(data) != rows do
+      raise ArgumentError,
+            "data has #{DataFrame.n_rows(data)} rows but geometry has #{rows} rows"
+    end
+
+    if column in DataFrame.names(data) do
+      raise ArgumentError, "data already has a column named #{inspect(column)} (geometry column)"
+    end
+
+    %__MODULE__{data: data, geometry: geometry, geometry_column: column}
+  end
+
+  @doc """
+  Moves a WKT string column of `df` into the geometry.
+
+  The geometry column keeps the source column's name unless `:geometry_column` is given.
+  Options: `:crs`, `:geometry_column`.
+  """
+  @spec from_wkt(DataFrame.t(), String.t(), keyword()) :: {:ok, t()} | {:error, String.t()}
+  def from_wkt(%DataFrame{} = df, column, opts \\ []), do: build(df, column, opts, :wkt)
+
+  @doc "Like `from_wkt/3` but raises `ArgumentError` on failure."
+  @spec from_wkt!(DataFrame.t(), String.t(), keyword()) :: t()
+  def from_wkt!(df, column, opts \\ []), do: df |> from_wkt(column, opts) |> unwrap!()
+
+  @doc "Moves a WKB binary column of `df` into the geometry. Same options as `from_wkt/3`."
+  @spec from_wkb(DataFrame.t(), String.t(), keyword()) :: {:ok, t()} | {:error, String.t()}
+  def from_wkb(%DataFrame{} = df, column, opts \\ []), do: build(df, column, opts, :wkb)
+
+  @doc "Like `from_wkb/3` but raises `ArgumentError` on failure."
+  @spec from_wkb!(DataFrame.t(), String.t(), keyword()) :: t()
+  def from_wkb!(df, column, opts \\ []), do: df |> from_wkb(column, opts) |> unwrap!()
+
+  defp build(df, column, opts, encoding) do
+    column = to_string(column)
+
+    if column in DataFrame.names(df) do
+      values = df |> DataFrame.pull(column) |> Series.to_list()
+      parse = if encoding == :wkt, do: &GeoSeries.from_wkt/2, else: &GeoSeries.from_wkb/2
+
+      with {:ok, geometry} <- parse.(values, crs: Keyword.get(opts, :crs)) do
+        data = DataFrame.discard(df, column)
+        geometry_column = Keyword.get(opts, :geometry_column, column)
+        {:ok, new(data, geometry, geometry_column: geometry_column)}
+      end
+    else
+      {:error, "column #{inspect(column)} not found"}
+    end
+  end
+
+  # -- accessors ------------------------------------------------------------------------
+
+  @doc "The attribute dataframe (without geometry)."
+  @spec data(t()) :: DataFrame.t()
+  def data(%__MODULE__{data: data}), do: data
+
+  @doc "The geometry series."
+  @spec geometry(t()) :: GeoSeries.t()
+  def geometry(%__MODULE__{geometry: geometry}), do: geometry
+
+  @doc "Number of rows."
+  @spec n_rows(t()) :: non_neg_integer()
+  def n_rows(%__MODULE__{geometry: geometry}), do: GeoSeries.size(geometry)
+
+  @doc "Attribute column names followed by the geometry column name."
+  @spec names(t()) :: [String.t()]
+  def names(%__MODULE__{data: data, geometry_column: column}) do
+    DataFrame.names(data) ++ [column]
+  end
+
+  @doc "The CRS of the geometry, or `nil`."
+  @spec crs(t()) :: String.t() | nil
+  def crs(%__MODULE__{geometry: geometry}), do: GeoSeries.crs(geometry)
+
+  @doc "Replaces the CRS metadata without reprojecting."
+  @spec set_crs(t(), String.t() | nil) :: t()
+  def set_crs(%__MODULE__{geometry: geometry} = gdf, crs) do
+    %{gdf | geometry: GeoSeries.set_crs(geometry, crs)}
+  end
+
+  # -- row-changing operations ----------------------------------------------------------
+
+  @doc "Selects rows by zero-based position; repeats and reordering are allowed."
+  @spec take(t(), [non_neg_integer()]) :: t()
+  def take(%__MODULE__{data: data, geometry: geometry} = gdf, indices) when is_list(indices) do
+    data = if has_columns?(data), do: DataFrame.slice(data, indices), else: data
+    %{gdf | data: data, geometry: GeoSeries.take(geometry, indices)}
+  end
+
+  @doc "Rows from `offset` for `length` rows, with `Explorer.DataFrame.slice/3` semantics."
+  @spec slice(t(), integer(), non_neg_integer()) :: t()
+  def slice(gdf, offset, length) when is_integer(offset) and is_integer(length) do
+    by_positions(gdf, &DataFrame.slice(&1, offset, length))
+  end
+
+  @doc "The first `n` rows (default 5)."
+  @spec head(t(), non_neg_integer()) :: t()
+  def head(gdf, n \\ 5), do: by_positions(gdf, &DataFrame.head(&1, n))
+
+  @doc "The last `n` rows (default 5)."
+  @spec tail(t(), non_neg_integer()) :: t()
+  def tail(gdf, n \\ 5), do: by_positions(gdf, &DataFrame.tail(&1, n))
+
+  @doc """
+  Keeps rows for which `fun` is true, like `Explorer.DataFrame.filter_with/2`.
+
+  `fun` receives the attribute dataframe (as a lazy dataframe) and returns a boolean
+  lazy series. The geometry is filtered by the same row positions.
+  """
+  @spec filter_with(t(), (DataFrame.t() -> Series.t())) :: t()
+  def filter_with(%__MODULE__{} = gdf, fun) when is_function(fun, 1) do
+    by_positions(gdf, &DataFrame.filter_with(&1, fun), gdf.data)
+  end
+
+  @doc """
+  Sorts rows like `Explorer.DataFrame.sort_with/3`; `opts` are passed through.
+  """
+  @spec sort_with(t(), (DataFrame.t() -> term()), keyword()) :: t()
+  def sort_with(%__MODULE__{} = gdf, fun, opts \\ []) when is_function(fun, 1) do
+    by_positions(gdf, &DataFrame.sort_with(&1, fun, opts), gdf.data)
+  end
+
+  # Runs `op` on a dataframe carrying a temporary row-position column and applies the
+  # resulting positions to both sides. `source` is the attribute data `op` should see;
+  # for position-only operations it is a bare position frame.
+  defp by_positions(%__MODULE__{data: data} = gdf, op, source \\ nil) do
+    rows = n_rows(gdf)
+    column = temp_column(DataFrame.names(data))
+    positions = Series.from_list(Enum.to_list(0..(rows - 1)//1), dtype: {:s, 64})
+
+    base =
+      if source && has_columns?(source),
+        do: DataFrame.put(source, column, positions),
+        else: DataFrame.new([{column, positions}])
+
+    indices = base |> op.() |> DataFrame.pull(column) |> Series.to_list()
+    take(gdf, indices)
+  end
+
+  defp temp_column(names) do
+    Enum.reduce_while(Stream.iterate(0, &(&1 + 1)), nil, fn n, _ ->
+      name = if n == 0, do: @temp_index, else: "#{@temp_index}#{n}"
+      if name in names, do: {:cont, nil}, else: {:halt, name}
+    end)
+  end
+
+  # -- attribute operations -------------------------------------------------------------
+
+  @doc """
+  Adds or replaces attribute columns via `Explorer.DataFrame.mutate_with/2`.
+
+  Raises `ArgumentError` if the result would contain the geometry column's name.
+  """
+  @spec mutate_with(t(), (DataFrame.t() -> keyword() | map())) :: t()
+  def mutate_with(%__MODULE__{data: data} = gdf, fun) when is_function(fun, 1) do
+    check_free!(DataFrame.mutate_with(data, fun), gdf)
+  end
+
+  @doc """
+  Selects attribute columns (anything `Explorer.DataFrame.select/2` accepts). The
+  geometry is always kept, and naming it in `columns` is harmless.
+  """
+  @spec select(t(), term()) :: t()
+  def select(%__MODULE__{data: data, geometry_column: geo} = gdf, columns) do
+    columns =
+      if is_list(columns) and Enum.all?(columns, &(is_binary(&1) or is_atom(&1))),
+        do: Enum.reject(columns, &(to_string(&1) == geo)),
+        else: columns
+
+    %{gdf | data: DataFrame.select(data, columns)}
+  end
+
+  @doc """
+  Renames attribute columns via `Explorer.DataFrame.rename/2`. Raises `ArgumentError` if a
+  new name equals the geometry column's name.
+  """
+  @spec rename(t(), term()) :: t()
+  def rename(%__MODULE__{data: data} = gdf, renames) do
+    check_free!(DataFrame.rename(data, renames), gdf)
+  end
+
+  defp check_free!(data, %__MODULE__{geometry_column: geo} = gdf) do
+    if geo in DataFrame.names(data) do
+      raise ArgumentError, "column #{inspect(geo)} is reserved for the geometry"
+    end
+
+    %{gdf | data: data}
+  end
+
+  # -- spatial measures -----------------------------------------------------------------
+
+  @doc "Planar area per row as a series."
+  @spec area(t()) :: Series.t()
+  def area(%__MODULE__{geometry: geometry}), do: GeoSeries.area(geometry)
+
+  @doc "Planar length (perimeter for polygons) per row as a series."
+  @spec length(t()) :: Series.t()
+  def length(%__MODULE__{geometry: geometry}), do: GeoSeries.length(geometry)
+
+  @doc "Per-row bounds as a dataframe (`minx`, `miny`, `maxx`, `maxy`)."
+  @spec bounds(t()) :: DataFrame.t()
+  def bounds(%__MODULE__{geometry: geometry}), do: GeoSeries.bounds(geometry)
+
+  @doc "Returns the frame with its geometry replaced by the centroids."
+  @spec centroid(t()) :: t()
+  def centroid(%__MODULE__{geometry: geometry} = gdf) do
+    %{gdf | geometry: GeoSeries.centroid(geometry)}
+  end
+
+  # -- conversion -----------------------------------------------------------------------
+
+  @doc """
+  Converts to an `Explorer.DataFrame` with the geometry as the last column.
+
+  Options: `:encoding` - `:wkb` (default, binary column) or `:wkt` (string column).
+  """
+  @spec to_explorer(t(), keyword()) :: DataFrame.t()
+  def to_explorer(
+        %__MODULE__{data: data, geometry: geometry, geometry_column: column},
+        opts \\ []
+      ) do
+    {values, dtype} =
+      case Keyword.get(opts, :encoding, :wkb) do
+        :wkb -> {GeoSeries.to_wkb(geometry), :binary}
+        :wkt -> {GeoSeries.to_wkt(geometry), :string}
+      end
+
+    series = Series.from_list(values, dtype: dtype)
+
+    if has_columns?(data),
+      do: DataFrame.put(data, column, series),
+      else: DataFrame.new([{column, series}])
+  end
+
+  @doc false
+  def preview(%__MODULE__{} = gdf), do: gdf |> head(@preview_rows) |> to_explorer(encoding: :wkt)
+
+  # -- helpers --------------------------------------------------------------------------
+
+  defp has_columns?(%DataFrame{} = data), do: DataFrame.names(data) != []
+
+  defp unwrap!({:ok, value}), do: value
+  defp unwrap!({:error, message}), do: raise(ArgumentError, message)
+
+  defimpl Table.Reader do
+    alias Explorer.DataFrame
+    alias Explorer.Series
+    alias GeoFrame.GeoDataFrame
+    alias GeoFrame.GeoSeries
+
+    def init(%GeoDataFrame{data: data, geometry: geometry} = gdf) do
+      attributes =
+        Enum.map(DataFrame.names(data), &(data |> DataFrame.pull(&1) |> Series.to_list()))
+
+      columns = attributes ++ [GeoSeries.to_wkt(geometry)]
+      {:columns, %{columns: GeoDataFrame.names(gdf), count: GeoDataFrame.n_rows(gdf)}, columns}
+    end
+  end
+
+  defimpl Inspect do
+    import Inspect.Algebra
+
+    alias GeoFrame.GeoDataFrame
+
+    def inspect(gdf, opts) do
+      header =
+        "#GeoFrame.GeoDataFrame<rows: #{GeoDataFrame.n_rows(gdf)}, " <>
+          "columns: #{Kernel.inspect(GeoDataFrame.names(gdf))}, " <>
+          "crs: #{Kernel.inspect(GeoDataFrame.crs(gdf))}"
+
+      preview = gdf |> GeoDataFrame.preview() |> to_doc(opts)
+      concat([header, line(), preview, ">"]) |> nest(2)
+    end
+  end
+end
