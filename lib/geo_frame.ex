@@ -53,6 +53,23 @@ defmodule GeoFrame do
   alias GeoFrame.Native
 
   @doc """
+  Concatenates a list of `GeoFrame.GeoSeries` or a list of `GeoFrame.GeoDataFrame` row-wise.
+
+  See `GeoFrame.GeoSeries.concat/1` and `GeoFrame.GeoDataFrame.concat_rows/1`. A list mixing
+  series and frames raises `ArgumentError`.
+  """
+  @spec concat([GeoSeries.t()] | [GeoDataFrame.t()]) :: GeoSeries.t() | GeoDataFrame.t()
+  def concat([%GeoSeries{} | _] = series), do: GeoSeries.concat(series)
+  def concat([%GeoDataFrame{} | _] = frames), do: GeoDataFrame.concat_rows(frames)
+
+  def concat(other),
+    do:
+      raise(
+        ArgumentError,
+        "concat expects a non-empty list of GeoSeries or of GeoDataFrames, got: #{inspect(other)}"
+      )
+
+  @doc """
   Alias of `GeoFrame.GeoSeries.from_xy/3` (GeoPandas `points_from_xy`).
   """
   @spec points_from_xy(
