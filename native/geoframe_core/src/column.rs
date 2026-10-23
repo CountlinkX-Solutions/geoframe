@@ -380,11 +380,14 @@ impl GeoColumn {
             .collect()
     }
 
-    /// GeoJSON geometry objects as JSON text, one per row; `None` for null rows and rows `geo`
-    /// cannot represent (the same policy as the measures). GeoJSON has no CRS member
-    /// (RFC 7946), so coordinates are emitted as stored.
+    /// GeoJSON geometry objects as JSON text, one per row; `None` for null rows and empty
+    /// points (GeoJSON cannot say them). Z is the third ordinate and M is dropped (RFC 7946).
+    /// GeoJSON has no CRS member, so coordinates are emitted as stored.
     pub fn to_geojson(&self) -> Vec<Option<String>> {
-        self.map_geo(|g| Some(geojson::Geometry::from(g).to_string()))
+        self.map_scalars(|scalar| crate::zm_io::geometry_to_geojson(scalar))
+            .into_iter()
+            .map(Option::flatten)
+            .collect()
     }
 
     /// Per-row `geo` geometry; `None` for null rows and rows `geo` cannot represent.

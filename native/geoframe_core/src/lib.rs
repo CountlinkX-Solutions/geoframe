@@ -37,6 +37,7 @@ mod sindex;
 mod unary;
 mod zm;
 mod zm_bridge;
+mod zm_io;
 mod zm_overlay;
 
 pub use arrow_io::{
@@ -124,6 +125,8 @@ mod test_support;
 mod tests;
 #[cfg(test)]
 mod unary_tests;
+#[cfg(test)]
+mod zm_io_tests;
 #[cfg(test)]
 mod zm_ops_tests;
 #[cfg(test)]

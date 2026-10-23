@@ -13,6 +13,10 @@
 //!   JSON text; scalars in a mixed column are stored as their JSON text (`true`, `7`).
 //!   A property that is `null` everywhere becomes an all-null `Utf8` column.
 //! * **Column order** is the order in which properties are first seen.
+//! * **Z**: a position with three or more values gives the geometry a Z ordinate (RFC 7946);
+//!   values past the third are ignored, as GDAL does. Positions with two values inside such a
+//!   geometry (or members of a collection with fewer) get a NaN Z, so the geometry keeps one
+//!   dimension where GDAL would fill zeros. M has no GeoJSON form.
 //! * **Feature `id`**: when every feature has one (string or number) and no property is
 //!   named `id`, it becomes a leading `id` column.
 //! * **CRS**: RFC 7946 fixes GeoJSON to WGS 84 longitude/latitude, so the geometry gets
@@ -25,8 +29,9 @@
 //! becomes a property in column order; the feature `id` is not written. `NaN` and infinite
 //! floats become `null` (JSON has no such numbers). Date, time, timestamp, decimal and
 //! categorical columns are written as text; nested columns are rejected. Geometries
-//! `geo` cannot represent (such as empty points) are written as `null`, and coordinates are
-//! 2D. A failed write leaves no file behind.
+//! that GeoJSON cannot express (empty points) are written as `null`. Z is written as the
+//! third ordinate (a NaN Z as a two-value position, since JSON has no NaN); M is dropped.
+//! A failed write leaves no file behind.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -76,9 +81,10 @@ fn parse_geojson(text: &str, source: &str, crs: Option<&str>) -> Result<VectorRe
         match &feature.geometry {
             None => builder.push(None::<&geo::Geometry<f64>>)?,
             Some(geometry) => {
-                let geometry = geo::Geometry::<f64>::try_from(geometry)
-                    .map_err(|e| format!("invalid geometry at feature {row}: {e}"))?;
-                builder.push(Some(&geometry))?;
+                let invalid = |e: String| format!("invalid geometry at feature {row}: {e}");
+                let bytes = crate::zm_io::geojson_to_wkb(geometry).map_err(invalid)?;
+                let parsed = wkb::reader::read_wkb(&bytes).map_err(|e| invalid(e.to_string()))?;
+                builder.push(Some(&parsed))?;
             }
         }
     }
