@@ -1085,6 +1085,30 @@ fn build_area(column: Handle, node: bool) -> Result<Handle, String> {
     column.0.build_area(node).map(wrap)
 }
 
+// -- batch I3: coverages ------------------------------------------------------------------
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn valid_coverage(column: Handle, gap_width: f64) -> Result<bool, String> {
+    column.0.is_valid_coverage(gap_width)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn invalid_coverage_edges(column: Handle, gap_width: f64) -> Result<Handle, String> {
+    column.0.invalid_coverage_edges(gap_width).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn simplify_coverage(
+    column: Handle,
+    tolerance: f64,
+    simplify_boundary: bool,
+) -> Result<Handle, String> {
+    column
+        .0
+        .simplify_coverage(tolerance, simplify_boundary)
+        .map(wrap)
+}
+
 #[rustler::nif(schedule = "DirtyCpu")]
 fn offset_curve(
     column: Handle,

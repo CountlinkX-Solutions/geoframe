@@ -1541,6 +1541,95 @@ defmodule GeoFrame.GeoSeries do
     ref |> Native.build_area(opts[:node] == true) |> wrap() |> unwrap!()
   end
 
+  @doc """
+  Whether the polygons of the whole series form a valid coverage (GeoPandas
+  `is_valid_coverage`, GEOS `CoverageValidator`; a single boolean, not one per row).
+
+  A polygonal coverage is valid when its polygons do not overlap and the edges they share match
+  vertex for vertex. Holes (regions without a polygon) are allowed. Geometries that are not
+  polygons or multipolygons, and null rows, are ignored; an empty series is valid.
+
+  Option `:gap_width` (default `0.0`) also rejects gaps narrower than it: a segment that runs
+  alongside a neighbour's for more than that length, closer than that width, is invalid. A
+  negative width counts as `0.0`. Raises `ArgumentError` when the width is not a finite number,
+  or when the check needs over 50,000,000 segment pairs.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 1 1, 1 0, 0 0))", "POLYGON ((0 0, 1 1, 0 1, 0 0))"])
+      iex> GeoFrame.GeoSeries.is_valid_coverage(s)
+      true
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 1 1, 1 0, 0 0))", "POLYGON ((0 0, 0.5 0.5, 1 1, 0 1, 0 0))"])
+      iex> GeoFrame.GeoSeries.is_valid_coverage(s)
+      false
+  """
+  @spec is_valid_coverage(t(), keyword()) :: boolean()
+  # GeoPandas-compatible name, see is_valid/1.
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+  def is_valid_coverage(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, gap_width: 0.0)
+    ref |> Native.valid_coverage(number!(opts[:gap_width], "gap_width")) |> unwrap!()
+  end
+
+  @doc """
+  The edges that make the coverage invalid, per row (GeoPandas `invalid_coverage_edges`).
+
+  Each row gets the stretches of its polygon's rings that overlap a neighbour, fail to match a
+  neighbour's edge vertex for vertex, or (with `:gap_width`) border a narrow gap: a
+  `LINESTRING`, a `MULTILINESTRING` when there are several, or `LINESTRING EMPTY` when the row
+  is valid (also for rows that are not polygons). Null rows stay null. Options and limits as
+  for `is_valid_coverage/2`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 1 1, 1 0, 0 0))", "POLYGON ((0 0, 0.5 0.5, 1 1, 0 1, 0 0))"])
+      iex> s |> GeoFrame.GeoSeries.invalid_coverage_edges() |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(0 0,1 1)", "LINESTRING(0 0,0.5 0.5,1 1)"]
+  """
+  @spec invalid_coverage_edges(t(), keyword()) :: t()
+  def invalid_coverage_edges(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, gap_width: 0.0)
+
+    ref
+    |> Native.invalid_coverage_edges(number!(opts[:gap_width], "gap_width"))
+    |> wrap()
+    |> unwrap!()
+  end
+
+  @doc """
+  Simplifies the polygons of the whole series as one coverage, keeping it a valid coverage
+  (GeoPandas `simplify_coverage`, GEOS `CoverageSimplifier`).
+
+  The edges the polygons share are simplified once, with Visvalingam-Whyatt, so neighbours keep
+  matching vertex for vertex; no vertex is removed if that would make an edge cross or touch
+  another. `tolerance` is roughly the square root of the area of the triangles removed (in the
+  units of the coordinates; a negative value counts as its absolute value). Each polygon is
+  rebuilt from its edges, so a ring may start at another vertex (the first node of the coverage)
+  and, where a neighbour met a shared edge first, run the other way round.
+
+  Option `:simplify_boundary` (default `true`) - `false` only simplifies the edges two polygons
+  share and keeps the outer boundary of the coverage as it is.
+
+  Rows that are null, not polygons or multipolygons, or that hold a NaN or infinite
+  coordinate are `nil` (GeoPandas raises); empty polygons stay empty. The input is assumed to be
+  a valid coverage (see `is_valid_coverage/2`); an overlapping one is still simplified, but
+  the result may not be valid. Raises `ArgumentError` for a tolerance that is not a finite
+  number, and when the coverage has over 10,000,000 vertices or its checks visit over
+  50,000,000 vertices.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 1 1.1, 2 0, 1.5 1, 2 2, 0 2, 0 0))", "POLYGON ((2 0, 4 0, 4 2, 2 2, 1.5 1, 2 0))"])
+      iex> s |> GeoFrame.GeoSeries.simplify_coverage(1) |> GeoFrame.GeoSeries.to_wkt()
+      ["POLYGON((2 0,2 2,0 2,2 0))", "POLYGON((2 0,4 0,4 2,2 2,2 0))"]
+  """
+  @spec simplify_coverage(t(), number(), keyword()) :: t()
+  def simplify_coverage(%__MODULE__{ref: ref}, tolerance, opts \\ []) do
+    opts = Keyword.validate!(opts, simplify_boundary: true)
+
+    ref
+    |> Native.simplify_coverage(
+      number!(tolerance, "tolerance"),
+      opts[:simplify_boundary] != false
+    )
+    |> wrap()
+    |> unwrap!()
+  end
+
   @max_quad_segs 10_000
 
   @doc """

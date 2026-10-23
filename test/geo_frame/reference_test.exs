@@ -22,6 +22,7 @@ defmodule GeoFrame.ReferenceTest do
   @overlay_ops ~w(overlay clip explode intersection_all)
   @collection_ops ~w(make_grid delaunay_triangles voronoi_polygons)
   @aggregate_ops ~w(polygonize build_area)
+  @coverage_ops ~w(is_valid_coverage invalid_coverage_edges simplify_coverage)
 
   {deviations, _} = Code.eval_file(Path.expand("../reference/known_deviations.exs", __DIR__))
   @deviations deviations
@@ -35,7 +36,9 @@ defmodule GeoFrame.ReferenceTest do
     results =
       Reference.run() ++
         Reference.run_frames() ++
-        Reference.run_overlay() ++ Reference.run_collections() ++ Reference.run_aggregates()
+        Reference.run_overlay() ++
+        Reference.run_collections() ++
+        Reference.run_aggregates() ++ Reference.run_coverage()
 
     if System.get_env("REFERENCE_REPORT"), do: report(results)
     %{results: results}
@@ -79,6 +82,12 @@ defmodule GeoFrame.ReferenceTest do
   for op <- @aggregate_ops do
     test "polygonization: #{op}", %{results: results} do
       check(Enum.filter(results, &(&1.file == "parity_j_aggregate" and &1.op == unquote(op))))
+    end
+  end
+
+  for op <- @coverage_ops do
+    test "coverages: #{op}", %{results: results} do
+      check(Enum.filter(results, &(&1.file == "parity_k" and &1.op == unquote(op))))
     end
   end
 

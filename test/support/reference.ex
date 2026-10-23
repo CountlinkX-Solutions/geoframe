@@ -918,6 +918,62 @@ defmodule GeoFrame.Reference do
     is_number(area) and area <= 1.0e-9
   end
 
+  @doc """
+  Evaluates the coverage fixtures (`is_valid_coverage`, `invalid_coverage_edges`,
+  `simplify_coverage`): whole-series cases whose geometries must match GeoPandas vertex for
+  vertex (compared as the crate prints them).
+  """
+  @spec run_coverage() :: [result()]
+  def run_coverage do
+    doc = read("parity_k")
+
+    for c <- doc["cases"] do
+      series = GeoSeries.from_wkt!(doc["sets"][c["set"]])
+
+      {status, detail} =
+        try do
+          coverage_case(c["op"], c["args"], series, c["e"])
+        rescue
+          e -> {:differ, {:raised, Exception.message(e)}}
+        end
+
+      %{
+        file: "parity_k",
+        op: c["op"],
+        label: c["label"],
+        id: c["label"],
+        status: status,
+        nullish: false,
+        detail: detail
+      }
+    end
+  end
+
+  defp coverage_case("is_valid_coverage", %{"gap_width" => gap}, series, expected) do
+    compare(GeoSeries.is_valid_coverage(series, gap_width: gap), expected)
+  end
+
+  defp coverage_case("invalid_coverage_edges", %{"gap_width" => gap}, series, expected) do
+    got = series |> GeoSeries.invalid_coverage_edges(gap_width: gap) |> GeoSeries.to_wkt()
+    compare(got, canonical_wkt(expected))
+  end
+
+  defp coverage_case("simplify_coverage", args, series, expected) do
+    got =
+      series
+      |> GeoSeries.simplify_coverage(args["tolerance"],
+        simplify_boundary: args["simplify_boundary"]
+      )
+      |> GeoSeries.to_wkt()
+
+    compare(got, canonical_wkt(expected))
+  end
+
+  defp compare(got, expected) when got == expected, do: {:agree, nil}
+  defp compare(got, expected), do: {:differ, {got, expected}}
+
+  defp canonical_wkt(wkts), do: wkts |> GeoSeries.from_wkt!() |> GeoSeries.to_wkt()
+
   @doc "Evaluates the overlay, clip, explode and intersection_all fixtures."
   @spec run_overlay() :: [result()]
   def run_overlay do
