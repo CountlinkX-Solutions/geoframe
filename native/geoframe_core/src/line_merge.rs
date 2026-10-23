@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use geo::{Coord, Geometry, GeometryCollection, LineString, MultiLineString};
 
+use crate::zm_overlay::z_only;
 use crate::GeoColumn;
 
 type Node = (u64, u64);
@@ -159,6 +160,6 @@ impl GeoColumn {
     /// Merges connected line parts (see the module notes). A single `LineString` is returned
     /// unchanged.
     pub fn line_merge(&self, directed: bool) -> Result<Self, String> {
-        self.map_geometry(|g| Some(merge_geometry(g, directed)))
+        self.map_geometry_model(z_only, |g| Some(merge_geometry(g, directed)))
     }
 }

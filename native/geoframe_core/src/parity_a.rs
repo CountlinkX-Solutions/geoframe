@@ -15,6 +15,7 @@ use geo::{
 use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 
 use crate::zm_bridge::Keep;
+use crate::zm_overlay::z_only;
 use crate::GeoColumn;
 
 /// The text Shapely and GeoPandas report for a valid geometry.
@@ -176,7 +177,7 @@ impl GeoColumn {
 
     /// The distinct vertices of each geometry as a `MultiPoint`, in first-seen order.
     pub fn extract_unique_points(&self) -> Result<Self, String> {
-        self.map_geometry(|g| {
+        self.map_geometry_model(z_only, |g| {
             let mut seen = HashSet::new();
             let points = g
                 .coords_iter()

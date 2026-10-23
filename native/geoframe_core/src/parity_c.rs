@@ -26,6 +26,7 @@ use geo::{
 };
 
 use crate::predicates::guarded;
+use crate::zm_overlay::z_and_m;
 use crate::GeoColumn;
 
 // -- linear referencing -----------------------------------------------------------------
@@ -112,7 +113,7 @@ impl GeoColumn {
                 .flatten()
             })
             .collect();
-        self.rebuild(&rows)
+        self.rebuild_interpolated(&rows, false)
     }
 
     /// Distance along each line to the point nearest `other` (a point column that pairs
@@ -560,7 +561,17 @@ impl GeoColumn {
                 "segmentize would create about {estimate} vertices; max {MAX_OUTPUT_VERTICES}"
             ));
         }
-        self.map_geometry(|g| Some(map_members(g, &|m| segmentize_one(m, max_segment_length))))
+        let rows: Vec<Option<Geometry<f64>>> = self
+            .geo_rows()
+            .iter()
+            .map(|row| {
+                row.as_ref().and_then(|g| {
+                    guarded(|| Some(map_members(g, &|m| segmentize_one(m, max_segment_length))))
+                        .flatten()
+                })
+            })
+            .collect();
+        self.rebuild_segmentized(&rows)
     }
 
     /// Drops consecutive vertices that repeat, or lie within `tolerance` of the last kept one.
@@ -571,7 +582,7 @@ impl GeoColumn {
                 "tolerance must be finite and non-negative, got {tolerance}"
             ));
         }
-        self.map_geometry(|g| {
+        self.map_geometry_model(z_and_m, |g| {
             let thinned = if tolerance == 0.0 {
                 g.remove_repeated_points()
             } else {
@@ -598,7 +609,9 @@ impl GeoColumn {
         } else {
             Direction::Default
         };
-        self.map_geometry(|g| Some(map_members(g, &|m| orient_one(m, direction))))
+        self.map_geometry_model(z_and_m, |g| {
+            Some(map_members(g, &|m| orient_one(m, direction)))
+        })
     }
 
     /// Whether each geometry is a closed linestring wound counter-clockwise. Open lines and

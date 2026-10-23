@@ -111,7 +111,7 @@ impl GeoColumn {
                     .and_then(|g| guarded(|| clip_rect(g, rect)).flatten())
             })
             .collect();
-        self.rebuild(&rows)
+        self.rebuild_clipped(&rows, [xmin, ymin, xmax, ymax])
     }
 
     /// The intersection of every non-null row as a one-row column (the CRS is kept).
@@ -120,6 +120,9 @@ impl GeoColumn {
     /// `GEOMETRYCOLLECTION EMPTY`. A pairwise result that is a `GeometryCollection` (mixed
     /// dimensions) cannot be intersected further and gives null.
     pub fn intersection_all(&self) -> Result<GeoColumn, String> {
+        if self.any_zm() {
+            return self.intersection_all_zm();
+        }
         let rows: Vec<Geometry<f64>> = self.geo_rows().into_iter().flatten().collect();
         let result = guarded(|| {
             let mut iter = rows.into_iter();
@@ -133,5 +136,21 @@ impl GeoColumn {
         })
         .flatten();
         self.rebuild(&[result])
+    }
+
+    /// [`intersection_all`](Self::intersection_all) for a column with Z or M: the same left to
+    /// right fold, each step through the Z-aware pairwise `intersection`.
+    fn intersection_all_zm(&self) -> Result<GeoColumn, String> {
+        let rows = self.geo_rows();
+        let present: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].is_some()).collect();
+        let mut rest = present.into_iter();
+        let Some(first) = rest.next() else {
+            return self.rebuild(&[Some(empty_collection())]);
+        };
+        let mut acc = self.take(&[first])?;
+        for i in rest {
+            acc = acc.set_op(&self.take(&[i])?, SetOp::Intersection)?;
+        }
+        Ok(acc)
     }
 }

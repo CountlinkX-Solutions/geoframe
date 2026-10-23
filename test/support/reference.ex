@@ -15,7 +15,7 @@ defmodule GeoFrame.Reference do
   alias GeoFrame.SpatialJoin
 
   @fixtures ~w(measures unary_predicates binary_predicates constructive constructive_e set_ops
-               affine linear_referencing crs geodesic io parity_i parity_j zm zm_ops)
+               affine linear_referencing crs geodesic io parity_i parity_j zm zm_ops zm_overlay)
   @dir Path.expand("../reference/fixtures", __DIR__)
   # GEOS' DBL_MAX, which stands for "no clearance" in the fixtures.
   @dbl_max 1.797_693_134_862_315_7e308
@@ -151,11 +151,18 @@ defmodule GeoFrame.Reference do
   defp apply_op(group, a, b) do
     op = group["op"]
 
-    cond do
-      op in @unary_ops -> apply(GeoSeries, String.to_atom(op), [a])
-      op in @binary_ops -> apply(GeoSeries, String.to_atom(op), [a, b])
-      true -> apply_with_args(op, group["args"], a, b)
-    end
+    result =
+      cond do
+        op in @unary_ops -> apply(GeoSeries, String.to_atom(op), [a])
+        op in @binary_ops -> apply(GeoSeries, String.to_atom(op), [a, b])
+        true -> apply_with_args(op, group["args"], a, b)
+      end
+
+    # `zm` fixtures that compare a canonical form (ring starts and winding are not specified).
+    if group["kind"] == "zm" and get_in(group, ["args", "normalize"]) == true and
+         match?(%GeoSeries{}, result),
+       do: GeoSeries.normalize(result),
+       else: result
   end
 
   defp apply_with_args("distance_geodesic", _, a, b),
@@ -174,6 +181,12 @@ defmodule GeoFrame.Reference do
     do: GeoSeries.relate_pattern(a, b, args["pattern"])
 
   defp apply_with_args("dwithin", args, a, b), do: GeoSeries.dwithin(a, b, args["distance"])
+
+  defp apply_with_args("union_all", _, a, b), do: GeoSeries.union_all(GeoSeries.concat([a, b]))
+
+  defp apply_with_args("intersection_all", _, a, b),
+    do: GeoSeries.intersection_all(GeoSeries.concat([a, b]))
+
   defp apply_with_args(op, args, a, b), do: apply_param(op, args, a, b)
 
   defp apply_param("buffer", args, a, _b) do
@@ -334,12 +347,29 @@ defmodule GeoFrame.Reference do
   @atol 1.0e-9
 
   # Per-op tolerances: {rtol, atol}.
+  defp group_zm?(label),
+    do:
+      String.contains?(label, "[") or String.starts_with?(label, "union_all") or
+        String.starts_with?(label, "intersection_all")
+
   defp tolerance(%{"op" => op, "label" => label}) do
     cond do
-      op in ["area_geodesic", "length_geodesic", "distance_geodesic"] -> {1.0e-6, 1.0e-6}
-      op == "to_crs" -> {1.0e-9, 1.0e-6}
-      String.starts_with?(label, "hausdorff") -> {1.0e-9, 1.0e-9}
-      true -> {@rtol, @atol}
+      op in ["area_geodesic", "length_geodesic", "distance_geodesic"] ->
+        {1.0e-6, 1.0e-6}
+
+      op == "to_crs" ->
+        {1.0e-9, 1.0e-6}
+
+      # `geo`'s boolean operations snap their output to a grid of about 1e-9 of the extent.
+      op in ~w(intersection union difference symmetric_difference union_all intersection_all) and
+          group_zm?(label) ->
+        {1.0e-6, 1.0e-6}
+
+      String.starts_with?(label, "hausdorff") ->
+        {1.0e-9, 1.0e-9}
+
+      true ->
+        {@rtol, @atol}
     end
   end
 

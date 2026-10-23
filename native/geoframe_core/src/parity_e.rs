@@ -23,6 +23,7 @@ use std::collections::HashSet;
 use geo::{Coord, CoordsIter, Geometry, GeometryCollection, Rect};
 
 use crate::predicates::guarded;
+use crate::zm_overlay::z_only;
 use crate::GeoColumn;
 
 pub use grid::{GridFeature, GridType};
@@ -54,7 +55,7 @@ impl GeoColumn {
         if !(0.0..=1.0).contains(&ratio) {
             return Err(format!("ratio must be between 0 and 1, got {ratio}"));
         }
-        self.map_geometry(|g| concave::concave_hull(g, ratio, allow_holes))
+        self.map_geometry_model(z_only, |g| concave::concave_hull(g, ratio, allow_holes))
     }
 
     /// The minimum-area rotated rectangle around each geometry; a point or a line when the
@@ -110,7 +111,7 @@ impl GeoColumn {
             guarded(|| triangulate::delaunay_parts(&self.point_cloud(), tolerance, only_edges))
                 .flatten()
                 .ok_or_else(|| "the Delaunay triangulation failed".to_string())?;
-        self.rebuild(&parts.into_iter().map(Some).collect::<Vec<_>>())
+        self.rebuild_merged(&parts.into_iter().map(Some).collect::<Vec<_>>())
     }
 
     /// Triangles that fill each polygon, respecting holes, using only its vertices. Other

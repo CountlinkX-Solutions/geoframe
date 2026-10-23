@@ -182,6 +182,44 @@ Z2_CORPUS = {
 }
 CORPUS.update(Z2_CORPUS)
 
+# Z/M corpus for the interpolating and overlay operations (Z3). Polygons overlap properly (no
+# shared vertices) so the 2D results agree and the Z policy is what is compared.
+Z3_CORPUS = {
+    "z3_a": "POLYGON Z ((0 0 1, 10 0 2, 10 10 3, 0 10 4, 0 0 1))",
+    "z3_b": "POLYGON Z ((5 5 100, 15 5 200, 15 15 300, 5 15 400, 5 5 100))",
+    "z3_b_2d": "POLYGON ((5 5, 15 5, 15 15, 5 15, 5 5))",
+    "z3_a_zm": "POLYGON ZM ((0 0 1 11, 10 0 2 12, 10 10 3 13, 0 10 4 14, 0 0 1 11))",
+    "z3_a_m": "POLYGON M ((0 0 1, 10 0 2, 10 10 3, 0 10 4, 0 0 1))",
+    "z3_tri": "POLYGON Z ((-3 4 50, 6 -4 60, 12 7 70, -3 4 50))",
+    "z3_hole": "POLYGON Z ((-5 -5 10, 20 -5 20, 20 20 30, -5 20 40, -5 -5 10), (2 2 90, 4 2 90, 4 4 90, 2 4 90, 2 2 90))",
+    "z3_far": "POLYGON Z ((50 50 1, 60 50 1, 60 60 1, 50 50 1))",
+    "z3_mpoly": "MULTIPOLYGON Z (((1 1.5 1, 4.5 1 2, 4.7 4.1 3, 1 1.5 1)), ((8 8.5 4, 14 8 5, 14 14 6, 8 8.5 4)))",
+    "z3_l1": "LINESTRING Z (0 0 0, 10 10 10)",
+    "z3_l2": "LINESTRING Z (0 10 100, 10 0 200)",
+    "z3_l2_2d": "LINESTRING (0 10, 10 0)",
+    "z3_l_through": "LINESTRING Z (-5 5 0, 15 5 20)",
+    "z3_l_bend": "LINESTRING Z (-4 2 5, 3 3 15, 12 8 25)",
+    "z3_l_zm": "LINESTRING ZM (0 0 0 5, 10 0 10 6, 10 10 20 7)",
+    "z3_l_m": "LINESTRING M (0 0 0, 10 0 10, 10 10 20)",
+    "z3_l_long": "LINESTRING Z (0 0 0, 10 0 10, 10 10 20)",
+    "z3_ml": "MULTILINESTRING Z ((0 0 0, 10 0 10), (20 0 100, 30 0 200))",
+    "z3_ml_merge": "MULTILINESTRING Z ((0 0 1, 5 5 2), (5 5 3, 9 9 4))",
+    "z3_ml_merge_zm": "MULTILINESTRING ZM ((0 0 1 5, 5 5 2 6), (5 5 3 7, 9 9 4 8))",
+    "z3_mpt": "MULTIPOINT Z ((0 0 1), (10 0 2), (10 10 3), (3 4 5))",
+    "z3_mpt2": "MULTIPOINT Z ((2 2 11), (7 1 12), (20 20 13))",
+    "z3_mpt_zm": "MULTIPOINT ZM ((0 0 1 5), (10 0 2 6), (10 10 3 7), (3 4 5 8))",
+    "z3_pt_in": "POINT Z (3 3 7)",
+    "z3_pt_in_2d": "POINT (3 3)",
+    "z3_bowtie": "POLYGON Z ((0 0 0, 10 10 10, 10 0 20, 0 10 30, 0 0 0))",
+    "z3_bowtie_zm": "POLYGON ZM ((0 0 0 1, 10 10 10 2, 10 0 20 3, 0 10 30 4, 0 0 0 1))",
+    "z3_rrp": "LINESTRING ZM (0 0 0 1, 0 0 1 2, 5 5 2 3)",
+    "z3_cw": "POLYGON ZM ((0 0 1 5, 0 10 4 8, 10 10 3 7, 10 0 2 6, 0 0 1 5))",
+    "z3_adj": "POLYGON Z ((10 0 20, 20 0 21, 20 10 22, 10 10 23, 10 0 20))",
+    "z3_corner": "POLYGON Z ((10 10 50, 20 10 51, 20 20 52, 10 20 53, 10 10 50))",
+    "z3_same": "POLYGON Z ((0 0 50, 10 0 60, 10 10 70, 0 10 80, 0 0 50))",
+}
+CORPUS.update(Z3_CORPUS)
+
 
 def geom(cid):
     w = CORPUS[cid]
@@ -301,7 +339,7 @@ def singles(ids):
 NON_EMPTY_2D = [
     k for k, w in CORPUS.items()
     if w is not None and "EMPTY" not in w
-    and not k.startswith(("g_", "e_", "i_", "j_", "z_", "z2_"))
+    and not k.startswith(("g_", "e_", "i_", "j_", "z_", "z2_", "z3_"))
 ]
 EMPTIES = ["pt_empty", "line_empty", "poly_empty", "coll_empty", "null"]
 GEO = [k for k in CORPUS if k.startswith("g_")]
@@ -927,6 +965,97 @@ def build_zm_ops():
     w.dump()
 
 
+def build_zm_overlay():
+    """Z3: Z/M policy of the interpolating, vertex-copy and overlay operations (full WKT).
+
+    Overlapping inputs have no shared vertices, so the 2D results agree and the Z policy is what is
+    compared; the three `conflicts` inputs share vertices with `z3_a` on purpose."""
+    w = Writer("zm_overlay")
+    norm = lambda s: s.normalize()
+    polys = ["z3_a", "z3_b", "z3_b_2d", "z3_a_zm", "z3_a_m", "z3_tri", "z3_hole", "z3_far", "z3_mpoly"]
+    lines = ["z3_l1", "z3_l2", "z3_l2_2d", "z3_l_through", "z3_l_bend"]
+    same_ring = ["z3_a", "z3_a_zm", "z3_a_m"]
+    w.add_set("poly_poly", [p for p in pairs(polys, polys) if not (p[0] in same_ring and p[1] in same_ring)])
+    w.add_set("line_line", pairs(lines, lines))
+    line_poly = pairs(["z3_l_through", "z3_l_bend"], ["z3_a", "z3_b_2d", "z3_tri", "z3_hole"]) \
+        + pairs(["z3_l1", "z3_l2", "z3_l2_2d"], ["z3_b_2d", "z3_tri", "z3_hole"])
+    w.add_set("line_poly", line_poly)
+    w.add_set("poly_line", pairs(["z3_a", "z3_tri"], ["z3_l_through", "z3_l_bend"]))
+    point_partners = ["z3_a", "z3_tri", "z3_l1"]
+    w.add_set("point_other", pairs(["z3_pt_in", "z3_pt_in_2d", "z3_mpt2"], point_partners)
+              + pairs(point_partners, ["z3_pt_in", "z3_pt_in_2d", "z3_mpt2"]))
+    w.add_set("conflicts", pairs(["z3_a"], ["z3_adj", "z3_corner", "z3_same"]) + pairs(["z3_adj", "z3_corner", "z3_same"], ["z3_a"])
+              + [p for p in pairs(same_ring, same_ring) if p[0] != p[1]]
+              + pairs(["z3_l1", "z3_l2"], ["z3_a"]) + pairs(["z3_a"], ["z3_l1", "z3_l2"]) + [("z3_l1", "z3_mpt")])
+    # GeoFrame does not node a polygon at the crossings of a line (`union`, `symmetric_difference`,
+    # and a polygon minus a line), and an empty point result is a MultiPoint: both are 2D
+    # differences that set_ops.json already covers, so those combinations are left out here.
+    for op in ("intersection", "union", "difference", "symmetric_difference"):
+        names = ["poly_poly", "line_line", "conflicts"]
+        if op != "difference":
+            names.append("point_other")
+        if op in ("intersection", "difference"):
+            names.append("line_poly")
+        if op == "intersection":
+            names.append("poly_line")
+        for name in names:
+            w.group(op, "zm", name, lambda a, b, op=op: getattr(a, op)(b).normalize(),
+                    label=f"{op}[{name}]", args={"normalize": True})
+    # union_all / intersection_all of a pair, evaluated row by row
+    w.add_set("all_pairs", pairs(["z3_a", "z3_tri"], ["z3_b", "z3_b_2d", "z3_tri", "z3_a_zm"]) + pairs(["z3_l1"], ["z3_l2", "z3_l2_2d"]))
+    w.group("union_all", "zm", "all_pairs",
+            lambda a, b: shapely.normalize(gpd.GeoSeries([a.iloc[0], b.iloc[0]]).union_all()),
+            label="union_all", args={"normalize": True}, per_row=True)
+    w.group("intersection_all", "zm", "all_pairs",
+            lambda a, b: shapely.normalize(gpd.GeoSeries([a.iloc[0], b.iloc[0]]).intersection_all()),
+            label="intersection_all", args={"normalize": True}, per_row=True)
+
+    def on(name, ids):
+        w.add_set(name, singles(ids + ["null"]))
+        return lambda label, op, fn, **args: w.group(op, "zm", name, fn, label=label, args=args)
+
+    every = ["z3_a", "z3_a_zm", "z3_a_m", "z3_hole", "z3_mpoly", "z3_l_bend", "z3_l_zm", "z3_l_m",
+             "z3_ml", "z3_mpt", "z3_mpt_zm", "z3_pt_in", "z3_pt_in_2d", "z3_bowtie", "z3_bowtie_zm"]
+    z = on("segmentize", [i for i in every if "bowtie" not in i])
+    for d in (4.0, 7.0):
+        z(f"segmentize({d})", "segmentize", lambda a, b, d=d: a.segmentize(d), max_segment_length=d)
+    z = on("every", every)
+    z("convex_hull", "convex_hull", lambda a, b: norm(a.convex_hull), normalize=True)
+    z("concave_hull(ratio=1)", "concave_hull", lambda a, b: norm(a.concave_hull(ratio=1.0)),
+      ratio=1.0, allow_holes=False, normalize=True)
+    z("extract_unique_points", "extract_unique_points", lambda a, b: a.extract_unique_points())
+    z("make_valid", "make_valid", lambda a, b: norm(a.make_valid()), normalize=True)
+    z("centroid", "centroid", lambda a, b: a.centroid)
+
+    z = on("lines", ["z3_l_bend", "z3_l_zm", "z3_l_m", "z3_ml", "z3_l_long"])
+    for d in (2.0, 15.0, -3.0):
+        z(f"interpolate({d})", "interpolate", lambda a, b, d=d: a.interpolate(d), distance=d)
+    z("interpolate(0.4,normalized)", "interpolate", lambda a, b: a.interpolate(0.4, normalized=True),
+      distance=0.4, normalized=True)
+
+    z = on("clip", ["z3_a", "z3_a_zm", "z3_a_m", "z3_tri", "z3_l_bend", "z3_l_through", "z3_l_zm", "z3_ml", "z3_mpt", "z3_pt_in"])
+    for rect in ([2, -1, 12, 5], [-8, -8, 30, 30], [1, 1, 4, 4]):
+        z(f"clip_by_rect({rect})", "clip_by_rect", lambda a, b, r=rect: norm(a.clip_by_rect(*r)),
+          rect=rect, normalize=True)
+
+    z = on("merge", ["z3_ml_merge", "z3_ml_merge_zm", "z3_l_bend", "z3_l_zm", "z3_l_m", "z3_ml"])
+    z("line_merge", "line_merge", lambda a, b: a.line_merge())
+    z = on("rep", ["z3_a", "z3_a_zm", "z3_l_bend", "z3_l_zm", "z3_mpt", "z3_pt_in"])
+    z("representative_point", "representative_point", lambda a, b: a.representative_point())
+    z = on("rrp", ["z3_rrp", "z3_l_zm", "z3_a_zm", "z3_a"])
+    z("remove_repeated_points", "remove_repeated_points", lambda a, b: a.remove_repeated_points(0.0),
+      tolerance=0.0)
+    z = on("orient", ["z3_cw", "z3_a_zm", "z3_a", "z3_mpoly", "z3_hole"])
+    z("orient_polygons", "orient_polygons", lambda a, b: a.orient_polygons(), exterior_cw=False)
+    z = on("env", ["z3_a", "z3_a_zm", "z3_hole", "z3_mpoly", "z3_l_bend", "z3_mpt"])
+    z("envelope", "envelope", lambda a, b: norm(a.envelope), normalize=True)
+    z("minimum_rotated_rectangle", "minimum_rotated_rectangle",
+      lambda a, b: norm(a.minimum_rotated_rectangle()), normalize=True)
+    w.add_set("nearest", pairs(["z3_a", "z3_l1", "z3_mpt2", "z3_far"], ["z3_pt_in", "z3_pt_in_2d", "z3_far"]))
+    w.group("shortest_line", "zm", "nearest", lambda a, b: a.shortest_line(b), label="shortest_line")
+    w.dump()
+
+
 # --------------------------------------------------------------------------------------
 # batch I2: offset_curve, snap, shared_paths, minimum_clearance(_line), polygonize, build_area
 # --------------------------------------------------------------------------------------
@@ -1407,6 +1536,7 @@ def main():
     build_parity_k()
     build_zm()
     build_zm_ops()
+    build_zm_overlay()
     build_frames()
     build_overlay()
     corpus = dict(CORPUS)
