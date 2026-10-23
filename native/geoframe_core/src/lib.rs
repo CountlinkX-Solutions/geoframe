@@ -5,6 +5,7 @@ mod attributes;
 pub(crate) mod column;
 mod flatgeobuf_io;
 mod geojson_io;
+mod parity_a;
 mod parquet_io;
 mod predicates;
 mod reproject;
@@ -15,7 +16,7 @@ mod unary;
 pub use attributes::VectorRead;
 pub use column::GeoColumn;
 pub use flatgeobuf_io::{read_flatgeobuf, write_flatgeobuf};
-pub use geojson_io::{read_geojson, write_geojson};
+pub use geojson_io::{read_geojson, read_geojson_str, write_geojson};
 pub use parquet_io::{read_geoparquet, write_geoparquet, GeoParquetRead};
 pub use predicates::Predicate;
 pub use reproject::normalize_crs;
@@ -27,6 +28,8 @@ pub use unary::{BufferOptions, Origin, UnaryOp};
 mod flatgeobuf_tests;
 #[cfg(test)]
 mod geojson_tests;
+#[cfg(test)]
+mod parity_a_tests;
 #[cfg(test)]
 mod parquet_tests;
 #[cfg(test)]

@@ -101,6 +101,57 @@ impl GeoColumn {
         })
     }
 
+    /// Builds a point column from coordinate columns. A row is a null geometry unless both
+    /// `x` and `y` are present. The columns must have the same length.
+    pub fn from_xy(
+        x: &[Option<f64>],
+        y: &[Option<f64>],
+        crs: Option<&str>,
+    ) -> Result<Self, String> {
+        if x.len() != y.len() {
+            return Err(format!(
+                "x and y must have the same length, got {} and {}",
+                x.len(),
+                y.len()
+            ));
+        }
+        let rows: Vec<Option<Geometry<f64>>> = x
+            .iter()
+            .zip(y)
+            .map(|pair| match pair {
+                (Some(x), Some(y)) => Some(Geometry::Point(geo::Point::new(*x, *y))),
+                _ => None,
+            })
+            .collect();
+        Self::from_geo_rows(&rows, metadata_for(crs))
+    }
+
+    /// Replaces null rows with the single geometry of `fill`; every other row, including
+    /// empty geometries, is kept as stored. Fails unless `fill` has exactly one row and a
+    /// compatible CRS.
+    pub fn fill_null(&self, fill: &GeoColumn) -> Result<Self, String> {
+        if fill.len() != 1 {
+            return Err(format!(
+                "fill value must be a single geometry, got {} rows",
+                fill.len()
+            ));
+        }
+        self.check_crs(fill)?;
+        let mut builder = GeometryBuilder::new(self.array.extension_type().clone());
+        for i in 0..self.len() {
+            let row = match self.array.get(i).map_err(|e| e.to_string())? {
+                Some(scalar) => Some(scalar),
+                None => fill.array.get(0).map_err(|e| e.to_string())?,
+            };
+            builder
+                .push_geometry(row.as_ref())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(Self {
+            array: builder.finish(),
+        })
+    }
+
     /// Parses WKT rows; `None` rows become null geometries.
     pub fn from_wkt<S: AsRef<str>>(rows: &[Option<S>], crs: Option<&str>) -> Result<Self, String> {
         let parsed = rows

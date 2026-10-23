@@ -64,15 +64,83 @@ defmodule GeoFrame.GeoSeries do
   @spec from_wkb!([binary() | nil], keyword()) :: t()
   def from_wkb!(rows, opts \\ []), do: rows |> from_wkb(opts) |> unwrap!()
 
+  @doc """
+  Builds a series of points from coordinate columns, like GeoPandas `points_from_xy`.
+
+  `x` and `y` are lists or `Explorer.Series` of equal length. A row is a null geometry when
+  either coordinate is `nil` or not a finite number (including `NaN`).
+
+  Options:
+
+    * `:crs` - a CRS string such as `"EPSG:4326"`, or `nil` (default).
+    * `:z` - accepted for GeoPandas compatibility and length-checked, but **dropped**:
+      geometry storage is 2D, so the result has no Z.
+
+  Raises `ArgumentError` when the columns differ in length or an option is unknown.
+
+      iex> s = GeoFrame.GeoSeries.from_xy([1, 2], [3, nil])
+      iex> GeoFrame.GeoSeries.to_wkt(s)
+      ["POINT(1 3)", nil]
+  """
+  @spec from_xy(
+          [number() | nil] | Series.t(),
+          [number() | nil] | Series.t(),
+          keyword()
+        ) :: t()
+  def from_xy(x, y, opts \\ []) do
+    opts = Keyword.validate!(opts, crs: nil, z: nil)
+    xs = coordinates!(x, :x)
+    ys = coordinates!(y, :y)
+
+    if opts[:z] != nil and Kernel.length(coordinates!(opts[:z], :z)) != Kernel.length(xs) do
+      raise ArgumentError, "z must have the same length as x and y"
+    end
+
+    xs |> Native.from_xy(ys, opts[:crs]) |> wrap() |> unwrap!()
+  end
+
+  defp coordinates!(%Series{} = series, name),
+    do: series |> Series.to_list() |> coordinates!(name)
+
+  defp coordinates!(values, _name) when is_list(values) do
+    Enum.map(values, fn
+      value when is_number(value) -> value * 1.0
+      _missing_or_nan -> nil
+    end)
+  end
+
+  defp coordinates!(other, name) do
+    raise ArgumentError, "#{name} must be a list or an Explorer.Series, got: #{inspect(other)}"
+  end
+
   # -- outputs and metadata -------------------------------------------------------------
 
   @doc "Returns the geometries as WKT strings (`nil` for nulls)."
   @spec to_wkt(t()) :: [String.t() | nil]
   def to_wkt(%__MODULE__{ref: ref}), do: ref |> Native.to_wkt() |> unwrap!()
 
-  @doc "Returns the geometries as WKB binaries (`nil` for nulls)."
-  @spec to_wkb(t()) :: [binary() | nil]
-  def to_wkb(%__MODULE__{ref: ref}), do: ref |> Native.to_wkb() |> unwrap!()
+  @doc """
+  Returns the geometries as WKB (`nil` for nulls).
+
+  Option `:hex` - when `true`, returns upper-case hexadecimal strings instead of binaries,
+  like GeoPandas `to_wkb(hex=True)`. Default `false`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1 2)"])
+      iex> GeoFrame.GeoSeries.to_wkb(s, hex: true)
+      ["0101000000000000000000F03F0000000000000040"]
+  """
+  @spec to_wkb(t(), keyword()) :: [binary() | nil]
+  def to_wkb(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, hex: false)
+
+    unless is_boolean(opts[:hex]), do: raise(ArgumentError, ":hex must be a boolean")
+
+    rows = ref |> Native.to_wkb() |> unwrap!()
+
+    if opts[:hex],
+      do: Enum.map(rows, &(&1 && Base.encode16(&1))),
+      else: rows
+  end
 
   @doc """
   GeoJSON geometry objects (RFC 7946), one decoded map per row.
@@ -438,6 +506,191 @@ defmodule GeoFrame.GeoSeries do
   @spec count_coordinates(t()) :: Series.t()
   def count_coordinates(%__MODULE__{ref: ref}) do
     ref |> Native.count_coordinates() |> Series.from_list(dtype: {:s, 64})
+  end
+
+  # -- extraction and parts -------------------------------------------------------------
+
+  @doc """
+  Every vertex of every geometry as a dataframe with `x` and `y` (f64), in row order.
+
+  Null and empty geometries contribute no rows. A polygon ring includes its closing vertex,
+  so the row count equals the sum of `count_coordinates/1`. Option `:include_index` (default
+  `false`) adds a leading `index` column (s64) with the zero-based row position, GeoPandas'
+  index. GeoPandas' `include_z`, `ignore_index` and `index_parts` are not supported (storage
+  is 2D; there is no multi-index).
+  """
+  @spec get_coordinates(t(), keyword()) :: DataFrame.t()
+  def get_coordinates(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, include_index: false)
+    {rows, xs, ys} = Native.get_coordinates(ref)
+
+    columns = [{"x", xs}, {"y", ys}]
+    dtypes = [{"x", {:f, 64}}, {"y", {:f, 64}}]
+
+    if opts[:include_index] do
+      DataFrame.new([{"index", rows} | columns], dtypes: [{"index", {:s, 64}} | dtypes])
+    else
+      DataFrame.new(columns, dtypes: dtypes)
+    end
+  end
+
+  @doc """
+  Number of parts in each geometry as an s64 series: the members of a multi-part geometry or
+  collection, `1` for a single geometry, `0` for empty ones. Null rows are `nil` (Shapely
+  counts them as `0`).
+  """
+  @spec count_geometries(t()) :: Series.t()
+  def count_geometries(%__MODULE__{ref: ref}) do
+    ref |> Native.count_geometries() |> Series.from_list(dtype: {:s, 64})
+  end
+
+  @doc """
+  Number of holes in each polygon as an s64 series. Every other geometry type, including
+  multipolygons, gives `0` (as Shapely); null rows are `nil`.
+  """
+  @spec count_interior_rings(t()) :: Series.t()
+  def count_interior_rings(%__MODULE__{ref: ref}) do
+    ref |> Native.count_interior_rings() |> Series.from_list(dtype: {:s, 64})
+  end
+
+  @doc """
+  The `n`th part of each geometry (zero-based); a negative `n` counts from the end.
+
+  A single geometry is its own part `0`. Out-of-range indices and null rows give `nil`.
+  Only an integer `n` is supported (GeoPandas also accepts an array of indices).
+  """
+  @spec get_geometry(t(), integer()) :: t()
+  def get_geometry(%__MODULE__{ref: ref}, n) when is_integer(n) do
+    ref |> Native.get_geometry(n) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  The holes of each polygon.
+
+  GeoPandas returns a Python list of rings per row; a series cannot hold lists, so each row
+  is a `MULTILINESTRING` of the holes (`MULTILINESTRING EMPTY` for a polygon without holes).
+  Every non-polygon row, multipolygons included, and null rows give `nil`.
+  """
+  @spec interiors(t()) :: t()
+  def interiors(%__MODULE__{ref: ref}), do: ref |> Native.interiors() |> wrap() |> unwrap!()
+
+  @doc """
+  The distinct vertices of each geometry as a `MULTIPOINT`, in first-seen order.
+  """
+  @spec extract_unique_points(t()) :: t()
+  def extract_unique_points(%__MODULE__{ref: ref}) do
+    ref |> Native.extract_unique_points() |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  The mean of each geometry's vertices as a point (GeoPolars `mean_coordinate`).
+
+  Polygon rings do not count their closing vertex twice; a closed line string does. This is
+  a vertex average, not a centroid. Empty and null rows give `nil`.
+  """
+  @spec mean_coordinate(t()) :: t()
+  def mean_coordinate(%__MODULE__{ref: ref}) do
+    ref |> Native.mean_coordinate() |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  Combines all non-null geometries into a **one-row** series (GeoPandas `tools.collect`).
+
+  Geometries of one family (points, lines or polygons) become the matching `Multi*`
+  geometry, with multi-part inputs flattened; mixed families become a `GeometryCollection`
+  of the inputs. A single geometry is returned as it is unless `multi: true` forces the
+  `Multi*` form. No geometries give `GEOMETRYCOLLECTION EMPTY`. The CRS is kept.
+  """
+  @spec collect(t(), keyword()) :: t()
+  def collect(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, multi: false)
+    unless is_boolean(opts[:multi]), do: raise(ArgumentError, ":multi must be a boolean")
+    ref |> Native.collect(opts[:multi]) |> wrap() |> unwrap!()
+  end
+
+  # -- missing values ---------------------------------------------------------------------
+
+  @doc """
+  Boolean series: whether each row is a missing (null) geometry. Empty geometries are *not*
+  missing (GeoPandas >= 0.6).
+  """
+  @spec isna(t()) :: Series.t()
+  def isna(%__MODULE__{ref: ref}),
+    do: ref |> Native.null_rows() |> Series.from_list(dtype: :boolean)
+
+  @doc "Boolean series: the negation of `isna/1`."
+  @spec notna(t()) :: Series.t()
+  def notna(%__MODULE__{ref: ref}) do
+    ref |> Native.null_rows() |> Enum.map(&(not &1)) |> Series.from_list(dtype: :boolean)
+  end
+
+  @doc """
+  Replaces null rows with `value`: a WKT string, or a one-row `GeoSeries`.
+
+  With no value, nulls become `GEOMETRYCOLLECTION EMPTY`, as in GeoPandas. Empty geometries
+  are kept. A WKT value takes the series' CRS; a series value with a different CRS (both
+  set) raises `ArgumentError`, as does one that does not have exactly one row.
+  """
+  @spec fillna(t(), String.t() | t() | nil) :: t()
+  def fillna(%__MODULE__{ref: ref} = series, value \\ nil) do
+    fill = fill_ref(series, value)
+    ref |> Native.fill_null(fill) |> wrap() |> unwrap!()
+  end
+
+  defp fill_ref(series, nil), do: fill_ref(series, "GEOMETRYCOLLECTION EMPTY")
+  defp fill_ref(_series, %__MODULE__{ref: ref}), do: ref
+
+  defp fill_ref(series, wkt) when is_binary(wkt) do
+    %__MODULE__{ref: ref} = from_wkt!([wkt], crs: crs(series))
+    ref
+  end
+
+  # -- lines and validity -----------------------------------------------------------------
+
+  @doc """
+  Whether each geometry is closed, following Shapely: a non-empty line string whose ends
+  meet, or a multi-line string all of whose members do. Every other geometry type and empty
+  lines give `false`; null rows give `nil`.
+  """
+  @spec is_closed(t()) :: Series.t()
+  # GeoPandas-compatible name, see is_valid/1.
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+  def is_closed(%__MODULE__{ref: ref}) do
+    ref |> Native.closed_flags() |> then(&Series.from_list(&1, dtype: :boolean))
+  end
+
+  @doc """
+  Whether each geometry is a ring: a closed line string with at least four vertices and no
+  self-intersection except at the closing vertex. Every other geometry type gives `false`;
+  null rows give `nil`. The check compares all segment pairs, so it is quadratic in the
+  number of vertices.
+  """
+  @spec is_ring(t()) :: Series.t()
+  # GeoPandas-compatible name, see is_valid/1.
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+  def is_ring(%__MODULE__{ref: ref}) do
+    ref |> Native.ring_flags() |> then(&Series.from_list(&1, dtype: :boolean))
+  end
+
+  @doc """
+  A string series saying why each geometry is invalid, or `"Valid Geometry"` (Shapely's text)
+  for valid ones; null rows give `nil`.
+
+  Only the first problem is reported, in the wording of the `geo` crate (for example
+  "interior ring at index 0 is not contained within the polygon's exterior"), not GEOS'
+  `"Self-intersection[x y]"`.
+  """
+  @spec is_valid_reason(t()) :: Series.t()
+  # GeoPandas-compatible name, see is_valid/1.
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+  def is_valid_reason(%__MODULE__{ref: ref}) do
+    ref |> Native.valid_reasons() |> Series.from_list(dtype: :string)
+  end
+
+  @doc "Keeps valid geometries and turns invalid ones into nulls (GeoPolars `null_out_invalid`)."
+  @spec null_out_invalid(t()) :: t()
+  def null_out_invalid(%__MODULE__{ref: ref}) do
+    ref |> Native.null_out_invalid() |> wrap() |> unwrap!()
   end
 
   # -- binary predicates ----------------------------------------------------------------

@@ -50,7 +50,18 @@ const CRS84: &str = "OGC:CRS84";
 /// Reads a GeoJSON file; see the module documentation for the inference rules.
 pub fn read_geojson(path: &str) -> Result<VectorRead, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    let parsed = GeoJson::from_str(&text).map_err(|e| format!("invalid GeoJSON in {path}: {e}"))?;
+    parse_geojson(&text, path, Some(CRS84))
+}
+
+/// Reads GeoJSON text with the same inference rules as [`read_geojson`], giving the geometry
+/// the CRS `crs` (the file reader always uses `OGC:CRS84`).
+pub fn read_geojson_str(text: &str, crs: Option<&str>) -> Result<VectorRead, String> {
+    parse_geojson(text, "the given text", crs)
+}
+
+fn parse_geojson(text: &str, source: &str, crs: Option<&str>) -> Result<VectorRead, String> {
+    let parsed =
+        GeoJson::from_str(text).map_err(|e| format!("invalid GeoJSON in {source}: {e}"))?;
     let features = match parsed {
         GeoJson::FeatureCollection(collection) => collection.features,
         GeoJson::Feature(feature) => vec![feature],
@@ -60,7 +71,7 @@ pub fn read_geojson(path: &str) -> Result<VectorRead, String> {
         }],
     };
 
-    let mut builder = ColumnBuilder::new(Some(CRS84));
+    let mut builder = ColumnBuilder::new(crs);
     for (row, feature) in features.iter().enumerate() {
         match &feature.geometry {
             None => builder.push(None::<&geo::Geometry<f64>>)?,
