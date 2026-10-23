@@ -55,6 +55,16 @@ warning); `GeoFrame.list_layers/2` and `GeoFrame.read_file_info/2` describe a fi
 layers of a GeoPackage, pyogrio-style info). Files written by GeoPandas 1.2 / pyogrio read
 directly, and GeoPandas reads what GeoFrame writes (`scripts/crosscheck_io.sh`).
 
+Z and M survive every format (GeoJSON keeps Z only, as RFC 7946 has no M). GeoJSON writes Z as
+the third ordinate and reads positions with three values as Z; FlatGeobuf sets the header
+`has_z`/`has_m` flags and stores one Z/M value per vertex; a shapefile with Z is written as
+`PointZ`/`PolyLineZ`/`PolygonZ`/`MultiPointZ` and one with only M as the M types (measures that
+are NaN are no data); a GeoPackage layer gets `z`/`m` flags of 0, 1 or 2 and Z/M ranges in the
+blob envelopes; GeoParquet and Arrow list `"Point Z"`-style `geometry_types` and keep Z/M in
+native GeoArrow columns too. Formats that store one dimension per file (FlatGeobuf, Shapefile,
+native GeoArrow) promote rows with fewer ordinates with NaN, except native GeoArrow, which
+needs one dimension. See [docs/parity.md](docs/parity.md#z-and-m).
+
 Arrow interchange is IPC bytes (the BEAM has no Arrow C Data Interface binding), with GeoArrow
 extension metadata (`geoarrow.wkb` or native types, CRS as PROJJSON) on the geometry field, so
 GeoPandas, pyarrow, Explorer and ADBC read what GeoFrame writes and the reverse. Feather and
@@ -84,7 +94,8 @@ error (`{:error, message}` or `ArgumentError`) instead. The caps:
 |------|-------|
 | WKT text | parenthesis nesting depth 64 |
 | WKB / EWKB | collection nesting depth 64 (the `wkb` reader itself stops at 128) |
-| FlatGeobuf read | every feature must fit in the file; `bbox:` reads need index node size 16 |
+| FlatGeobuf read | every feature must fit in the file; `bbox:` reads need index node size 16; a header that declares Z or M requires one value per vertex in every feature |
+| Shapefile read (Z/M) | the part and point counts of a Z or M record must fit the record, so a crafted count is an error, not an allocation |
 | `make_grid` | 10,000,000 cells (square and hexagon) |
 | `sample_points` | 10,000,000 samples in total per call (a scalar size counts once per row) |
 | `maximum_inscribed_circle` | seed cells are enlarged until at most 5,000,000 fit; refinement is also capped at 5,000,000 cells |
