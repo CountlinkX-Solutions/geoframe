@@ -261,7 +261,7 @@ impl GeoColumn {
             |scalar| scalar.clone(),
             |scalar, row| guarded(|| overlay_pair(row, scalar, op)).flatten(),
         )?;
-        self.rebuild_overlay(other, &rows, op == SetOp::Intersection)
+        self.rebuild_overlay(other, &rows, op)
     }
 
     /// The union of every non-null row as a one-row column with the same CRS. Polygonal rows

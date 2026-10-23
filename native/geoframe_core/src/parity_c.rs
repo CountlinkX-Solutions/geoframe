@@ -571,7 +571,7 @@ impl GeoColumn {
                 })
             })
             .collect();
-        self.rebuild_interpolated(&rows, false)
+        self.rebuild_segmentized(&rows)
     }
 
     /// Drops consecutive vertices that repeat, or lie within `tolerance` of the last kept one.

@@ -392,3 +392,83 @@ fn non_finite_coordinates_and_ordinates_never_panic() {
     let _ = inf_z.set_op(&one(B), SetOp::Union);
     let _ = one(B).set_op(&inf_z, SetOp::Intersection);
 }
+
+#[test]
+fn segmentize_interpolates_along_each_segment_where_segments_cross() {
+    check_raw(
+        one("LINESTRING Z (0 0 0, 10 10 10, 10 0 20, 0 10 30)").segmentize(8.0),
+        "LINESTRING Z (0 0 0, 5 5 5, 10 10 10, 10 5 15, 10 0 20, 5 5 25, 0 10 30)",
+    );
+}
+
+#[test]
+fn clip_by_rect_keeps_m_inside_the_rectangle_and_empties_are_two_dimensional() {
+    let zm = "POLYGON ZM ((0 0 1 11, 10 0 2 12, 10 10 3 13, 0 10 4 14, 0 0 1 11))";
+    check(
+        one(zm).clip_by_rect(-8.0, -8.0, 30.0, 30.0),
+        "POLYGON ZM ((0 0 1 11, 0 10 4 14, 10 10 3 13, 10 0 2 12, 0 0 1 11))",
+    );
+    check_raw(
+        one("LINESTRING Z (0 0 0, 10 0 10)").clip_by_rect(20.0, 20.0, 30.0, 30.0),
+        "GEOMETRYCOLLECTION EMPTY",
+    );
+}
+
+#[test]
+fn empty_results_have_z_by_the_extent_rule() {
+    // Overlapping extents: Z when either input has a third ordinate.
+    check_raw(op(A, A, SetOp::Difference), "POLYGON Z EMPTY");
+    check_raw(
+        op(
+            A,
+            "POLYGON M ((0 0 1, 10 0 2, 10 10 3, 0 10 4, 0 0 1))",
+            SetOp::Difference,
+        ),
+        "POLYGON Z EMPTY",
+    );
+    // Disjoint extents: only when both have one.
+    check_raw(
+        op(
+            B_2D,
+            "POLYGON Z ((50 50 1, 60 50 1, 60 60 1, 50 50 1))",
+            SetOp::Intersection,
+        ),
+        "POLYGON EMPTY",
+    );
+    check_raw(
+        op(
+            A,
+            "POLYGON Z ((50 50 1, 60 50 1, 60 60 1, 50 50 1))",
+            SetOp::Intersection,
+        ),
+        "POLYGON Z EMPTY",
+    );
+}
+
+#[test]
+fn points_are_not_noded_and_disjoint_inputs_are_copied() {
+    // A 2D point on a Z line takes the elevation-model value, not the interpolated one.
+    check_raw(
+        op(
+            "POINT (3 3)",
+            "LINESTRING Z (0 0 0, 10 10 10)",
+            SetOp::Intersection,
+        ),
+        "POINT Z (3 3 0)",
+    );
+    // A point keeps its own Z; the other geometry's vertex wins for a union.
+    check_raw(
+        op("POINT Z (3 3 7)", A, SetOp::Intersection),
+        "POINT Z (3 3 7)",
+    );
+    // Disjoint 2D polygon: a union leaves NaN, a difference fills the elevation-model value.
+    let far = "POLYGON Z ((50 50 1, 60 50 1, 60 60 1, 50 50 1))";
+    check(
+        op(B_2D, far, SetOp::Union),
+        "MULTIPOLYGON Z (((5 5 NaN, 5 15 NaN, 15 15 NaN, 15 5 NaN, 5 5 NaN)), ((50 50 1, 60 60 1, 60 50 1, 50 50 1)))",
+    );
+    check(
+        op(B_2D, far, SetOp::Difference),
+        "POLYGON Z ((5 5 1, 5 15 1, 15 15 1, 15 5 1, 5 5 1))",
+    );
+}

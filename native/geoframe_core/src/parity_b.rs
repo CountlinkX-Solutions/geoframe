@@ -111,7 +111,7 @@ impl GeoColumn {
                     .and_then(|g| guarded(|| clip_rect(g, rect)).flatten())
             })
             .collect();
-        self.rebuild_interpolated(&rows, true)
+        self.rebuild_clipped(&rows, [xmin, ymin, xmax, ymax])
     }
 
     /// The intersection of every non-null row as a one-row column (the CRS is kept).

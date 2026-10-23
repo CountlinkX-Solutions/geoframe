@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::rc::Rc;
 
-use geo::{Coord, Geometry};
+use geo::{Coord, CoordsIter, Geometry};
 use geo_traits::{
     CoordTrait, GeometryCollectionTrait, GeometryTrait, GeometryType, LineStringTrait,
     MultiLineStringTrait, MultiPointTrait, MultiPolygonTrait, PointTrait, PolygonTrait,
@@ -32,7 +32,7 @@ use rstar::{PointDistance, RTree, RTreeObject, AABB};
 use crate::ewkb::MAX_NESTING_DEPTH;
 use crate::zm::{dimensions, flags};
 use crate::zm_bridge::push_zm;
-use crate::GeoColumn;
+use crate::{GeoColumn, SetOp};
 
 /// Distance, relative to the extent of the inputs, under which a result vertex counts as an
 /// input vertex or as lying on an input segment. `geo`'s overlay snaps its output to a grid and
@@ -119,6 +119,10 @@ pub(crate) struct Source {
     heights: Vec<[f64; 3]>,
     /// `(min_x, min_y, max_x, max_y)` of every vertex.
     extent: Option<[f64; 4]>,
+    /// Whether the row has no lines or rings (points only).
+    punctual: bool,
+    /// Every vertex in storage order, closing vertices included (only when requested).
+    sequence: Vec<Vertex>,
 }
 
 #[derive(Default)]
@@ -129,6 +133,9 @@ struct Collector {
     heights: Vec<[f64; 3]>,
     extent: Option<[f64; 4]>,
     measured: bool,
+    linear: bool,
+    keep_sequence: bool,
+    sequence: Vec<Vertex>,
 }
 
 impl Collector {
@@ -142,6 +149,9 @@ impl Collector {
         if !self.measured {
             return;
         }
+        if self.keep_sequence {
+            self.sequence.push(v);
+        }
         if let std::collections::hash_map::Entry::Vacant(slot) = self.vertices.entry(key(v.x, v.y))
         {
             slot.insert((v.z, v.m));
@@ -153,6 +163,7 @@ impl Collector {
     }
 
     fn line<C: CoordTrait<T = f64>>(&mut self, coords: impl Iterator<Item = C>) {
+        self.linear = true;
         let mut previous: Option<Vertex> = None;
         for c in coords {
             let v = Vertex::of(&c);
@@ -218,10 +229,11 @@ impl Collector {
 
 impl Source {
     /// Reads a stored geometry. Rows with neither Z nor M only keep their extent.
-    pub(crate) fn of<G: GeometryTrait<T = f64>>(geometry: &G) -> Self {
+    pub(crate) fn of<G: GeometryTrait<T = f64>>(geometry: &G, keep_sequence: bool) -> Self {
         let dims = dimensions(geometry);
         let mut collector = Collector {
             measured: dims.0 || dims.1,
+            keep_sequence,
             ..Collector::default()
         };
         collector.walk(geometry, 0);
@@ -238,6 +250,8 @@ impl Source {
             tree: RTree::bulk_load(collector.segments),
             heights: collector.heights,
             extent: collector.extent,
+            punctual: !collector.linear,
+            sequence: collector.sequence,
         }
     }
 
@@ -251,11 +265,14 @@ impl Source {
             tree: RTree::new(),
             heights: Vec::new(),
             extent: None,
+            punctual: true,
+            sequence: Vec::new(),
         };
         let mut segments = Vec::new();
         let mut points = Vec::new();
         for s in sources {
             merged.dims = (merged.dims.0 || s.dims.0, merged.dims.1 || s.dims.1);
+            merged.punctual &= s.punctual;
             for p in s.points.iter() {
                 if let std::collections::hash_map::Entry::Vacant(slot) =
                     merged.vertices.entry(key(p.geom()[0], p.geom()[1]))
@@ -388,6 +405,9 @@ pub(crate) struct Model {
     sources: Vec<Rc<Source>>,
     tolerance_2: f64,
     fill: bool,
+    /// Whether nodes interpolate along segments (not when a point is involved: GEOS does not
+    /// node points, so they take their own Z or the elevation model's).
+    nodes: bool,
     elevation: std::cell::OnceCell<Option<Elevation>>,
 }
 
@@ -398,6 +418,7 @@ impl Model {
         let span = extent.map_or(0.0, |e| (e[2] - e[0]).max(e[3] - e[1]));
         let tolerance = NEAR * span;
         Self {
+            nodes: !sources.iter().any(|s| s.punctual),
             sources,
             tolerance_2: tolerance * tolerance,
             fill,
@@ -430,7 +451,7 @@ impl Model {
             }
         }
         for (which, value) in out.iter_mut().enumerate() {
-            if value.is_nan() {
+            if value.is_nan() && self.nodes {
                 *value = self.along_segments(which, c);
             }
         }
@@ -484,16 +505,62 @@ fn take(out: &mut [f64; 2], (z, m): (f64, f64)) {
     }
 }
 
+/// Ordinates of the vertices of an operation that only inserts vertices into the segments of its
+/// input (`segmentize`): the output lists the input vertices in order with new ones between,
+/// so a new vertex interpolates between its neighbours in the input even where segments cross.
+pub(crate) struct Aligned {
+    sequence: Vec<Vertex>,
+    next: std::cell::Cell<usize>,
+}
+
+impl Aligned {
+    fn at(&self, c: Coord<f64>) -> (f64, f64) {
+        let k = self.next.get();
+        if let Some(v) = self.sequence.get(k).filter(|v| v.x == c.x && v.y == c.y) {
+            self.next.set(k + 1);
+            return (v.z, v.m);
+        }
+        match (
+            k.checked_sub(1).and_then(|i| self.sequence.get(i)),
+            self.sequence.get(k),
+        ) {
+            (Some(&a), Some(&b)) => {
+                let segment = Segment { a, b };
+                (
+                    interpolate(0, c.x, c.y, &segment),
+                    interpolate(1, c.x, c.y, &segment),
+                )
+            }
+            _ => (f64::NAN, f64::NAN),
+        }
+    }
+}
+
+/// How the vertices of one output row find their ordinates.
+pub(crate) enum Resolver {
+    Model(Model),
+    Aligned(Aligned),
+}
+
+impl Resolver {
+    fn at(&self, c: Coord<f64>) -> (f64, f64) {
+        match self {
+            Self::Model(model) => model.at(c),
+            Self::Aligned(aligned) => aligned.at(c),
+        }
+    }
+}
+
 /// How one output row gets its ordinates.
 pub(crate) struct RowPlan {
     pub dims: (bool, bool),
-    pub model: Model,
+    pub resolver: Resolver,
 }
 
 impl GeoColumn {
     /// One [`Source`] per row (`None` for null rows).
     pub(crate) fn zm_sources(&self) -> Vec<Option<Rc<Source>>> {
-        self.map_scalars(|scalar| Rc::new(Source::of(scalar)))
+        self.map_scalars(|scalar| Rc::new(Source::of(scalar, false)))
     }
 
     /// Builds a column from 2D `rows`; row `i` is written with `plan(i)`'s dimensions and
@@ -507,7 +574,7 @@ impl GeoColumn {
         for (i, row) in rows.iter().enumerate() {
             match (row, plan(i)) {
                 (Some(geometry), Some(plan)) if plan.dims != (false, false) => {
-                    let ordinates = |c: Coord<f64>| plan.model.at(c);
+                    let ordinates = |c: Coord<f64>| plan.resolver.at(c);
                     push_zm(&mut builder, geometry, plan.dims, &ordinates)?;
                 }
                 _ => builder
@@ -534,7 +601,56 @@ impl GeoColumn {
             let source = sources.get(i)?.as_ref()?;
             Some(RowPlan {
                 dims: (source.dims.0, false),
-                model: Model::new(vec![source.clone()], fill),
+                resolver: Resolver::Model(Model::new(vec![source.clone()], fill)),
+            })
+        })
+    }
+
+    /// [`rebuild_interpolated`](Self::rebuild_interpolated) for `segmentize`: a new vertex
+    /// interpolates between the two input vertices it was inserted between.
+    pub(crate) fn rebuild_segmentized(
+        &self,
+        rows: &[Option<Geometry<f64>>],
+    ) -> Result<Self, String> {
+        if !self.any_zm() {
+            return self.rebuild(rows);
+        }
+        let sources = self.map_scalars(|scalar| Source::of(scalar, true));
+        self.emit_zm(rows, |i| {
+            let source = sources.get(i)?.as_ref()?;
+            Some(RowPlan {
+                dims: (source.dims.0, false),
+                resolver: Resolver::Aligned(Aligned {
+                    sequence: source.sequence.clone(),
+                    next: std::cell::Cell::new(0),
+                }),
+            })
+        })
+    }
+
+    /// [`rebuild_interpolated`](Self::rebuild_interpolated) for `clip_by_rect`: a row inside the
+    /// rectangle comes back unchanged (M included), an empty result is 2D, and the corners GEOS
+    /// adds inside a polygon take the elevation-model value.
+    pub(crate) fn rebuild_clipped(
+        &self,
+        rows: &[Option<Geometry<f64>>],
+        rect: [f64; 4],
+    ) -> Result<Self, String> {
+        if !self.any_zm() {
+            return self.rebuild(rows);
+        }
+        let sources = self.zm_sources();
+        self.emit_zm(rows, |i| {
+            let source = sources.get(i)?.as_ref()?;
+            if rows[i].as_ref().is_some_and(|g| g.coords_count() == 0) {
+                return None;
+            }
+            let inside = source.extent.is_some_and(|e| {
+                rect[0] <= e[0] && rect[1] <= e[1] && e[2] <= rect[2] && e[3] <= rect[3]
+            });
+            Some(RowPlan {
+                dims: (source.dims.0, source.dims.1 && inside),
+                resolver: Resolver::Model(Model::new(vec![source.clone()], true)),
             })
         })
     }
@@ -545,7 +661,7 @@ impl GeoColumn {
         &self,
         other: &GeoColumn,
         rows: &[Option<Geometry<f64>>],
-        intersection: bool,
+        op: SetOp,
     ) -> Result<Self, String> {
         if !(self.any_zm() || other.any_zm()) {
             return self.rebuild(rows);
@@ -557,15 +673,47 @@ impl GeoColumn {
             let b = right.get(if broadcasts { 0 } else { i })?.as_ref()?;
             // Where both inputs have a vertex with different Z, GEOS picks by noding order. Over
             // random inputs the intersection mostly keeps the first input's value and the other
-            // operations the second's.
-            let order = if intersection {
+            // operations the second's. With a point involved the result vertices come from the
+            // point for an intersection and from the other geometry for a union.
+            let order = if a.punctual && b.punctual {
+                vec![a.clone(), b.clone()]
+            } else if a.punctual || b.punctual {
+                let (points_first, keep_a) = match op {
+                    SetOp::Intersection => (true, false),
+                    SetOp::Difference => (false, true),
+                    SetOp::Union | SetOp::SymmetricDifference => (false, false),
+                };
+                if keep_a || points_first == a.punctual {
+                    vec![a.clone(), b.clone()]
+                } else {
+                    vec![b.clone(), a.clone()]
+                }
+            } else if op == SetOp::Intersection {
                 vec![a.clone(), b.clone()]
             } else {
                 vec![b.clone(), a.clone()]
             };
+            // Inputs with disjoint extents are copied, not noded: a union keeps a 2D one NaN, a
+            // difference fills it.
+            let meet = match (a.extent, b.extent) {
+                (Some(x), Some(y)) => x[0] <= y[2] && y[0] <= x[2] && x[1] <= y[3] && y[1] <= x[3],
+                _ => false,
+            };
+            // An empty result has Z (never M) when either input has a third ordinate after
+            // overlaying, and only when both have one when the extents are disjoint.
+            let measured = |s: &Source| s.dims.0 || s.dims.1;
+            let empty = rows[i].as_ref().is_some_and(|g| g.coords_count() == 0);
+            let dims = if !empty {
+                (a.dims.0 || b.dims.0, a.dims.1 || b.dims.1)
+            } else if meet {
+                (measured(a) || measured(b), false)
+            } else {
+                (measured(a) && measured(b), false)
+            };
+            let fill = meet || op == SetOp::Difference;
             Some(RowPlan {
-                dims: (a.dims.0 || b.dims.0, a.dims.1 || b.dims.1),
-                model: Model::new(order, true),
+                dims,
+                resolver: Resolver::Model(Model::new(order, fill)),
             })
         })
     }
@@ -591,7 +739,7 @@ impl GeoColumn {
             let source = Rc::new(Source::merged(&members));
             Some(RowPlan {
                 dims: source.dims,
-                model: Model::new(vec![source], true),
+                resolver: Resolver::Model(Model::new(vec![source], true)),
             })
         })
     }
@@ -622,7 +770,7 @@ impl GeoColumn {
             let input = inputs.get(i)?.as_ref()?;
             Some(RowPlan {
                 dims: carry(input, source.dims),
-                model: Model::new(vec![source.clone()], false),
+                resolver: Resolver::Model(Model::new(vec![source.clone()], false)),
             })
         })
     }
@@ -638,7 +786,7 @@ impl GeoColumn {
         self.emit_zm(rows, |_| {
             Some(RowPlan {
                 dims: (merged.dims.0, false),
-                model: Model::new(vec![merged.clone()], false),
+                resolver: Resolver::Model(Model::new(vec![merged.clone()], false)),
             })
         })
     }
