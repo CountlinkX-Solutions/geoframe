@@ -202,6 +202,16 @@ fn simplify(column: Handle, tolerance: f64, preserve_topology: bool) -> Result<H
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn to_crs(column: Handle, target: String) -> Result<Handle, String> {
+    column.0.to_crs(&target).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn estimate_utm_crs(column: Handle) -> Result<String, String> {
+    column.0.estimate_utm_crs()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn translate(column: Handle, xoff: f64, yoff: f64) -> Result<Handle, String> {
     column.0.translate(xoff, yoff).map(wrap)
 }
