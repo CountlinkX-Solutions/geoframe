@@ -351,7 +351,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
 | `plot` (matplotlib) | — | `GeoFrame.Kino.map/2`, `Kino.Render` (MapLibre) | ⛔ | replaced by Livebook map; `max_map_features` cap |
-| `explore` (folium) | — | `GeoFrame.Kino.map/2` | 🟡 | static MapLibre render; no popups/tooltip/choropleth options verified |
+| `explore` (folium) | — | `GeoFrame.Kino.deck/2` (deck.gl, binary buffers), `GeoFrame.Kino.map/2` (MapLibre), Smart Cells "Read spatial file" and "Spatial join" | 🟡 | deck widget: hover tooltips, color by column (viridis ramp or categorical), size/width by column, fit bounds, Carto basemap; no popups on click, legend, or layer control |
 | `preview` | — | `preview/1` | ✅ | GeoFrame-only |
 
 ## 16. Testing

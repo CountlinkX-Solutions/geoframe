@@ -167,6 +167,19 @@ in Livebook with **Map**, **Table** and **Inspect** tabs (a `GeoFrame.GeoSeries`
 and **Inspect**). The map needs the optional `kino_maplibre` package and draws up to 50,000
 features; see `GeoFrame.Kino`. Try the walkthrough in [`notebooks/spike.livemd`](notebooks/spike.livemd).
 
+For large inputs use `GeoFrame.Kino.deck/2`: it sends binary buffers to deck.gl (no GeoJSON),
+so a million features stay interactive, with hover tooltips and colour or size by column
+(see [`notebooks/deck.livemd`](notebooks/deck.livemd)).
+
+Two Smart Cells are registered when the `:geoframe` application starts with Kino present. Add
+them from the **Smart** menu of a Livebook section:
+
+* **Read spatial file** (`GeoFrame.Kino.ReadFileCell`): path, driver (auto from the extension),
+  GeoPackage layer, bounding box, target CRS and an optional map; generates `GeoFrame.read_file!/2`.
+* **Spatial join** (`GeoFrame.Kino.SpatialJoinCell`): pick two `GeoDataFrame` variables of the
+  notebook, a predicate or nearest mode, `how` and an optional map; generates `GeoFrame.sjoin/3`
+  or `GeoFrame.sjoin_nearest/3`.
+
 Livebook has no headless runner, so `elixir scripts/run_livemd.exs notebooks/spike.livemd`
 extracts the notebook's code cells and runs them in order to check they still work.
 
