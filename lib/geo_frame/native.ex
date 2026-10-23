@@ -142,6 +142,7 @@ defmodule GeoFrame.Native do
       do: err()
 
   def to_arrow_stream(_ref, _geometry_column, _attributes_ipc, _geometry_encoding), do: err()
+  def deck_buffers_nif(_ref, _colors, _sizes), do: err()
   def from_arrow_stream(_bytes, _columns, _geometry_column), do: err()
   def read_geojson_file(_path), do: err()
   def write_geojson_file(_ref, _attributes_ipc, _path, _force), do: err()

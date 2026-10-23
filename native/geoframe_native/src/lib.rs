@@ -2,9 +2,9 @@
 //! crate; this layer only converts between BEAM terms and core types.
 
 use geoframe_core::{
-    from_arrow_ipc, geoparquet_metadata, gpkg_info, gpkg_layers, read_feather, read_flatgeobuf,
-    read_geojson, read_geojson_str, read_geoparquet_filtered, read_gpkg, read_shapefile,
-    shapefile_info, to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson,
+    deck_buffers, from_arrow_ipc, geoparquet_metadata, gpkg_info, gpkg_layers, read_feather,
+    read_flatgeobuf, read_geojson, read_geojson_str, read_geoparquet_filtered, read_gpkg,
+    read_shapefile, shapefile_info, to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson,
     write_geoparquet_with, write_gpkg, write_shapefile, BufferOptions, FeatherCompression,
     GeoColumn, GeometryEncoding, GpkgWriteOptions, GridFeature, GridType, LayerInfo, NearestPairs,
     OffsetJoin, OffsetParams, Origin, ParquetOptions, PrecisionMode, Predicate, QueryPredicate,
@@ -630,6 +630,23 @@ fn from_arrow_stream<'a>(
         geometry_column.as_deref(),
     )
     .map(|read| table_read(env, read))
+}
+
+/// Flat binary buffers for the deck.gl widget: named buffers plus the count of skipped parts.
+/// `colors` (RGBA per row) and `sizes` (f32 per row) are optional (empty binary = none).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn deck_buffers_nif<'a>(
+    env: Env<'a>,
+    column: Handle,
+    colors: Binary,
+    sizes: Binary,
+) -> (Vec<(String, Binary<'a>)>, usize) {
+    let (list, skipped) = deck_buffers(&column.0, colors.as_slice(), sizes.as_slice());
+    let list = list
+        .into_iter()
+        .map(|(name, bytes)| (name.to_string(), binary(env, &bytes)))
+        .collect();
+    (list, skipped)
 }
 
 fn binary<'a>(env: Env<'a>, bytes: &[u8]) -> Binary<'a> {
