@@ -20,12 +20,13 @@ defmodule GeoFrame.GeoSeries do
 
   alias Explorer.DataFrame
   alias Explorer.Series
+  alias GeoFrame.Features
   alias GeoFrame.Native
 
   @enforce_keys [:ref]
-  defstruct [:ref]
+  defstruct [:ref, precision: 0.0]
 
-  @type t :: %__MODULE__{ref: reference()}
+  @type t :: %__MODULE__{ref: reference(), precision: float()}
   @type bounds :: {float(), float(), float(), float()}
   @typedoc "The right-hand side of a binary operation: a series, or a WKT string that broadcasts."
   @type other :: t() | String.t()
@@ -105,6 +106,37 @@ defmodule GeoFrame.GeoSeries do
   def from_arrow!(bytes, opts \\ []), do: bytes |> from_arrow(opts) |> unwrap!()
 
   @doc """
+  Reads the geometry column of a vector file as a series (GeoPandas `GeoSeries.from_file`).
+
+  Reads the file with `GeoFrame.read_file/2`, so the format comes from the extension or
+  `driver:` and the other options are those of the format's reader; the attributes are
+  dropped. Returns `{:ok, series}` or `{:error, message}`.
+  """
+  @spec from_file(Path.t(), keyword()) :: {:ok, t()} | {:error, String.t()}
+  def from_file(path, opts \\ []) do
+    with {:ok, %GeoFrame.GeoDataFrame{geometry: geometry}} <- GeoFrame.read_file(path, opts) do
+      {:ok, geometry}
+    end
+  end
+
+  @doc "Like `from_file/2` but raises `ArgumentError` on failure."
+  @spec from_file!(Path.t(), keyword()) :: t()
+  def from_file!(path, opts \\ []), do: path |> from_file(opts) |> unwrap_series!()
+
+  @doc """
+  Writes the series to a vector file (GeoPandas `GeoSeries.to_file`): a frame whose only
+  column is the geometry, written by `GeoFrame.write_file/3`, which documents the format
+  selection and options. Returns `:ok` or `{:error, message}`.
+  """
+  @spec to_file(t(), Path.t(), keyword()) :: :ok | {:error, String.t()}
+  def to_file(%__MODULE__{} = series, path, opts \\ []) do
+    GeoFrame.write_file(GeoFrame.GeoDataFrame.new(DataFrame.new([]), series), path, opts)
+  end
+
+  defp unwrap_series!({:ok, series}), do: series
+  defp unwrap_series!({:error, message}), do: raise(ArgumentError, message)
+
+  @doc """
   Builds a series of points from coordinate columns, like GeoPandas `points_from_xy`.
 
   `x` and `y` are lists or `Explorer.Series` of equal length. A row is a null geometry when
@@ -151,6 +183,105 @@ defmodule GeoFrame.GeoSeries do
 
   defp coordinates!(other, name) do
     raise ArgumentError, "#{name} must be a list or an Explorer.Series, got: #{inspect(other)}"
+  end
+
+  @typedoc "A vertex: an `{x, y}` tuple or an `[x, y]` list of numbers."
+  @type vertex :: {number(), number()} | [number()]
+
+  @doc """
+  Builds line strings from vertex lists, one list per row (GeoPolars `line_string`).
+
+  A row is a list of vertices, `[]` for an empty line or `nil` for a null geometry; a vertex is
+  `{x, y}` or `[x, y]`. A line needs at least two vertices. Option: `:crs`.
+
+      iex> s = GeoFrame.GeoSeries.line_strings_from_vertices([[{0, 0}, {1, 1}], nil])
+      iex> GeoFrame.GeoSeries.to_wkt(s)
+      ["LINESTRING(0 0,1 1)", nil]
+  """
+  @spec line_strings_from_vertices([[vertex()] | nil], keyword()) :: t()
+  def line_strings_from_vertices(rows, opts \\ []) do
+    from_vertices("line_string", rows, opts, fn row, i -> [[vertices!(row, i)]] end)
+  end
+
+  @doc """
+  Builds multipoints from vertex lists, one list per row (GeoPolars `multi_point`). See
+  `line_strings_from_vertices/2` for the row format.
+  """
+  @spec multi_points_from_vertices([[vertex()] | nil], keyword()) :: t()
+  def multi_points_from_vertices(rows, opts \\ []) do
+    from_vertices("multi_point", rows, opts, fn row, i -> [[vertices!(row, i)]] end)
+  end
+
+  @doc """
+  Builds polygons from rings, one list of rings per row (GeoPolars `polygon`).
+
+  A row is `[shell, hole, ...]` where each ring is a list of vertices; open rings are closed,
+  and a ring needs three distinct vertices. `[]` is an empty polygon, `nil` a null geometry.
+  Option: `:crs`.
+
+      iex> s = GeoFrame.GeoSeries.polygons_from_rings([[[{0, 0}, {4, 0}, {4, 4}]]])
+      iex> GeoFrame.GeoSeries.to_wkt(s)
+      ["POLYGON((0 0,4 0,4 4,0 0))"]
+  """
+  @spec polygons_from_rings([[[vertex()]] | nil], keyword()) :: t()
+  def polygons_from_rings(rows, opts \\ []) do
+    from_vertices("polygon", rows, opts, fn row, i -> [rings!(row, i)] end)
+  end
+
+  @doc """
+  Builds multi-line strings from lists of vertex lists, one list of lines per row
+  (GeoPolars `multi_line_string`). Option: `:crs`.
+  """
+  @spec multi_line_strings_from_lines([[[vertex()]] | nil], keyword()) :: t()
+  def multi_line_strings_from_lines(rows, opts \\ []) do
+    from_vertices("multi_line_string", rows, opts, fn row, i ->
+      Enum.map(rings!(row, i), &[&1])
+    end)
+  end
+
+  @doc """
+  Builds multipolygons from lists of polygons (each a list of rings), one per row
+  (GeoPolars `multi_polygon`). Option: `:crs`.
+  """
+  @spec multi_polygons_from_polygons([[[[vertex()]]] | nil], keyword()) :: t()
+  def multi_polygons_from_polygons(rows, opts \\ []) do
+    from_vertices("multi_polygon", rows, opts, fn row, i ->
+      unless is_list(row), do: raise(ArgumentError, "row #{i}: expected a list of polygons")
+      Enum.map(row, &rings!(&1, i))
+    end)
+  end
+
+  defp from_vertices(kind, rows, opts, nest) do
+    opts = Keyword.validate!(opts, crs: nil)
+
+    unless is_list(rows) do
+      raise ArgumentError, "expected a list of rows, got: #{inspect(rows)}"
+    end
+
+    rows =
+      rows
+      |> Enum.with_index()
+      |> Enum.map(fn
+        {nil, _index} -> nil
+        {row, index} -> nest.(row, index)
+      end)
+
+    kind |> Native.from_vertices(rows, opts[:crs]) |> wrap() |> unwrap!()
+  end
+
+  defp rings!(rings, row) when is_list(rings), do: Enum.map(rings, &vertices!(&1, row))
+  defp rings!(_other, row), do: raise(ArgumentError, "row #{row}: expected a list of rings")
+
+  defp vertices!(vertices, row) when is_list(vertices), do: Enum.map(vertices, &vertex!(&1, row))
+
+  defp vertices!(_other, row),
+    do: raise(ArgumentError, "row #{row}: expected a list of vertices")
+
+  defp vertex!({x, y}, _row) when is_number(x) and is_number(y), do: {x * 1.0, y * 1.0}
+  defp vertex!([x, y], _row) when is_number(x) and is_number(y), do: {x * 1.0, y * 1.0}
+
+  defp vertex!(other, row) do
+    raise ArgumentError, "row #{row}: invalid vertex #{inspect(other)}, expected {x, y} numbers"
   end
 
   # -- outputs and metadata -------------------------------------------------------------
@@ -233,6 +364,37 @@ defmodule GeoFrame.GeoSeries do
 
   defp decode_geojson(nil), do: nil
   defp decode_geojson(json), do: Jason.decode!(json)
+
+  @doc """
+  The series as a GeoJSON `FeatureCollection` string, like GeoPandas `GeoSeries.to_json`.
+
+  Every row is a `Feature` with a string `id` (the row position), empty `properties`, the
+  `geometry` (`null` for null or unrepresentable rows) and its `bbox`; the collection has the
+  `bbox` of all rows. A CRS other than EPSG:4326 adds the `crs` member as GeoPandas writes it
+  (`urn:ogc:def:crs:EPSG::32617`); CRS values that are not `AUTHORITY:CODE` add none. The JSON
+  is compact, where Python's `json.dumps` puts spaces after `,` and `:`.
+
+  Options: `:show_bbox` (default `true`), `:drop_id` (default `false`), `:to_wgs84` (default
+  `false`, reprojects to EPSG:4326 first; needs a CRS).
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1 2)"])
+      iex> GeoFrame.GeoSeries.to_json(s, show_bbox: false, drop_id: true)
+      ~s({"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1.0,2.0]}}]})
+  """
+  @spec to_json(t(), keyword()) :: String.t()
+  def to_json(%__MODULE__{} = series, opts \\ []) do
+    opts = Keyword.validate!(opts, show_bbox: true, drop_id: false, to_wgs84: false)
+    Features.build(series, nil, Features.options!(opts, true), :json)
+  end
+
+  @doc """
+  The `__geo_interface__` of the series: a `FeatureCollection` map (string keys) with an `id`,
+  empty `properties`, `geometry` and `bbox` per feature, and the collection `bbox`.
+  """
+  @spec to_geo_interface(t()) :: map()
+  def to_geo_interface(%__MODULE__{} = series) do
+    Features.build(series, nil, Features.options!([], true), :map)
+  end
 
   @doc "Number of rows, nulls included."
   @spec size(t()) :: non_neg_integer()
@@ -1502,6 +1664,36 @@ defmodule GeoFrame.GeoSeries do
   end
 
   @doc """
+  Whether each geometry is simple, with Shapely's `is_simple` semantics.
+
+  Points are simple; a multipoint is not if a point repeats. A line is simple unless it
+  crosses or touches itself anywhere but at the shared vertex of consecutive segments (and,
+  for a closed line, at its start); a multi-line also needs its members to meet only at end
+  points of both (the end points of a closed line count as interior). A polygon or
+  multipolygon is simple when each of its rings is, valid or not. Every collection is `false`,
+  as in Shapely. Null rows give `nil`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 4 4, 4 0, 0 4)", "LINESTRING (0 0, 4 4)"])
+      iex> s |> GeoFrame.GeoSeries.is_simple() |> Explorer.Series.to_list()
+      [false, true]
+  """
+  @spec is_simple(t()) :: Series.t()
+  # GeoPandas-compatible name, see is_valid/1.
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+  def is_simple(%__MODULE__{ref: ref}) do
+    ref |> Native.simple_flags() |> then(&Series.from_list(&1, dtype: :boolean))
+  end
+
+  @doc """
+  GeoPolars `self_intersects`: `true` for a line or multi-line that is not simple (see
+  `is_simple/1`), `false` for every other geometry type; null rows give `nil`.
+  """
+  @spec self_intersects(t()) :: Series.t()
+  def self_intersects(%__MODULE__{ref: ref}) do
+    ref |> Native.self_intersects_flags() |> then(&Series.from_list(&1, dtype: :boolean))
+  end
+
+  @doc """
   A string series saying why each geometry is invalid, or `"Valid Geometry"` (Shapely's text)
   for valid ones; null rows give `nil`.
 
@@ -2045,6 +2237,80 @@ defmodule GeoFrame.GeoSeries do
     |> Native.clip_by_rect(xmin * 1.0, ymin * 1.0, xmax * 1.0, ymax * 1.0)
     |> wrap()
     |> unwrap!()
+  end
+
+  @doc """
+  The canonical form of every geometry, as GEOS (`shapely.normalize`).
+
+  Polygon shells are clockwise and holes counter-clockwise, each ring starts at its smallest
+  coordinate, holes are sorted in descending order; an open line runs from its smaller end
+  and a closed line is normalised like a ring; the parts of multi-geometries and collections
+  are normalised and sorted in descending order. Null rows stay null; the CRS is kept.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (3 3, 1 1)"])
+      iex> s |> GeoFrame.GeoSeries.normalize() |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(1 1,3 3)"]
+  """
+  @spec normalize(t()) :: t()
+  def normalize(%__MODULE__{ref: ref}), do: ref |> Native.normalize() |> wrap() |> unwrap!()
+
+  @precision_modes [:valid_output, :pointwise, :keep_collapsed]
+
+  @doc """
+  Snaps every coordinate to a grid of `grid_size`, like `shapely.set_precision`.
+
+  Options: `:mode` - `:valid_output` (default), `:pointwise` or `:keep_collapsed`.
+
+    * `:pointwise` only rounds the coordinates (`floor(x / grid + 0.5) * grid`, halves round
+      up also for negative numbers) and may leave invalid or degenerate geometry.
+    * `:valid_output` also removes repeated vertices and collapsed parts (a line left with one
+      point, a polygon or hole without area) and repairs a polygon that snapping made invalid.
+    * `:keep_collapsed` is `:valid_output`, except that a line collapsed to a point stays a
+      zero-length line.
+
+  `grid_size` `0` returns the geometry unchanged with floating precision; the sign is ignored.
+  The precision is stored on the series (`get_precision/1`), not in the GeoArrow data, so only
+  the result of `set_precision/3` carries it: any other operation returns floating precision.
+
+  Deviations from GEOS' snap-rounding overlay: lines are not noded (crossings between snapped
+  segments get no vertex), repaired polygons can differ in vertex order and start, and an
+  invalid input polygon is repaired instead of raising.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1.234 5.678)"])
+      iex> s |> GeoFrame.GeoSeries.set_precision(0.1) |> GeoFrame.GeoSeries.to_wkt()
+      ["POINT(1.2 5.7)"]
+  """
+  @spec set_precision(t(), number(), keyword()) :: t()
+  def set_precision(%__MODULE__{ref: ref}, grid_size, opts \\ []) do
+    opts = Keyword.validate!(opts, mode: :valid_output)
+
+    unless is_number(grid_size) do
+      raise ArgumentError, "grid_size must be a number, got: #{inspect(grid_size)}"
+    end
+
+    unless opts[:mode] in @precision_modes do
+      raise ArgumentError,
+            "mode must be one of #{inspect(@precision_modes)}, got: #{inspect(opts[:mode])}"
+    end
+
+    grid = abs(grid_size) * 1.0
+    result = ref |> Native.set_precision(grid, Atom.to_string(opts[:mode])) |> wrap() |> unwrap!()
+    %{result | precision: grid}
+  end
+
+  @doc """
+  The grid size of each geometry (`shapely.get_precision`): the value given to
+  `set_precision/3`, or `0.0` for floating precision; `nil` for null rows.
+
+  GeoArrow carries no precision, so it lives on the series: only the result of
+  `set_precision/3` has a non-zero precision.
+  """
+  @spec get_precision(t()) :: Series.t()
+  def get_precision(%__MODULE__{ref: ref, precision: precision}) do
+    ref
+    |> Native.null_rows()
+    |> Enum.map(fn null? -> if null?, do: nil, else: precision end)
+    |> float_series()
   end
 
   defp other_ref(_series, %__MODULE__{ref: ref}), do: ref

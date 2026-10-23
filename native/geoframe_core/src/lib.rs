@@ -21,6 +21,7 @@ mod parity_c;
 mod parity_e;
 mod parity_f;
 mod parity_h;
+mod parity_i;
 mod parquet_io;
 mod predicates;
 mod projjson;
@@ -44,9 +45,10 @@ pub use gpkg_io::{
     LayerSummary,
 };
 pub use parity_e::{GridFeature, GridType};
+pub use parity_i::{PrecisionMode, VertexKind, VertexParts};
 pub use parquet_io::{
-    read_geoparquet, read_geoparquet_filtered, write_geoparquet, write_geoparquet_with,
-    GeoParquetRead, ParquetOptions,
+    geoparquet_metadata, read_geoparquet, read_geoparquet_filtered, write_geoparquet,
+    write_geoparquet_with, GeoParquetRead, ParquetOptions,
 };
 pub use predicates::Predicate;
 pub use reproject::{crs_equivalent, crs_is_geographic, normalize_crs};
@@ -81,6 +83,8 @@ mod parity_e_tests;
 mod parity_f_tests;
 #[cfg(test)]
 mod parity_h_tests;
+#[cfg(test)]
+mod parity_i_tests;
 #[cfg(test)]
 mod parquet_tests;
 #[cfg(test)]

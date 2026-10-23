@@ -790,6 +790,35 @@ defmodule GeoFrame.GeoDataFrame do
     %{"type" => "FeatureCollection", "features" => features}
   end
 
+  @doc """
+  The frame as a GeoJSON `FeatureCollection` string, like GeoPandas `GeoDataFrame.to_json`.
+
+  Each row is a `Feature` with a string `id` (the row position), the attribute columns as
+  `properties`, the `geometry` (`null` for null or unrepresentable rows) and, with
+  `show_bbox`, its `bbox`. Missing values (`nil`, NaN) are `null`. A CRS other than EPSG:4326
+  adds the `crs` member as GeoPandas does; see `GeoFrame.GeoSeries.to_json/2`.
+
+  Options: `:na` - `:null` (default) keeps missing properties as `null`, `:drop` omits them
+  (`:keep` is rejected: it would emit NaN, which is not JSON); `:show_bbox` (default
+  `false`); `:drop_id` (default `false`); `:to_wgs84` (default `false`).
+  """
+  @spec to_json(t(), keyword()) :: String.t()
+  def to_json(%__MODULE__{data: data, geometry: geometry}, opts \\ []) do
+    opts = GeoFrame.Features.options!(opts, false)
+    GeoFrame.Features.build(geometry, data, opts, :json)
+  end
+
+  @doc """
+  The `__geo_interface__` of the frame: a `FeatureCollection` map (string keys) with `id`,
+  `properties`, `geometry` and `bbox` per feature, and the collection `bbox`; missing values
+  are `nil`.
+  """
+  @spec to_geo_interface(t()) :: map()
+  def to_geo_interface(%__MODULE__{data: data, geometry: geometry}) do
+    opts = GeoFrame.Features.options!([], true)
+    GeoFrame.Features.build(geometry, data, opts, :map)
+  end
+
   # -- helpers --------------------------------------------------------------------------
 
   defp has_columns?(%DataFrame{} = data), do: DataFrame.names(data) != []

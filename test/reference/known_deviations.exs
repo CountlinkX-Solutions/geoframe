@@ -225,5 +225,19 @@
       "voronoi_polygons(only_edges=true; e_ring)",
       "voronoi_polygons(only_edges=true; e_star)"
     ]
+  },
+  %{
+    reason:
+      "set_precision on an INVALID multipolygon (parts that overlap or lie inside each other). GEOS' overlay keeps the parts it was given (including a polygon inside another one, or a hole, in an invalid result); GeoFrame merges parts that overlap after snapping. Valid input agrees in every case.",
+    doc: "docs/parity.md#batch-i-hard--low-value-defer",
+    op: "set_precision",
+    cases: [
+      "set_precision(0.1, valid_output):i_mpoly_holes",
+      "set_precision(0.1, keep_collapsed):i_mpoly_holes",
+      "set_precision(0.1, valid_output):i_mpoly_tiny",
+      "set_precision(0.1, keep_collapsed):i_mpoly_tiny",
+      "set_precision(2.5, valid_output):i_mpoly_sizes",
+      "set_precision(2.5, keep_collapsed):i_mpoly_sizes"
+    ]
   }
 ]

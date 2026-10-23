@@ -597,6 +597,29 @@ defmodule GeoFrame do
   @spec write_file(GeoDataFrame.t(), Path.t(), keyword()) :: :ok | {:error, String.t()}
   def write_file(%GeoDataFrame{} = gdf, path, opts \\ []), do: Formats.write_file(gdf, path, opts)
 
+  @doc """
+  The `geo` file metadata of a GeoParquet file as a decoded map (string keys): `"version"`,
+  `"primary_column"` and `"columns"` with each column's `"encoding"`, `"geometry_types"`,
+  `"crs"`, `"bbox"`, `"covering"` and so on, exactly as stored. Only the Parquet footer is
+  read. Returns `{:error, message}` when the file cannot be read or has no `geo` metadata
+  (plain Parquet).
+  """
+  @spec geoparquet_metadata(Path.t()) :: {:ok, map()} | {:error, String.t()}
+  def geoparquet_metadata(path) do
+    with {:ok, json} <- GeoFrame.Native.read_geoparquet_metadata(to_string(path)) do
+      {:ok, Jason.decode!(json)}
+    end
+  end
+
+  @doc "Like `geoparquet_metadata/1` but raises `ArgumentError` on failure."
+  @spec geoparquet_metadata!(Path.t()) :: map()
+  def geoparquet_metadata!(path) do
+    case geoparquet_metadata(path) do
+      {:ok, metadata} -> metadata
+      {:error, message} -> raise ArgumentError, message
+    end
+  end
+
   defp unwrap!({:ok, gdf}), do: gdf
   defp unwrap!({:error, message}), do: raise(ArgumentError, message)
 
