@@ -2,9 +2,11 @@
 //! crate; this layer only converts between BEAM terms and core types.
 
 use geoframe_core::{
-    read_flatgeobuf, read_geojson, read_geojson_str, read_geoparquet, write_flatgeobuf,
-    write_geojson, write_geoparquet, BufferOptions, GeoColumn, GridFeature, GridType, NearestPairs,
-    Origin, Predicate, QueryPredicate, SetOp, UnaryOp, VectorRead,
+    from_arrow_ipc, read_feather, read_flatgeobuf, read_geojson, read_geojson_str,
+    read_geoparquet_filtered, to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson,
+    write_geoparquet_with, BufferOptions, FeatherCompression, GeoColumn, GeometryEncoding,
+    GridFeature, GridType, NearestPairs, Origin, ParquetOptions, Predicate, QueryPredicate, SetOp,
+    TableRead, UnaryOp, VectorRead,
 };
 use rustler::{Binary, Env, OwnedBinary, ResourceArc};
 
@@ -441,30 +443,123 @@ fn read_geojson_text<'a>(
 
 /// Reads a GeoParquet file. Returns `{geometry, geometry_column, attributes_ipc}` where the
 /// attributes are an Arrow IPC stream (one copy; Explorer has no zero-copy NIF access).
+/// `bbox` keeps only the rows whose bounding box intersects it.
 #[rustler::nif(schedule = "DirtyIo")]
 fn read_parquet<'a>(
     env: Env<'a>,
     path: String,
     columns: Option<Vec<String>>,
+    bbox: Option<(f64, f64, f64, f64)>,
 ) -> Result<(Handle, String, Binary<'a>), String> {
-    let read = read_geoparquet(&path, columns.as_deref())?;
+    let bbox = bbox.map(|(a, b, c, d)| [a, b, c, d]);
+    let read = read_geoparquet_filtered(&path, columns.as_deref(), bbox)?;
     let ipc = binary(env, &read.attributes_ipc);
     Ok((wrap(read.geometry), read.geometry_column, ipc))
 }
 
+/// `options` is `{compression, compression_level, row_group_size, geometry_encoding,
+/// covering_bbox, schema_version}`.
 #[rustler::nif(schedule = "DirtyIo")]
 fn write_parquet(
     column: Handle,
     geometry_column: String,
     attributes_ipc: Binary,
     path: String,
+    options: (String, Option<i32>, Option<usize>, String, bool, String),
 ) -> Result<(), String> {
-    write_geoparquet(
+    let (
+        compression,
+        compression_level,
+        row_group_size,
+        geometry_encoding,
+        covering_bbox,
+        schema_version,
+    ) = options;
+    let options = ParquetOptions {
+        compression,
+        compression_level,
+        row_group_size,
+        geometry_encoding: GeometryEncoding::parse(&geometry_encoding)?,
+        covering_bbox,
+        schema_version,
+    };
+    write_geoparquet_with(
         &path,
         &column.0,
         &geometry_column,
         attributes_ipc.as_slice(),
+        &options,
     )
+}
+
+fn table_read<'a>(env: Env<'a>, read: TableRead) -> (Handle, String, Binary<'a>) {
+    let ipc = binary(env, &read.attributes_ipc);
+    (wrap(read.geometry), read.geometry_column, ipc)
+}
+
+/// Reads a Feather v2 file. Returns `{geometry, geometry_column, attributes_ipc}`.
+#[rustler::nif(schedule = "DirtyIo")]
+fn read_feather_file<'a>(
+    env: Env<'a>,
+    path: String,
+    columns: Option<Vec<String>>,
+    geometry_column: Option<String>,
+) -> Result<(Handle, String, Binary<'a>), String> {
+    read_feather(&path, columns.as_deref(), geometry_column.as_deref())
+        .map(|read| table_read(env, read))
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn write_feather_file(
+    column: Handle,
+    geometry_column: String,
+    attributes_ipc: Binary,
+    path: String,
+    geometry_encoding: String,
+    compression: String,
+) -> Result<(), String> {
+    write_feather(
+        &path,
+        &column.0,
+        &geometry_column,
+        attributes_ipc.as_slice(),
+        GeometryEncoding::parse(&geometry_encoding)?,
+        FeatherCompression::parse(&compression)?,
+    )
+}
+
+/// Encodes geometry plus attributes (empty bytes: none) as an Arrow IPC stream.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn to_arrow_stream<'a>(
+    env: Env<'a>,
+    column: Handle,
+    geometry_column: String,
+    attributes_ipc: Binary,
+    geometry_encoding: String,
+) -> Result<Binary<'a>, String> {
+    let bytes = to_arrow_ipc(
+        &column.0,
+        &geometry_column,
+        attributes_ipc.as_slice(),
+        GeometryEncoding::parse(&geometry_encoding)?,
+    )?;
+    Ok(binary(env, &bytes))
+}
+
+/// Decodes an Arrow IPC stream with a geometry column (WKB, WKT or native GeoArrow).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn from_arrow_stream<'a>(
+    env: Env<'a>,
+    bytes: Binary,
+    columns: Option<Vec<String>>,
+    geometry_column: Option<String>,
+) -> Result<(Handle, String, Binary<'a>), String> {
+    from_arrow_ipc(
+        bytes.as_slice(),
+        columns.as_deref(),
+        geometry_column.as_deref(),
+    )
+    .map(|read| table_read(env, read))
 }
 
 fn binary<'a>(env: Env<'a>, bytes: &[u8]) -> Binary<'a> {

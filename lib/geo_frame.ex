@@ -12,10 +12,18 @@ defmodule GeoFrame do
   | GeoParquet  | `read_parquet/2`    | `write_parquet/3`    | `.parquet`, `.geoparquet`       |
   | GeoJSON     | `read_geojson/2`    | `write_geojson/3`    | `.geojson`, `.json`             |
   | FlatGeobuf  | `read_flatgeobuf/2` | `write_flatgeobuf/3` | `.fgb`                          |
+  | Feather v2  | `read_feather/2`    | `write_feather/3`    | `.feather`, `.arrow`            |
 
   `read_file/2` and `write_file/3` pick the format from the extension or from the
-  `:driver` option. All three formats share one data path: geometry stays in Rust, and the
+  `:driver` option. All formats share one data path: geometry stays in Rust, and the
   other columns cross the NIF boundary as an Arrow IPC stream. Shapefile is not supported.
+
+  `GeoFrame.GeoSeries.to_arrow/2`, `GeoFrame.GeoDataFrame.to_arrow/2` and the matching
+  `from_arrow` functions exchange an Arrow IPC **stream** as a binary, with GeoArrow
+  extension metadata (`ARROW:extension:name`, `ARROW:extension:metadata` with the CRS as
+  PROJJSON) on the geometry field. Elixir has no Arrow C Data Interface binding, so IPC bytes
+  are the interchange (one serialisation and one copy per direction); Explorer and ADBC
+  can load the same bytes, and `pyarrow` plus `GeoDataFrame.from_arrow` read them.
 
   ## GeoParquet
 
@@ -27,8 +35,11 @@ defmodule GeoFrame do
   by design: geometry, the bulky part, is never copied into Elixir.
 
   Files are read into memory whole (on a dirty IO scheduler); batched or streaming reads
-  are a known gap. Read supports WKB and the GeoArrow-native GeoParquet encodings. Write
-  produces GeoParquet 1.1.0 with WKB geometry, Snappy compression and no covering columns.
+  are a known gap. Read supports WKB and the GeoArrow-native GeoParquet encodings, honours
+  the covering `bbox` column (which is never surfaced as an attribute) and filters rows with
+  `bbox:`. Write produces GeoParquet 1.1.0 with WKB geometry and Snappy compression by
+  default; see `write_parquet/3` for the compression, row group, native encoding, covering
+  bbox and schema version options.
 
   ### Coordinate reference system
 
@@ -46,11 +57,9 @@ defmodule GeoFrame do
   original position among the columns is not preserved.
   """
 
-  alias GeoFrame.Attributes
   alias GeoFrame.Formats
   alias GeoFrame.GeoDataFrame
   alias GeoFrame.GeoSeries
-  alias GeoFrame.Native
 
   @doc """
   Concatenates a list of `GeoFrame.GeoSeries` or a list of `GeoFrame.GeoDataFrame` row-wise.
@@ -112,39 +121,84 @@ defmodule GeoFrame do
   The primary geometry column named in the file's `geo` metadata becomes the geometry;
   all other columns become attributes.
 
-  Options: `:columns` - attribute column names to keep (the geometry is always read);
-  they keep their file order.
+  Options:
+
+    * `:columns` - attribute column names to keep (the geometry is always read); they keep
+      their file order.
+    * `:bbox` - `{minx, miny, maxx, maxy}` in the file's CRS: keep only the rows whose
+      geometry bounding box intersects it (touching counts). With a covering `bbox` column
+      or a native geometry encoding, row groups outside the box are skipped using the file
+      statistics and rows are filtered on the covering values; otherwise the geometries are
+      decoded and filtered after the read.
 
   Returns `{:error, message}` when the file cannot be opened, is not Parquet, has no `geo`
   metadata, or cannot be decoded.
   """
   @spec read_parquet(Path.t(), keyword()) :: {:ok, GeoDataFrame.t()} | {:error, String.t()}
-  def read_parquet(path, opts \\ []) do
-    columns = opts |> Keyword.get(:columns) |> normalize_columns()
-
-    with {:ok, {ref, geometry_column, ipc}} <- Native.read_parquet(to_string(path), columns),
-         {:ok, data} <- Attributes.load(ipc) do
-      {:ok, GeoDataFrame.new(data, %GeoSeries{ref: ref}, geometry_column: geometry_column)}
-    end
-  end
+  def read_parquet(path, opts \\ []), do: Formats.read_parquet(path, opts)
 
   @doc "Like `read_parquet/2` but raises `ArgumentError` on failure."
   @spec read_parquet!(Path.t(), keyword()) :: GeoDataFrame.t()
   def read_parquet!(path, opts \\ []), do: unwrap!(read_parquet(path, opts))
 
   @doc """
-  Writes a `GeoFrame.GeoDataFrame` as a GeoParquet 1.1 file (WKB geometry).
+  Writes a `GeoFrame.GeoDataFrame` as a GeoParquet file (WKB geometry, Snappy, version
+  1.1.0 by default).
+
+  Options (GeoPandas `to_parquet` names):
+
+    * `:compression` - `:snappy` (default), `:zstd`, `:gzip`, `:lz4`, `:brotli` or `:none`.
+    * `:compression_level` - an integer for `:zstd` (1..22), `:gzip` (0..10) or `:brotli`
+      (0..11); an error for the other codecs. Default: the codec's default level.
+    * `:row_group_size` - maximum rows per row group (positive integer).
+    * `:geometry_encoding` - `:wkb` (default) or `:geoarrow`. The native encoding needs a
+      single geometry kind like GeoPandas (a type and its multi variant may mix and are
+      written as the multi type) and is `{:error, _}` for mixed geometries or collections.
+    * `:write_covering_bbox` - `true` adds a `bbox` struct column (`xmin`, `ymin`, `xmax`,
+      `ymax`) and the `covering` metadata, which makes `bbox:` reads prune row groups.
+      Default `false`.
+    * `:schema_version` - `"1.1.0"` (default) or `"1.0.0"`. Version 1.0.0 allows only WKB
+      geometry and no covering column.
+
+  Returns `:ok` or `{:error, message}`; a partially written file is removed. Invalid option
+  values raise `ArgumentError`.
+  """
+  @spec write_parquet(GeoDataFrame.t(), Path.t(), keyword()) :: :ok | {:error, String.t()}
+  def write_parquet(%GeoDataFrame{} = gdf, path, opts \\ []),
+    do: Formats.write_parquet(gdf, path, opts)
+
+  @doc """
+  Reads a Feather v2 file (Arrow IPC file) into a `GeoFrame.GeoDataFrame`, including the
+  files GeoPandas `to_feather` writes (WKB plus `geo` metadata) and native GeoArrow columns.
+
+  The geometry column is the primary column of the `geo` metadata, else the first
+  `geoarrow.*` extension column, else a binary (WKB) or string (WKT) column named
+  `"geometry"`. The CRS comes from the `geo` metadata, else from the extension metadata.
+  LZ4 and Zstandard compressed files read.
+
+  Options: `:columns` - attribute column names to keep; `:geometry` - the name of the
+  geometry column when it cannot be detected.
+  """
+  @spec read_feather(Path.t(), keyword()) :: {:ok, GeoDataFrame.t()} | {:error, String.t()}
+  def read_feather(path, opts \\ []), do: Formats.read_feather(path, opts)
+
+  @doc "Like `read_feather/2` but raises `ArgumentError` on failure."
+  @spec read_feather!(Path.t(), keyword()) :: GeoDataFrame.t()
+  def read_feather!(path, opts \\ []), do: unwrap!(read_feather(path, opts))
+
+  @doc """
+  Writes a Feather v2 file (Arrow IPC file) like GeoPandas `to_feather`: the geometry is a
+  `geoarrow.wkb` column (or a native GeoArrow column) whose extension metadata carries the
+  CRS as PROJJSON, and the schema metadata has the GeoParquet-style `geo` entry.
+
+  Options: `:compression` - `:lz4` (default, as pyarrow), `:zstd` or `:uncompressed`;
+  `:geometry_encoding` - `:wkb` (default) or `:geoarrow` (see `write_parquet/3`).
 
   Returns `:ok` or `{:error, message}`; a partially written file is removed.
   """
-  @spec write_parquet(GeoDataFrame.t(), Path.t(), keyword()) :: :ok | {:error, String.t()}
-  def write_parquet(%GeoDataFrame{} = gdf, path, _opts \\ []) do
-    with {:ok, ipc} <- Attributes.dump(gdf.data),
-         {:ok, _} <-
-           Native.write_parquet(gdf.geometry.ref, gdf.geometry_column, ipc, to_string(path)) do
-      :ok
-    end
-  end
+  @spec write_feather(GeoDataFrame.t(), Path.t(), keyword()) :: :ok | {:error, String.t()}
+  def write_feather(%GeoDataFrame{} = gdf, path, opts \\ []),
+    do: Formats.write_feather(gdf, path, opts)
 
   @doc """
   Reads a GeoJSON file into a `GeoFrame.GeoDataFrame`.
@@ -248,11 +302,11 @@ defmodule GeoFrame do
 
   @doc """
   Reads a vector file, choosing the format from the extension (`.parquet`, `.geoparquet`,
-  `.geojson`, `.json`, `.fgb`; case-insensitive) or from `driver:` (`:parquet`, `:geojson`,
-  `:flatgeobuf`), which wins over the extension.
+  `.geojson`, `.json`, `.fgb`, `.feather`, `.arrow`; case-insensitive) or from `driver:`
+  (`:parquet`, `:geojson`, `:flatgeobuf`, `:feather`), which wins over the extension.
 
   The remaining options go to the format's reader (`read_parquet/2`, `read_geojson/2`,
-  `read_flatgeobuf/2`); unknown options for GeoJSON and FlatGeobuf raise `ArgumentError`.
+  `read_flatgeobuf/2`, `read_feather/2`); unknown options raise `ArgumentError`.
   An unrecognised extension or driver raises `ArgumentError`; read failures are
   `{:error, message}`.
   """
@@ -265,17 +319,14 @@ defmodule GeoFrame do
 
   @doc """
   Writes a vector file, choosing the format from the extension or `driver:`; see
-  `read_file/2`. The remaining options go to `write_parquet/3`, `write_geojson/3` or
-  `write_flatgeobuf/3`.
+  `read_file/2`. The remaining options go to `write_parquet/3`, `write_geojson/3`,
+  `write_flatgeobuf/3` or `write_feather/3`.
   """
   @spec write_file(GeoDataFrame.t(), Path.t(), keyword()) :: :ok | {:error, String.t()}
   def write_file(%GeoDataFrame{} = gdf, path, opts \\ []), do: Formats.write_file(gdf, path, opts)
 
   defp unwrap!({:ok, gdf}), do: gdf
   defp unwrap!({:error, message}), do: raise(ArgumentError, message)
-
-  defp normalize_columns(nil), do: nil
-  defp normalize_columns(columns) when is_list(columns), do: Enum.map(columns, &to_string/1)
 
   @doc "Group-wise union with attribute aggregation; see `GeoFrame.Dissolve.dissolve/2`."
   @spec dissolve(GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()

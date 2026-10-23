@@ -100,8 +100,24 @@ defmodule GeoFrame.Native do
   def valid_reasons(_ref), do: err()
   def null_out_invalid(_ref), do: err()
   def read_geojson_text(_text, _crs), do: err()
-  def read_parquet(_path, _columns), do: err()
-  def write_parquet(_ref, _geometry_column, _attributes_ipc, _path), do: err()
+  def read_parquet(_path, _columns, _bbox), do: err()
+
+  def write_parquet(_ref, _geometry_column, _attributes_ipc, _path, _options), do: err()
+
+  def read_feather_file(_path, _columns, _geometry_column), do: err()
+
+  def write_feather_file(
+        _ref,
+        _geometry_column,
+        _attributes_ipc,
+        _path,
+        _geometry_encoding,
+        _compression
+      ),
+      do: err()
+
+  def to_arrow_stream(_ref, _geometry_column, _attributes_ipc, _geometry_encoding), do: err()
+  def from_arrow_stream(_bytes, _columns, _geometry_column), do: err()
   def read_geojson_file(_path), do: err()
   def write_geojson_file(_ref, _attributes_ipc, _path, _force), do: err()
   def read_flatgeobuf_file(_path, _bbox), do: err()

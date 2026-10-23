@@ -2,6 +2,7 @@
 //! unit-tested with `cargo test` and reused outside Elixir.
 
 mod affine;
+mod arrow_io;
 mod attributes;
 pub(crate) mod column;
 mod flatgeobuf_io;
@@ -17,17 +18,25 @@ mod parity_f;
 mod parity_h;
 mod parquet_io;
 mod predicates;
+mod projjson;
 mod reproject;
 mod set_ops;
 mod sindex;
 mod unary;
 
+pub use arrow_io::{
+    from_arrow_ipc, read_feather, to_arrow_ipc, write_feather, FeatherCompression,
+    GeometryEncoding, TableRead,
+};
 pub use attributes::VectorRead;
 pub use column::GeoColumn;
 pub use flatgeobuf_io::{read_flatgeobuf, write_flatgeobuf};
 pub use geojson_io::{read_geojson, read_geojson_str, write_geojson};
 pub use parity_e::{GridFeature, GridType};
-pub use parquet_io::{read_geoparquet, write_geoparquet, GeoParquetRead};
+pub use parquet_io::{
+    read_geoparquet, read_geoparquet_filtered, write_geoparquet, write_geoparquet_with,
+    GeoParquetRead, ParquetOptions,
+};
 pub use predicates::Predicate;
 pub use reproject::{crs_is_geographic, normalize_crs};
 pub use set_ops::SetOp;
@@ -40,6 +49,8 @@ mod affine_tests;
 mod flatgeobuf_tests;
 #[cfg(test)]
 mod geojson_tests;
+#[cfg(test)]
+mod io_g1_tests;
 #[cfg(test)]
 mod parity_a_tests;
 #[cfg(test)]

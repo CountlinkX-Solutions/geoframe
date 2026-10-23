@@ -12,12 +12,16 @@
 //!
 //! # Encoding and CRS decisions
 //!
-//! * **Written:** GeoParquet 1.1.0 with `WKB` geometry encoding (the most portable one), no
-//!   covering columns, Snappy compression. **Read:** WKB and every GeoArrow-native encoding.
+//! * **Written:** GeoParquet 1.1.0 with `WKB` geometry encoding (the most portable one) and
+//!   Snappy compression by default; [`ParquetOptions`] selects the compression (and level), the
+//!   row group size, GeoArrow-native geometry, a `bbox` covering column and the metadata
+//!   version (`1.0.0` or `1.1.0`). **Read:** WKB and every GeoArrow-native encoding.
 //! * **CRS, written:** `OGC:CRS84` is the GeoParquet default, so the `crs` key is omitted. An
-//!   unknown CRS is written as an explicit `"crs": null`. `EPSG:4326` gets a full PROJJSON
-//!   definition; any other `AUTHORITY:CODE` string is written as a PROJJSON stub carrying
-//!   only `name` and `id` (there is no PROJ database in the pure-Rust build to expand it).
+//!   unknown CRS is written as an explicit `"crs": null`. `EPSG:4326`, `EPSG:4269`,
+//!   `EPSG:3857` and the WGS 84 UTM zones get a full PROJJSON definition (`projjson.rs`, so
+//!   GeoPandas/pyproj can parse the file); any other `AUTHORITY:CODE` string is written as a
+//!   PROJJSON stub carrying only `name` and `id` (there is no PROJ database in the pure-Rust
+//!   build to expand it).
 //!   A PROJJSON object given as the CRS is written as is.
 //! * **CRS, read (GeoParquet 1.1 semantics, as GeoPolars `dev`):** a missing `crs` key means
 //!   `OGC:CRS84`; an explicit `null` means unknown. A PROJJSON object that carries an `id`
@@ -26,34 +30,48 @@
 //!
 //! # Gaps
 //!
-//! The whole file is read into memory (no batched or streaming reads, no spatial filter),
-//! column order is not preserved relative to the geometry (it becomes the last column),
-//! only the primary geometry column is decoded, and covering columns are not generated.
+//! The whole file is read into memory (no batched or streaming reads), column order is not
+//! preserved relative to the geometry (it becomes the last column) and only the primary
+//! geometry column is decoded.
+//!
+//! # Bounding box reads
+//!
+//! `read_geoparquet_filtered` keeps the rows whose bounding box intersects a query box. When
+//! the file has a covering column (or a native geometry encoding) the `geoparquet` crate prunes
+//! row groups from the column statistics and filters rows on the covering values; otherwise the
+//! geometries are decoded and filtered after the read. The covering column is never an
+//! attribute.
 
+use std::collections::HashSet;
 use std::fs::File;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow_schema::{Field, Schema};
+use arrow_array::{BooleanArray, RecordBatch};
+use arrow_schema::Schema;
+use arrow_select::filter::filter_record_batch;
+use geo::{coord, Rect};
 use geoarrow_array::array::from_arrow_array;
 use geoarrow_array::cast::to_wkb;
-use geoarrow_array::{GeoArrowArray, IntoArrow};
-use geoarrow_schema::CoordType;
-use geoparquet::reader::{GeoParquetReaderBuilder, GeoParquetRecordBatchReader};
-use geoparquet::writer::{
-    GeoParquetRecordBatchEncoder, GeoParquetWriterEncoding, GeoParquetWriterOptionsBuilder,
+use geoarrow_schema::{CoordType, Dimension};
+use geoparquet::metadata::{
+    GeoParquetColumnEncoding, GeoParquetGeometryType, GeoParquetGeometryTypeAndDimension,
+    GeoParquetMetadata,
 };
+use geoparquet::reader::{GeoParquetReaderBuilder, GeoParquetRecordBatchReader};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
-use parquet::basic::Compression;
+use parquet::basic::{BrotliLevel, Compression, GzipLevel, ZstdLevel};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use crate::attributes::{decode_attributes, ipc_from_batches};
-use crate::GeoColumn;
+use crate::arrow_io::{
+    attributes_to_ipc, covering_columns, crs_to_string, encode_table, select_attributes,
+    EncodeOptions, CRS84,
+};
+use crate::{GeoColumn, GeometryEncoding};
 
-const CRS84: &str = "OGC:CRS84";
 const BATCH_SIZE: usize = 65_536;
 
 /// Result of reading a GeoParquet file.
@@ -66,23 +84,139 @@ pub struct GeoParquetRead {
     pub attributes_ipc: Vec<u8>,
 }
 
+/// GeoParquet write options. The default reproduces the historical output: GeoParquet 1.1.0,
+/// WKB geometry, Snappy, no covering column, the library's default row group size.
+#[derive(Debug, Clone)]
+pub struct ParquetOptions {
+    /// `snappy`, `zstd`, `gzip`, `lz4`, `brotli` or `none` (case-insensitive).
+    pub compression: String,
+    /// Level for `zstd` (1..=22), `gzip` (0..=10) and `brotli` (0..=11); rejected otherwise.
+    pub compression_level: Option<i32>,
+    /// Maximum rows per row group.
+    pub row_group_size: Option<usize>,
+    pub geometry_encoding: GeometryEncoding,
+    /// Add a `bbox` covering struct column and the `covering` metadata (GeoParquet 1.1).
+    pub covering_bbox: bool,
+    /// `"1.0.0"` (WKB only, no covering) or `"1.1.0"`.
+    pub schema_version: String,
+}
+
+impl Default for ParquetOptions {
+    fn default() -> Self {
+        Self {
+            compression: "snappy".to_string(),
+            compression_level: None,
+            row_group_size: None,
+            geometry_encoding: GeometryEncoding::Wkb,
+            covering_bbox: false,
+            schema_version: "1.1.0".to_string(),
+        }
+    }
+}
+
+impl ParquetOptions {
+    fn parquet_compression(&self) -> Result<Compression, String> {
+        let name = self.compression.to_ascii_lowercase();
+        let level = self.compression_level;
+        let no_level = |compression: Compression| match level {
+            None => Ok(compression),
+            Some(_) => Err(format!(
+                "compression_level is not supported for compression {name:?}"
+            )),
+        };
+        let bad_level =
+            |detail: String| format!("invalid compression_level for {name:?}: {detail}");
+        match name.as_str() {
+            "snappy" => no_level(Compression::SNAPPY),
+            "none" | "uncompressed" => no_level(Compression::UNCOMPRESSED),
+            "lz4" => no_level(Compression::LZ4_RAW),
+            "zstd" => match level {
+                None => Ok(Compression::ZSTD(ZstdLevel::default())),
+                Some(l) => ZstdLevel::try_new(l)
+                    .map(Compression::ZSTD)
+                    .map_err(|e| bad_level(e.to_string())),
+            },
+            "gzip" => match level {
+                None => Ok(Compression::GZIP(GzipLevel::default())),
+                Some(l) => u32::try_from(l)
+                    .map_err(|e| e.to_string())
+                    .and_then(|l| GzipLevel::try_new(l).map_err(|e| e.to_string()))
+                    .map(Compression::GZIP)
+                    .map_err(bad_level),
+            },
+            "brotli" => match level {
+                None => Ok(Compression::BROTLI(BrotliLevel::default())),
+                Some(l) => u32::try_from(l)
+                    .map_err(|e| e.to_string())
+                    .and_then(|l| BrotliLevel::try_new(l).map_err(|e| e.to_string()))
+                    .map(Compression::BROTLI)
+                    .map_err(bad_level),
+            },
+            other => Err(format!(
+                "unknown compression {other:?}; expected snappy, zstd, gzip, lz4, brotli or none"
+            )),
+        }
+    }
+
+    fn writer_properties(&self) -> Result<WriterProperties, String> {
+        if self.row_group_size == Some(0) {
+            return Err("row_group_size must be a positive number of rows".to_string());
+        }
+        Ok(WriterProperties::builder()
+            .set_compression(self.parquet_compression()?)
+            .set_max_row_group_row_count(self.row_group_size)
+            .build())
+    }
+}
+
 // -- read ---------------------------------------------------------------------------------
 
 /// Reads a GeoParquet file. `columns` optionally restricts the attribute columns (the
 /// primary geometry column is always read); selected columns keep their file order.
 pub fn read_geoparquet(path: &str, columns: Option<&[String]>) -> Result<GeoParquetRead, String> {
+    read_geoparquet_filtered(path, columns, None)
+}
+
+/// Like [`read_geoparquet`], keeping only the rows whose geometry bounding box intersects
+/// `bbox` (`[minx, miny, maxx, maxy]`, in the file's CRS; touching counts as intersecting).
+pub fn read_geoparquet_filtered(
+    path: &str,
+    columns: Option<&[String]>,
+    bbox: Option<[f64; 4]>,
+) -> Result<GeoParquetRead, String> {
+    // The `geoparquet` crate asserts on some inputs; a panic must not take the VM's NIF down.
+    catch_unwind(AssertUnwindSafe(|| read_filtered(path, columns, bbox))).unwrap_or_else(|_| {
+        Err(format!(
+            "cannot read {path}: the GeoParquet reader failed on this file's metadata"
+        ))
+    })
+}
+
+fn read_filtered(
+    path: &str,
+    columns: Option<&[String]>,
+    bbox: Option<[f64; 4]>,
+) -> Result<GeoParquetRead, String> {
+    if let Some([minx, miny, maxx, maxy]) = bbox {
+        if !(minx <= maxx && miny <= maxy) {
+            return Err("bbox minimum exceeds its maximum (or contains NaN)".to_string());
+        }
+    }
     let file = File::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+    let mut builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| format!("cannot read {path} as Parquet: {e}"))?;
 
-    let geo_meta = builder
+    let mut geo_meta = builder
         .geoparquet_metadata()
         .ok_or_else(|| {
             format!("{path} is not a GeoParquet file: the Parquet metadata has no `geo` key")
         })?
         .map_err(|e| format!("invalid GeoParquet metadata in {path}: {e}"))?;
+    fix_native_geometry_types(&mut geo_meta);
     let primary = geo_meta.primary_column.clone();
-    let crs = file_crs(&builder, &primary)?;
+    let raw = raw_geo_metadata(&builder)?;
+    let crs = file_crs(&raw, &primary)?;
+    let hidden = covering_columns(Some(&raw));
 
     let target_schema = builder
         .geoarrow_schema(&geo_meta, false, CoordType::default())
@@ -90,7 +224,20 @@ pub fn read_geoparquet(path: &str, columns: Option<&[String]>) -> Result<GeoParq
     let geometry_index = target_schema.index_of(&primary).map_err(|_| {
         format!("primary geometry column {primary:?} is missing from the schema of {path}")
     })?;
-    let attribute_indices = select_attributes(&target_schema, geometry_index, columns)?;
+    let attribute_indices = select_attributes(&target_schema, geometry_index, columns, &hidden)?;
+
+    // A covering column (or a native encoding) lets the crate prune row groups from the
+    // statistics and filter rows on the covering values; otherwise filter after decoding.
+    let pushed_down = bbox.is_some() && has_covering_or_native(&raw, &primary);
+    if let (Some([minx, miny, maxx, maxy]), true) = (bbox, pushed_down) {
+        let rect = Rect::new(coord! { x: minx, y: miny }, coord! { x: maxx, y: maxy });
+        builder = builder
+            .with_intersecting_row_groups(rect, &geo_meta, None)
+            .map_err(|e| format!("cannot filter {path} by bbox: {e}"))?;
+        builder = builder
+            .with_intersecting_row_filter(rect, &geo_meta, None)
+            .map_err(|e| format!("cannot filter {path} by bbox: {e}"))?;
+    }
 
     let reader = builder
         .with_batch_size(BATCH_SIZE)
@@ -98,7 +245,7 @@ pub fn read_geoparquet(path: &str, columns: Option<&[String]>) -> Result<GeoParq
         .map_err(|e| format!("cannot read {path}: {e}"))?;
     let reader = GeoParquetRecordBatchReader::try_new(reader, target_schema.clone())
         .map_err(|e| format!("cannot read {path}: {e}"))?;
-    let batches = reader
+    let mut batches = reader
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot read {path}: {e}"))?;
 
@@ -116,7 +263,29 @@ pub fn read_geoparquet(path: &str, columns: Option<&[String]>) -> Result<GeoParq
         .iter()
         .flat_map(|wkb| wkb.inner().iter())
         .collect();
-    let geometry = GeoColumn::from_wkb(&rows, crs.as_deref())?;
+    let mut geometry = GeoColumn::from_wkb(&rows, crs.as_deref())?;
+
+    if let (Some(query), false) = (bbox, pushed_down) {
+        let keep: Vec<bool> = geometry
+            .bounds()
+            .into_iter()
+            .map(|b| {
+                b.is_some_and(|b| {
+                    b[0] <= query[2] && b[2] >= query[0] && b[1] <= query[3] && b[3] >= query[1]
+                })
+            })
+            .collect();
+        if keep.iter().any(|k| !k) {
+            let indices: Vec<usize> = (0..keep.len()).filter(|&i| keep[i]).collect();
+            geometry = geometry.take(&indices)?;
+            let mut offset = 0;
+            for batch in &mut batches {
+                let mask = BooleanArray::from(keep[offset..offset + batch.num_rows()].to_vec());
+                offset += batch.num_rows();
+                *batch = filter_record_batch(batch, &mask).map_err(|e| e.to_string())?;
+            }
+        }
+    }
 
     let attributes_ipc = attributes_to_ipc(&target_schema, &batches, &attribute_indices)?;
     Ok(GeoParquetRead {
@@ -126,59 +295,35 @@ pub fn read_geoparquet(path: &str, columns: Option<&[String]>) -> Result<GeoParq
     })
 }
 
-/// Indices of the attribute columns to keep, in file order.
-fn select_attributes(
-    schema: &Schema,
-    geometry_index: usize,
-    columns: Option<&[String]>,
-) -> Result<Vec<usize>, String> {
-    if let Some(wanted) = columns {
-        for name in wanted {
-            match schema.index_of(name) {
-                Err(_) => return Err(format!("column {name:?} not found in file")),
-                Ok(i) if i == geometry_index => {
-                    return Err(format!("{name:?} is the geometry column, not an attribute"))
-                }
-                Ok(_) => {}
-            }
-        }
+/// GeoPandas lists `["Polygon", "MultiPolygon"]` for a `multipolygon` column (the spec asks
+/// for exactly the stored types), but the `geoparquet` crate asserts a single type for native
+/// encodings. The encoding alone decides the stored type, so state just that.
+fn fix_native_geometry_types(meta: &mut GeoParquetMetadata) {
+    for column in meta.columns.values_mut() {
+        let geometry_type = match column.encoding {
+            GeoParquetColumnEncoding::WKB => continue,
+            GeoParquetColumnEncoding::Point => GeoParquetGeometryType::Point,
+            GeoParquetColumnEncoding::LineString => GeoParquetGeometryType::LineString,
+            GeoParquetColumnEncoding::Polygon => GeoParquetGeometryType::Polygon,
+            GeoParquetColumnEncoding::MultiPoint => GeoParquetGeometryType::MultiPoint,
+            GeoParquetColumnEncoding::MultiLineString => GeoParquetGeometryType::MultiLineString,
+            GeoParquetColumnEncoding::MultiPolygon => GeoParquetGeometryType::MultiPolygon,
+        };
+        let dimension = column
+            .geometry_types
+            .iter()
+            .map(|t| t.dimension())
+            .next()
+            .unwrap_or(Dimension::XY);
+        column.geometry_types = HashSet::from([GeoParquetGeometryTypeAndDimension::new(
+            geometry_type,
+            dimension,
+        )]);
     }
-    Ok((0..schema.fields().len())
-        .filter(|&i| i != geometry_index)
-        .filter(|&i| columns.is_none_or(|w| w.contains(schema.field(i).name())))
-        .collect())
 }
 
-fn attributes_to_ipc(
-    schema: &Schema,
-    batches: &[RecordBatch],
-    indices: &[usize],
-) -> Result<Vec<u8>, String> {
-    // Drop file-level metadata (the raw `geo` JSON, the embedded Arrow schema): only the
-    // fields matter to the consumer.
-    let fields: Vec<Field> = indices
-        .iter()
-        .map(|&i| schema.field(i).as_ref().clone())
-        .collect();
-    let projected = Arc::new(Schema::new(fields));
-    let projected_batches = batches
-        .iter()
-        .map(|batch| {
-            let columns: Vec<ArrayRef> = indices.iter().map(|&i| batch.column(i).clone()).collect();
-            let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-            RecordBatch::try_new_with_options(projected.clone(), columns, &options)
-                .map_err(|e| e.to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    ipc_from_batches(&projected, &projected_batches)
-}
-
-/// The CRS of the primary column as our string form, applying GeoParquet 1.1 semantics to
-/// the raw `geo` JSON (the typed metadata cannot tell a missing key from an explicit null).
-fn file_crs(
-    builder: &ParquetRecordBatchReaderBuilder<File>,
-    primary: &str,
-) -> Result<Option<String>, String> {
+/// The raw `geo` JSON of the file.
+fn raw_geo_metadata(builder: &ParquetRecordBatchReaderBuilder<File>) -> Result<Value, String> {
     let raw = builder
         .metadata()
         .file_metadata()
@@ -186,7 +331,24 @@ fn file_crs(
         .and_then(|kv| kv.iter().find(|kv| kv.key == "geo"))
         .and_then(|kv| kv.value.as_deref())
         .ok_or("missing `geo` metadata value")?;
-    let json: Value = serde_json::from_str(raw).map_err(|e| format!("invalid `geo` JSON: {e}"))?;
+    serde_json::from_str(raw).map_err(|e| format!("invalid `geo` JSON: {e}"))
+}
+
+/// Whether the primary column has a covering declaration or a native (non-WKB) encoding.
+fn has_covering_or_native(raw: &Value, primary: &str) -> bool {
+    let Some(column) = raw.get("columns").and_then(|c| c.get(primary)) else {
+        return false;
+    };
+    column.get("covering").is_some()
+        || column
+            .get("encoding")
+            .and_then(Value::as_str)
+            .is_some_and(|e| !e.eq_ignore_ascii_case("WKB"))
+}
+
+/// The CRS of the primary column as our string form, applying GeoParquet 1.1 semantics to
+/// the raw `geo` JSON (the typed metadata cannot tell a missing key from an explicit null).
+fn file_crs(json: &Value, primary: &str) -> Result<Option<String>, String> {
     let column = json
         .get("columns")
         .and_then(|c| c.get(primary))
@@ -198,189 +360,65 @@ fn file_crs(
     })
 }
 
-/// `AUTHORITY:CODE` for PROJJSON with an identifier, plain strings as given, else JSON text.
-fn crs_to_string(value: &Value) -> String {
-    if let Some(text) = value.as_str() {
-        return text.to_string();
-    }
-    let id = value
-        .get("id")
-        .or_else(|| value.get("ids").and_then(|ids| ids.get(0)));
-    if let Some(id) = id {
-        let authority = id.get("authority").and_then(Value::as_str);
-        let code = match id.get("code") {
-            Some(Value::String(s)) => Some(s.clone()),
-            Some(Value::Number(n)) => Some(n.to_string()),
-            _ => None,
-        };
-        if let (Some(authority), Some(code)) = (authority, code) {
-            return format!("{authority}:{code}");
-        }
-    }
-    value.to_string()
-}
-
 // -- write --------------------------------------------------------------------------------
 
 /// Writes `attributes_ipc` (an Arrow IPC stream) plus `geometry` as GeoParquet 1.1 with WKB
-/// encoding. The geometry column is appended after the attributes under `geometry_column`.
+/// encoding and Snappy compression. The geometry column is appended after the attributes
+/// under `geometry_column`.
 pub fn write_geoparquet(
     path: &str,
     geometry: &GeoColumn,
     geometry_column: &str,
     attributes_ipc: &[u8],
 ) -> Result<(), String> {
-    let batch = combine(geometry, geometry_column, attributes_ipc)?;
-    let crs = crs_for_file(geometry.crs().as_deref())?;
-    let result = write_batch(path, &batch, geometry_column, crs);
+    write_geoparquet_with(
+        path,
+        geometry,
+        geometry_column,
+        attributes_ipc,
+        &ParquetOptions::default(),
+    )
+}
+
+/// Like [`write_geoparquet`] with explicit [`ParquetOptions`]. Invalid options fail before the
+/// file is created; a failure while writing removes the partial file.
+pub fn write_geoparquet_with(
+    path: &str,
+    geometry: &GeoColumn,
+    geometry_column: &str,
+    attributes_ipc: &[u8],
+    options: &ParquetOptions,
+) -> Result<(), String> {
+    let props = options.writer_properties()?;
+    let encode = EncodeOptions {
+        encoding: options.geometry_encoding,
+        covering_bbox: options.covering_bbox,
+        version: options.schema_version.clone(),
+    };
+    let encoded = encode_table(geometry, geometry_column, attributes_ipc, &encode)?;
+    let result = write_batch(path, &encoded.batch, &encoded.geo, props);
     if result.is_err() {
         let _ = std::fs::remove_file(path);
     }
     result
 }
 
-fn combine(
-    geometry: &GeoColumn,
-    geometry_column: &str,
-    attributes_ipc: &[u8],
-) -> Result<RecordBatch, String> {
-    let (mut fields, mut columns) = decode_attributes(attributes_ipc, geometry.len())?;
-    if fields.iter().any(|f| f.name() == geometry_column) {
-        return Err(format!(
-            "attributes already have a column named {geometry_column:?}"
-        ));
-    }
-    let array = geometry.geometry_array();
-    fields.push(array.extension_type().to_field(geometry_column, true));
-    columns.push(array.to_array_ref());
-    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).map_err(|e| e.to_string())
-}
-
 fn write_batch(
     path: &str,
     batch: &RecordBatch,
-    geometry_column: &str,
-    crs: CrsOut,
+    geo: &Value,
+    props: WriterProperties,
 ) -> Result<(), String> {
-    let options = GeoParquetWriterOptionsBuilder::default()
-        .set_primary_column(geometry_column.to_string())
-        .set_encoding(GeoParquetWriterEncoding::WKB)
-        .build();
-    let mut encoder = GeoParquetRecordBatchEncoder::try_new(&batch.schema(), &options)
-        .map_err(|e| format!("cannot prepare GeoParquet encoding: {e}"))?;
-    let encoded = encoder
-        .encode_record_batch(batch)
-        .map_err(|e| format!("cannot encode geometry as WKB: {e}"))?;
-
-    let mut geo = serde_json::to_value(encoder.into_geoparquet_metadata())
-        .map_err(|e| format!("cannot serialise GeoParquet metadata: {e}"))?;
-    let column = geo
-        .get_mut("columns")
-        .and_then(|c| c.get_mut(geometry_column))
-        .and_then(Value::as_object_mut)
-        .ok_or("GeoParquet metadata lost the geometry column")?;
-    // The encoder knows no CRS database and drops it; set it explicitly.
-    column.remove("crs");
-    // An all-null or empty column has no bounds: NaN serialises as null, which no reader
-    // accepts. The key is optional, so leave it out.
-    if column
-        .get("bbox")
-        .and_then(Value::as_array)
-        .is_some_and(|bbox| bbox.iter().any(|v| !v.is_number()))
-    {
-        column.remove("bbox");
-    }
-    match crs {
-        CrsOut::Omit => {}
-        CrsOut::Null => {
-            column.insert("crs".to_string(), Value::Null);
-        }
-        CrsOut::Projjson(value) => {
-            column.insert("crs".to_string(), value);
-        }
-    }
-
     let file = File::create(path).map_err(|e| format!("cannot create {path}: {e}"))?;
-    let props = WriterProperties::builder()
-        .set_compression(Compression::SNAPPY)
-        .build();
-    let mut writer = ArrowWriter::try_new(file, encoded.schema(), Some(props))
+    let schema: Arc<Schema> = batch.schema();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props))
         .map_err(|e| format!("cannot write {path}: {e}"))?;
     writer
-        .write(&encoded)
+        .write(batch)
         .map_err(|e| format!("cannot write {path}: {e}"))?;
     writer.append_key_value_metadata(KeyValue::new("geo".to_string(), geo.to_string()));
     writer
         .close()
         .map_err(|e| format!("cannot write {path}: {e}"))?;
     Ok(())
-}
-
-/// How the CRS appears in the `geo` metadata.
-enum CrsOut {
-    /// Key omitted: the GeoParquet default, `OGC:CRS84`.
-    Omit,
-    /// Explicit `null`: unknown CRS.
-    Null,
-    Projjson(Value),
-}
-
-fn crs_for_file(crs: Option<&str>) -> Result<CrsOut, String> {
-    let Some(text) = crs else {
-        return Ok(CrsOut::Null);
-    };
-    let trimmed = text.trim();
-    if trimmed.eq_ignore_ascii_case(CRS84)
-        || trimmed.eq_ignore_ascii_case("urn:ogc:def:crs:OGC:1.3:CRS84")
-    {
-        return Ok(CrsOut::Omit);
-    }
-    if trimmed.starts_with('{') {
-        return serde_json::from_str::<Value>(trimmed)
-            .ok()
-            .filter(Value::is_object)
-            .map(CrsOut::Projjson)
-            .ok_or_else(|| "CRS looks like PROJJSON but is not a valid JSON object".to_string());
-    }
-    if trimmed.eq_ignore_ascii_case("EPSG:4326") {
-        return Ok(CrsOut::Projjson(wgs84_projjson()));
-    }
-    if let Some((authority, code)) = trimmed.split_once(':') {
-        let code = code
-            .parse::<u64>()
-            .map(Value::from)
-            .unwrap_or_else(|_| Value::from(code));
-        return Ok(CrsOut::Projjson(json!({
-            "name": trimmed,
-            "id": { "authority": authority, "code": code },
-        })));
-    }
-    Err(format!(
-        "CRS {text:?} cannot be written to GeoParquet; use an AUTHORITY:CODE string or PROJJSON"
-    ))
-}
-
-fn wgs84_projjson() -> Value {
-    json!({
-        "$schema": "https://proj.org/schemas/v0.7/projjson.schema.json",
-        "type": "GeographicCRS",
-        "name": "WGS 84",
-        "datum": {
-            "type": "GeodeticReferenceFrame",
-            "name": "World Geodetic System 1984",
-            "ellipsoid": {
-                "name": "WGS 84",
-                "semi_major_axis": 6378137,
-                "inverse_flattening": 298.257223563
-            }
-        },
-        "coordinate_system": {
-            "subtype": "ellipsoidal",
-            "axis": [
-                { "name": "Geodetic latitude", "abbreviation": "Lat", "direction": "north", "unit": "degree" },
-                { "name": "Geodetic longitude", "abbreviation": "Lon", "direction": "east", "unit": "degree" }
-            ]
-        },
-        "id": { "authority": "EPSG", "code": 4326 }
-    })
 }
