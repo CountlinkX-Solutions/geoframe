@@ -154,6 +154,9 @@ defmodule GeoFrame.GeoSeries do
       iex> s = GeoFrame.GeoSeries.from_xy([1, 2], [3, nil])
       iex> GeoFrame.GeoSeries.to_wkt(s)
       ["POINT(1 3)", nil]
+      iex> s = GeoFrame.GeoSeries.from_xy([1, 2], [3, 4], z: [5, 6])
+      iex> GeoFrame.GeoSeries.to_wkt(s)
+      ["POINT Z(1 3 5)", "POINT Z(2 4 6)"]
   """
   @spec from_xy(
           [number() | nil] | Series.t(),
@@ -200,7 +203,8 @@ defmodule GeoFrame.GeoSeries do
   Builds line strings from vertex lists, one list per row (GeoPolars `line_string`).
 
   A row is a list of vertices, `[]` for an empty line or `nil` for a null geometry; a vertex is
-  `{x, y}` or `[x, y]`. A line needs at least two vertices. Option: `:crs`.
+  `{x, y}` or `[x, y]`. A line needs at least two vertices. The constructors take 2D vertices only (a vertex with a
+  third value is an error); build Z geometries with `from_wkt/2` or `force_3d/2`. Option: `:crs`.
 
       iex> s = GeoFrame.GeoSeries.line_strings_from_vertices([[{0, 0}, {1, 1}], nil])
       iex> GeoFrame.GeoSeries.to_wkt(s)
