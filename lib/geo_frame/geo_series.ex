@@ -1438,6 +1438,91 @@ defmodule GeoFrame.GeoSeries do
   end
 
   @doc """
+  Snaps the vertices and segments of each geometry to the vertices of `other`, within
+  `tolerance` (GeoPandas `snap`, GEOS `GeometrySnapper`).
+
+  `other` is a series (paired by position), a one-row series or a WKT string (both broadcast).
+  Each snap point in turn moves the nearest vertex of a line or ring that lies closer than
+  `tolerance` onto itself, and a snap point closer than `tolerance` to a segment is inserted
+  into the nearest one. The result keeps the type of the input; it is not guaranteed to be
+  valid. `tolerance` is one number (GeoPandas also accepts an array-like). Rows that are null
+  on either side, and rows whose work (vertices times snap points) exceeds 50,000,000, are
+  `nil`. The order in which several snap points compete for one vertex follows GEOS in about
+  99 % of random cases (see `docs/parity.md`).
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0)"])
+      iex> s |> GeoFrame.GeoSeries.snap("POINT (5 0.5)", 1) |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(0 0,5 0.5,10 0)"]
+  """
+  @spec snap(t(), other(), number()) :: t()
+  def snap(%__MODULE__{ref: left} = series, other, tolerance) do
+    unless is_number(tolerance) do
+      raise ArgumentError, "tolerance must be a number, got: #{inspect(tolerance)}"
+    end
+
+    left |> Native.snap(other_ref(series, other), tolerance * 1.0) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  The paths two linear geometries share (GeoPandas `shared_paths`): per row a
+  `GEOMETRYCOLLECTION` of two `MULTILINESTRING`s, first the stretches that run the same way in
+  both inputs, then those that run in opposite ways (either can be empty).
+
+  Stretches are split where the overlap starts or ends, at every vertex they pass; a stretch
+  met twice is reported once. Both sides must be lines or multi-lines: any other geometry
+  (Shapely raises) and null rows give `nil`. `other` is a series, a one-row series or WKT, as
+  for `snap/3`.
+
+      iex> a = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 4 0)"])
+      iex> a |> GeoFrame.GeoSeries.shared_paths("LINESTRING (4 0, 1 0)") |> GeoFrame.GeoSeries.to_wkt()
+      ["GEOMETRYCOLLECTION(MULTILINESTRING EMPTY,MULTILINESTRING((1 0,4 0)))"]
+  """
+  @spec shared_paths(t(), other()) :: t()
+  def shared_paths(%__MODULE__{ref: left} = series, other) do
+    left |> Native.shared_paths(other_ref(series, other)) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  The minimum clearance of each geometry (`shapely.minimum_clearance`): the smallest distance
+  by which a vertex could move to make the geometry invalid, found as the least distance
+  between two vertices at different positions or between a vertex and a segment that does not
+  end in it.
+
+  A geometry without such a pair (a point, an empty geometry, one repeated position) reports
+  `:infinity`, as Shapely does; null rows give `nil`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0, 5 0.5)", "POINT (1 1)"])
+      iex> s |> GeoFrame.GeoSeries.minimum_clearance() |> Explorer.Series.to_list()
+      [0.5, :infinity]
+  """
+  @spec minimum_clearance(t()) :: Series.t()
+  def minimum_clearance(%__MODULE__{ref: ref}) do
+    # The core answers f64::MAX (GEOS' DBL_MAX) when no clearance exists.
+    ref
+    |> Native.minimum_clearance()
+    |> Enum.map(fn
+      value when is_float(value) and value >= 1.7976931348623157e308 -> :infinity
+      value -> value
+    end)
+    |> float_series()
+  end
+
+  @doc """
+  The line between the two points that realise `minimum_clearance/1`
+  (`shapely.minimum_clearance_line`); `LINESTRING EMPTY` when no clearance exists, `nil` for
+  null rows. Among equally close pairs the one reported, and the direction of the line, can
+  differ from GEOS.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0, 5 0.5)"])
+      iex> s |> GeoFrame.GeoSeries.minimum_clearance_line() |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(5 0.5,5 0)"]
+  """
+  @spec minimum_clearance_line(t()) :: t()
+  def minimum_clearance_line(%__MODULE__{ref: ref}) do
+    ref |> Native.minimum_clearance_line() |> wrap() |> unwrap!()
+  end
+
+  @doc """
   Joins line parts that meet end to end. A point where exactly two parts end is merged
   through; a junction of three or more is not. Returns a `LineString` when everything forms
   one chain, otherwise a `MultiLineString`. A `LineString` comes back unchanged and a row with

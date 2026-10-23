@@ -22,6 +22,7 @@ mod parity_e;
 mod parity_f;
 mod parity_h;
 mod parity_i;
+mod parity_j;
 mod parquet_io;
 mod predicates;
 mod projjson;
@@ -85,6 +86,8 @@ mod parity_f_tests;
 mod parity_h_tests;
 #[cfg(test)]
 mod parity_i_tests;
+#[cfg(test)]
+mod parity_j_tests;
 #[cfg(test)]
 mod parquet_tests;
 #[cfg(test)]

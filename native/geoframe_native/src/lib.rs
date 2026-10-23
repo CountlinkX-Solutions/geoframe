@@ -1046,4 +1046,27 @@ fn read_geoparquet_metadata(path: String) -> Result<String, String> {
     geoparquet_metadata(&path)
 }
 
+// -- batch I2: snapping, shared paths, clearance ---------------------------------------
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn snap(left: Handle, right: Handle, tolerance: f64) -> Result<Handle, String> {
+    left.0.snap(&right.0, tolerance).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn shared_paths(left: Handle, right: Handle) -> Result<Handle, String> {
+    left.0.shared_paths(&right.0).map(wrap)
+}
+
+/// Per row: the clearance, `f64::MAX` when none exists (the Elixir side maps it to infinity).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn minimum_clearance(column: Handle) -> Vec<Option<f64>> {
+    column.0.minimum_clearance()
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn minimum_clearance_line(column: Handle) -> Result<Handle, String> {
+    column.0.minimum_clearance_line().map(wrap)
+}
+
 rustler::init!("Elixir.GeoFrame.Native");
