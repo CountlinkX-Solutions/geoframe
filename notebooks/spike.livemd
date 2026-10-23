@@ -70,6 +70,33 @@ Centroids replace the geometry and keep the attributes aligned:
 GeoFrame.GeoDataFrame.centroid(gdf)
 ```
 
+## Reproject and measure in metres
+
+Square degrees are not an area. `to_crs/2` reprojects (pure Rust, no PROJ install), and
+`estimate_utm_crs/1` picks the UTM zone that fits the data. Axis order is always
+x = longitude/easting, y = latitude/northing.
+
+```elixir
+utm = GeoFrame.GeoDataFrame.estimate_utm_crs(gdf)
+metric = GeoFrame.GeoDataFrame.to_crs(gdf, utm)
+
+{utm, GeoFrame.GeoDataFrame.crs(metric)}
+```
+
+Areas are now square metres, and lengths metres:
+
+```elixir
+{Explorer.Series.to_list(GeoFrame.GeoDataFrame.area(metric)),
+ Explorer.Series.to_list(GeoFrame.GeoDataFrame.length(metric))}
+```
+
+An integer EPSG code works too (here Web Mercator), and a series without a CRS raises, as in
+GeoPandas, so call `set_crs/2` first:
+
+```elixir
+gdf |> GeoFrame.GeoDataFrame.to_crs(3857) |> GeoFrame.GeoDataFrame.crs()
+```
+
 ## Filtering
 
 `filter_with/2` takes the attribute columns, picks the rows, and applies the same row

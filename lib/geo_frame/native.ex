@@ -12,6 +12,8 @@ defmodule GeoFrame.Native do
   def len(_ref), do: err()
   def crs(_ref), do: err()
   def set_crs(_ref, _crs), do: err()
+  def to_crs(_ref, _target), do: err()
+  def estimate_utm_crs(_ref), do: err()
   def take(_ref, _indices), do: err()
   def area(_ref), do: err()
   def length(_ref), do: err()

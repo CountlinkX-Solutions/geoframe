@@ -141,6 +141,19 @@ defmodule GeoFrame.GeoDataFrame do
     %{gdf | geometry: GeoSeries.set_crs(geometry, crs)}
   end
 
+  @doc """
+  Reprojects the geometry to `target` (`"EPSG:<code>"`, `"OGC:CRS84"` or an integer EPSG
+  code); attributes are untouched. See `GeoFrame.GeoSeries.to_crs/2`.
+  """
+  @spec to_crs(t(), String.t() | pos_integer()) :: t()
+  def to_crs(%__MODULE__{geometry: geometry} = gdf, target) do
+    %{gdf | geometry: GeoSeries.to_crs(geometry, target)}
+  end
+
+  @doc "The UTM CRS for the geometry's extent. See `GeoFrame.GeoSeries.estimate_utm_crs/1`."
+  @spec estimate_utm_crs(t()) :: String.t()
+  def estimate_utm_crs(%__MODULE__{geometry: geometry}), do: GeoSeries.estimate_utm_crs(geometry)
+
   # -- row-changing operations ----------------------------------------------------------
 
   @doc "Selects rows by zero-based position; repeats and reordering are allowed."

@@ -292,6 +292,43 @@ defmodule GeoFrame.GeoSeries do
     ref |> Native.simplify(tolerance * 1.0, opts[:preserve_topology]) |> wrap() |> unwrap!()
   end
 
+  # -- reprojection ---------------------------------------------------------------------
+
+  @doc """
+  Reprojects to `target`, returning a copy whose CRS is `target`.
+
+  `target` is `"EPSG:<code>"`, `"OGC:CRS84"` (lon/lat WGS 84) or an integer EPSG code
+  (`3857` is `"EPSG:3857"`). The series must have a CRS (as in GeoPandas, a naive series
+  raises: use `set_crs/2` first). Reprojecting to the CRS the series already has returns an
+  unchanged copy.
+
+  The engine is pure Rust (`proj4rs` with the bundled EPSG table), so no PROJ install is
+  needed. Axis order is always x = easting/longitude, y = northing/latitude, for every CRS
+  including `EPSG:4326` (GeoPandas `always_xy=True`). A source CRS stored as PROJJSON must
+  carry a top-level `id` with authority and code. Rows that are null, or whose transform fails
+  (outside the projection's domain), become null. Output is 2D: Z is dropped.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (0 0)"], crs: "EPSG:4326")
+      iex> s |> GeoFrame.GeoSeries.to_crs(3857) |> GeoFrame.GeoSeries.crs()
+      "EPSG:3857"
+  """
+  @spec to_crs(t(), String.t() | pos_integer()) :: t()
+  def to_crs(%__MODULE__{ref: ref}, target) when is_binary(target) or is_integer(target) do
+    ref |> Native.to_crs(crs_label(target)) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  The WGS 84 UTM CRS (`"EPSG:326xx"` north, `"EPSG:327xx"` south) whose zone contains the
+  centre of the series' total bounds, like GeoPandas `estimate_utm_crs`.
+
+  Raises for a series without a CRS, without bounds, or outside 80 S to 84 N.
+  """
+  @spec estimate_utm_crs(t()) :: String.t()
+  def estimate_utm_crs(%__MODULE__{ref: ref}), do: ref |> Native.estimate_utm_crs() |> unwrap!()
+
+  defp crs_label(code) when is_integer(code), do: "EPSG:#{code}"
+  defp crs_label(label) when is_binary(label), do: label
+
   # -- affine transforms ----------------------------------------------------------------
 
   @doc """
