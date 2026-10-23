@@ -207,6 +207,10 @@ defmodule GeoFrame.GeoDataFrame do
     end)
   end
 
+  @doc "Spatial join; see `GeoFrame.SpatialJoin.sjoin/3`."
+  @spec sjoin(t(), t(), keyword()) :: t()
+  defdelegate sjoin(left, right, opts \\ []), to: GeoFrame.SpatialJoin
+
   # -- attribute operations -------------------------------------------------------------
 
   @doc """

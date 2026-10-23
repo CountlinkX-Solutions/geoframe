@@ -496,6 +496,37 @@ defmodule GeoFrame.GeoSeries do
   end
 
   @doc """
+  All pairs of rows `{i, j}` for which `left[i].predicate(right[j])` holds, found with an
+  R-tree built over the bounding boxes of `right` and refined with the exact predicate.
+
+  Returns `{left_indices, right_indices}`: two parallel lists of zero-based row positions,
+  ordered by left then right position. (Plain lists rather than series: they are consumed as
+  `take/2` indices, and the pair count is data-dependent.) The result equals evaluating the
+  predicate over every pair, only faster.
+
+  `predicate` is one of `:intersects` (default), `:within`, `:contains`, `:touches`,
+  `:crosses`, `:overlaps`, `:covers`, `:covered_by`, `:geom_equals` or `:dwithin`. The
+  predicate reads `left.predicate(right)`: `:within` means the left geometry is within the
+  right one. `:disjoint` is rejected because a spatial index cannot answer it.
+
+  Options: `:distance` - required, non-negative, in CRS units for `:dwithin`.
+
+  Null and empty rows never match. Differing CRS (both set) raise `ArgumentError`, as do
+  unknown predicates and a missing distance. Querying is single-threaded.
+  """
+  @spec sindex_query(t(), t(), atom(), keyword()) :: {[non_neg_integer()], [non_neg_integer()]}
+  def sindex_query(left, right, predicate \\ :intersects, opts \\ [])
+
+  def sindex_query(%__MODULE__{ref: left}, %__MODULE__{ref: right}, predicate, opts)
+      when is_atom(predicate) and is_list(opts) do
+    distance = opts |> Keyword.get(:distance) |> then(&(&1 && &1 * 1.0))
+
+    left
+    |> Native.sindex_query(right, Atom.to_string(predicate), distance)
+    |> unwrap!()
+  end
+
+  @doc """
   The DE-9IM intersection matrix of each pair as a nine-character string series.
 
   Characters are ordered interior/boundary/exterior of the left geometry against
