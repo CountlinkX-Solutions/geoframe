@@ -16,8 +16,11 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 Since batch V every operation GeoFrame shares with GeoPandas is checked against the real library:
 `test/reference/generate.py` (dev-only; GeoPandas 1.2.0, Shapely 2.2.0, GEOS 3.14.1, pyproj 3.8.0) computes
 the results for a fixed corpus and commits them as JSON in `test/reference/fixtures/`;
-`test/geo_frame/reference_test.exs` compares GeoFrame with them in CI without Python (about 10 800 cases
-across 77 operations, plus sjoin, sjoin_nearest, dissolve and union_all on small frames). Known differences
+`test/geo_frame/reference_test.exs` compares GeoFrame with them in CI without Python (11 044 cases
+across 82 operations, including sjoin, sjoin_nearest, dissolve and union_all on small frames and, since batch B,
+`overlay` (all five `how`s, with and without `keep_geom_type`, on polygon, line and point frames), `clip`, `clip_by_rect`,
+`explode` and `intersection_all`). 10 785 cases agree, 259 are documented deviations (222 of them the
+null/empty class) and none is unexplained. Known differences
 are listed in `test/reference/known_deviations.exs` and the suite asserts that each one still deviates. See
 `test/reference/README.md` for the tolerances and how to regenerate. Documented deviations:
 
@@ -34,10 +37,10 @@ are listed in `test/reference/known_deviations.exs` and the suite asserts that e
 - **`buffer` mitre/bevel joins** on the acute corner of a closed line differ between geo-buf and GEOS; round caps
   and joins, flat and square caps on open lines agree (area within 2 %).
 - **`line_merge` of a polygon** gives an empty collection (GEOS merges its boundary).
-- **Set operations.** Line x line and mixed-dimension combinations are `nil`; lower-dimensional parts of a result
-  (shared edges or vertices) are dropped; mixed-family `union_all`/`dissolve` is `nil`. Batch B closes these.
-  Results agree within 1e-6, not bit-exactly: `geo`'s boolean operations snap intersection points to an integer
-  grid (about 1e-8 of the extent).
+- **Set operations.** Every point/line/polygon combination agrees with GEOS (batch B removed the 302 series
+  deviations and the mixed-family `dissolve` one). Remaining: `GeometryCollection` input gives `nil` for `union`,
+  `difference` and `symmetric_difference` (storage flattens nested collections). Results agree within 1e-6, not
+  bit-exactly: `geo`'s boolean operations snap intersection points to an integer grid (about 1e-8 of the extent).
 - **Tolerances.** `to_crs` against PROJ: within 1e-6 projected units (1e-9 degrees back), including the Florida
   East (ftUS) transverse Mercator. Geodesic area, length and point distance: within 1e-6 of `pyproj.Geod`.
 
@@ -140,14 +143,14 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `intersection` | no | `intersection/2` | 🟡 | polygonal full; line x polygon and point cases; other combos `nil`; lower-dim results dropped (shared edge gives `POLYGON EMPTY`); results agree with GEOS within 1e-6 (integer-grid snapping) |
-| `union` | no | `union/2` | 🟡 | same limits; no line x line, no mixed dim |
-| `difference` | no | `difference/2` | 🟡 | same limits |
-| `symmetric_difference` | no | `symmetric_difference/2` | 🟡 | same limits |
-| `clip_by_rect` | no | — | ❌ | geo `BooleanOps` with rect, or dedicated clip; medium |
-| `clip` (GeoSeries/GDF) | no | — | ❌ | `intersection` with a mask + filter; medium |
-| `overlay` (GDF; how=intersection/union/identity/symmetric_difference/difference) | no | — | ❌ | needs sindex + set ops + attribute assembly; depends on lower-dim handling; large |
-| `intersection_all` | no | — | ❌ | fold of `intersection`; easy |
+| `intersection` | no | `intersection/2` | ✅ | every combination of points, lines and polygons (lines are noded, shared edges and touch points are kept, mixed results are `GEOMETRYCOLLECTION`s) and `GeometryCollection` input, member by member; agrees with GEOS within 1e-6 (integer-grid snapping) |
+| `union` | no | `union/2` | 🟡 | all point/line/polygon combinations incl. line x line and mixed dimensions; `GeometryCollection` input gives `nil` |
+| `difference` | no | `difference/2` | 🟡 | same; `GeometryCollection` input gives `nil` |
+| `symmetric_difference` | no | `symmetric_difference/2` | 🟡 | same; `GeometryCollection` input gives `nil` |
+| `clip_by_rect` | no | `clip_by_rect/5` | ✅ | row-wise, empties kept as `GEOMETRYCOLLECTION EMPTY`, boundary-only contact is empty; matches GEOS (polygon vertices within 1e-6) |
+| `clip` (GeoSeries/GDF) | no | `GeoFrame.clip/3` | ✅ | polygon (WKT, series, frame via `union_all`) or box mask, R-tree prefilter, `keep_geom_type`; rows in original order; a series returns a series (no index) |
+| `overlay` (GDF; how=intersection/union/identity/symmetric_difference/difference) | no | `GeoFrame.overlay/3` | ✅ | GeoPandas algorithm (R-tree pairs, pairwise intersections, differences against the union of overlapping rows), `_1`/`_2` suffixes, nulls on the missing side, `keep_geom_type` (nil logs via `Logger.warning`), `make_valid`; output polygons are not re-validated |
+| `intersection_all` | no | `intersection_all/1` | ✅ | one-row series; sequential pairwise intersection, so touching inputs give their shared edge |
 | `union_all` | no | `union_all/1` | ✅ | (`unary_union` deprecated: not needed) |
 | — | — | `union_groups/3` | ✅ | GeoFrame-only, used by dissolve |
 
@@ -185,7 +188,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `delaunay_triangles` | no | — | ❌ | geo `TriangulateDelaunay` (spade) |
 | `constrained_delaunay_triangles` | no | — | ❌ | geo `TriangulateSpade` constrained |
 | `voronoi_polygons` | no | — | ❌ | geo `Voronoi` (spade) |
-| `explode` | no | — | ❌ | multi -> single; needs index_parts; GDF explode duplicates attributes; medium |
+| `explode` | no | `explode/2` | ✅ | `{parts, positions}` (the pandas index becomes the parallel list of source rows); `index_parts: true` adds part numbers; collections explode one level |
 | `get_geometry` / `geometry` parts | no | — | ❌ | see §2 |
 
 ## 7. Affine transformations
@@ -216,10 +219,10 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
 | `union_all` | no | ✅ | ✅ | |
-| `intersection_all` | no | — | ❌ | |
+| `intersection_all` | no | `intersection_all/1` | ✅ | see §5 |
 | `GeoDataFrame.dissolve` | no | `dissolve/2` (`GeoFrame.Dissolve`) | 🟡 | `by`, `aggfunc` (first,last,sum,mean,min,max,count), `dropna`, `sort`; missing: per-column aggfunc map, `as_index`, `level`, `observed` |
 | `unary_union` (deprecated) | — | — | ⛔ | deprecated |
-| `GeoDataFrame.explode` | no | — | ❌ | see §6 |
+| `GeoDataFrame.explode` | no | `GeoDataFrame.explode/2` | ✅ | attributes repeated; `index` (source row) and `part` columns replace the (Multi)Index; `ignore_index:` drops `index` |
 
 ## 10. Projection handling
 
@@ -261,9 +264,9 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `rename_geometry` | — | `rename/2` | 🟡 | via generic rename |
 | `set_geometry`, `active_geometry_name` | — | `geometry/1`, `new/3`, `names/1` | 🟡 | single geometry column; no multi-geometry frames |
 | `crs` / `set_crs` / `to_crs` / `estimate_utm_crs` | yes | ✅ | ✅ | |
-| `explode` | no | — | ❌ | |
+| `explode` | no | `explode/2` | ✅ | see §6 |
 | `dissolve`, `sjoin`, `sjoin_nearest` | no | ✅/🟡 | see §9/§11 | |
-| `clip`, `overlay` | no | — | ❌ | |
+| `clip`, `overlay` | no | `clip/3`, `overlay/3` (also on `GeoFrame`) | ✅ | see §5 |
 | pandas ops (`head`, `tail`, `take`, `select`, `rename`, filter, sort, mutate) | polars | `head`, `tail`, `take`, `slice`, `select`, `rename`, `filter_with`, `sort_with`, `mutate_with` | ✅ | wraps Explorer; GDF-level delegation exists for `area`, `length`, `bounds`, `centroid` only; others via `gdf.geometry` |
 | index/merge/groupby/apply/concat of GDFs | polars | `GeoFrame.concat/1`, `GeoDataFrame.concat_rows/1`, `GeoSeries.concat/1` | 🟡 | row-wise concat done (CRS and geometry column must match); merge/join of GDFs missing (only through Explorer on `.data`) |
 
@@ -290,8 +293,8 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `points_from_xy` | `point` from columns | `GeoFrame.points_from_xy/3` | ✅ | alias of `GeoSeries.from_xy/3` |
 | `geocode`, `reverse_geocode` | — | — | ⛔ | needs network geocoding service (geopy) |
 | `tools.collect` | — | `collect/2` | ✅ | one-row series; `multi:` option |
-| `tools.clip` | — | — | ❌ | see §5 |
-| `tools.overlay` | — | — | ❌ | see §5 |
+| `tools.clip` | — | `GeoFrame.clip/3` | ✅ | see §5 |
+| `tools.overlay` | — | `GeoFrame.overlay/3` | ✅ | see §5 |
 | `tools.sjoin`, `sjoin_nearest` | — | ✅ | ✅ | |
 | `tools.make_grid` | — | — | ❌ | easy |
 | `tools.geocode` | — | — | ⛔ | |
@@ -351,7 +354,7 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 - Crates/traits: `geo-types` constructors, `CoordsIter`, `Validation` (reasons), existing `Native.unary` plumbing.
 - Difficulty: low. Mostly Elixir plus small NIFs; unblocks real-world data entry (lat/lon columns).
 
-## Batch B - Overlay-family: explode, clip, overlay, intersection_all (high value, medium-hard)
+## Batch B - Overlay-family: explode, clip, overlay, intersection_all (done)
 - Members: `explode` (Series+GDF, `index_parts`), `clip`, `clip_by_rect`, `intersection_all`, `overlay` (how: intersection/union/identity/symmetric_difference/difference), fix set-op lower-dimension and mixed-dimension gaps (🟡 in §5).
 - Crates: `geo::BooleanOps` (i_overlay), `MultiPolygon` conversion, existing `sindex`, `Intersects`.
 - Difficulty: medium-high (attribute assembly in Elixir, same pattern as `sjoin`; lower-dim results need `i_overlay` options or custom handling).
@@ -397,4 +400,4 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 `plot` (use Kino map), `geocode`/`reverse_geocode`, pandas index alignment (`align=`), `iterfeatures`, Shapely object constructors, persistent `sindex` object, arbitrary-callback `transform`, deprecated `unary_union`.
 
 ---
-Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 102, '🟡': 30, '❌': 53, '⛔': 15}
+Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 114, '🟡': 29, '❌': 42, '⛔': 15}

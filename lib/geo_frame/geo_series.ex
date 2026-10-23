@@ -1534,8 +1534,9 @@ defmodule GeoFrame.GeoSeries do
     Every combination of points, lines and polygons is supported, with GEOS results: lines are
     noded (crossings, overlaps), the lower-dimensional parts of a result are kept (two squares
     sharing an edge intersect in that `LINESTRING`, sharing a corner in a `POINT`), and a result
-    of several dimensions is a `GEOMETRYCOLLECTION` with one member per part. Only
-    `GeometryCollection` input gives `nil`. Empty results are empty geometries
+    of several dimensions is a `GEOMETRYCOLLECTION` with one member per part. A
+    `GeometryCollection` input is supported by `intersection` only (member by member); the other
+    operations give `nil` for it. Empty results are empty geometries
     (`POLYGON EMPTY`, `LINESTRING EMPTY`, `MULTIPOINT EMPTY`), not `nil`.
     """
     @spec unquote(name)(t(), other()) :: t()

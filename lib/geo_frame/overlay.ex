@@ -416,35 +416,8 @@ defmodule GeoFrame.Overlay do
   # The parts of every row of `a` outside the rows of `b` it meets. `side` says which result
   # column the rows of `a` belong to; rows that become empty are dropped.
   defp remainder(a, b, side) do
-    n = GeoSeries.size(a)
     {li, ri} = candidate_pairs(a, b)
-    with_neighbours = Enum.uniq(li)
-
-    subtracted =
-      if with_neighbours == [] do
-        a
-      else
-        group_of = with_neighbours |> Enum.with_index() |> Map.new()
-
-        union =
-          GeoSeries.union_groups(
-            GeoSeries.take(b, ri),
-            Enum.map(li, &group_of[&1]),
-            length(with_neighbours)
-          )
-
-        diff = GeoSeries.difference(GeoSeries.take(a, with_neighbours), union)
-
-        choose =
-          Enum.map(0..(n - 1)//1, fn i ->
-            case Map.fetch(group_of, i) do
-              {:ok, k} -> n + k
-              :error -> i
-            end
-          end)
-
-        [a, diff] |> GeoSeries.concat() |> GeoSeries.take(choose)
-      end
+    subtracted = subtract_neighbours(a, b, li, ri)
 
     keep =
       subtracted
@@ -460,6 +433,34 @@ defmodule GeoFrame.Overlay do
     nothing = List.duplicate(nil, length(rows))
     geometry = GeoSeries.take(subtracted, keep)
     if side == :left, do: {rows, nothing, geometry}, else: {nothing, rows, geometry}
+  end
+
+  # Replaces every row of `a` that meets rows of `b` (pairs `li`/`ri`) by its difference with
+  # the union of those rows; the other rows are unchanged.
+  defp subtract_neighbours(a, _b, [], _ri), do: a
+
+  defp subtract_neighbours(a, b, li, ri) do
+    n = GeoSeries.size(a)
+    with_neighbours = Enum.uniq(li)
+    group_of = with_neighbours |> Enum.with_index() |> Map.new()
+
+    union =
+      GeoSeries.union_groups(
+        GeoSeries.take(b, ri),
+        Enum.map(li, &group_of[&1]),
+        length(with_neighbours)
+      )
+
+    diff = GeoSeries.difference(GeoSeries.take(a, with_neighbours), union)
+    choose = Enum.map(0..(n - 1)//1, &replacement_slot(group_of, &1, n))
+    [a, diff] |> GeoSeries.concat() |> GeoSeries.take(choose)
+  end
+
+  defp replacement_slot(group_of, i, n) do
+    case Map.fetch(group_of, i) do
+      {:ok, k} -> n + k
+      :error -> i
+    end
   end
 
   # -- geometry type filtering ------------------------------------------------------------------

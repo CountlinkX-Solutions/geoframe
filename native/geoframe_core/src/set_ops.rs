@@ -7,8 +7,8 @@
 //!
 //! Geometries fall in three families: polygonal (`Polygon`, `MultiPolygon`, `Rect`,
 //! `Triangle`), linear (`Line`, `LineString`, `MultiLineString`) and points (`Point`,
-//! `MultiPoint`). `GeometryCollection` input is unsupported and gives null (a collection of
-//! mixed dimensions has no GeoArrow family of its own).
+//! `MultiPoint`). A `GeometryCollection` input is only supported by `intersection` (member
+//! by member, results collected and de-duplicated); the other operations give null for it.
 //!
 //! | left x right          | how it is computed                                              |
 //! |-----------------------|-----------------------------------------------------------------|
@@ -140,6 +140,9 @@ pub(crate) fn overlay_pair(
     op: SetOp,
 ) -> Option<Geometry<f64>> {
     use SetOp::{Difference, Intersection, SymmetricDifference, Union};
+    if op == Intersection && (is_collection(a) || is_collection(b)) {
+        return intersect_collections(a, b);
+    }
     match (Family::of(a)?, Family::of(b)?) {
         (Family::Polygonal(x), Family::Polygonal(y)) => Some(match op {
             Intersection => mixed_ops::polygonal_intersection(&x, &y),
@@ -183,6 +186,29 @@ pub(crate) fn overlay_pair(
             Union | SymmetricDifference => union_with_points(other, a, &y),
         }),
     }
+}
+
+fn is_collection(geom: &Geometry<f64>) -> bool {
+    matches!(geom, Geometry::GeometryCollection(_))
+}
+
+fn members(geom: &Geometry<f64>) -> Vec<Geometry<f64>> {
+    match geom {
+        Geometry::GeometryCollection(c) => c.0.clone(),
+        other => vec![other.clone()],
+    }
+}
+
+/// Intersection where either side is a collection: every pair of members is intersected and
+/// the pieces are collected (and de-duplicated) into one result.
+fn intersect_collections(a: &Geometry<f64>, b: &Geometry<f64>) -> Option<Geometry<f64>> {
+    let mut parts = Parts::default();
+    for left in members(a) {
+        for right in members(b) {
+            parts.push_geometry(overlay_pair(&left, &right, SetOp::Intersection)?);
+        }
+    }
+    Some(parts.absorb().into_geometry(Empty::Polygon))
 }
 
 /// `geom` (already classified as `family`) together with the points not already on it.

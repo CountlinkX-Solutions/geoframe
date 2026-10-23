@@ -321,3 +321,34 @@ fn intersection_all_of_nothing_is_an_empty_collection() {
         assert_eq!(wkt(&out), "GEOMETRYCOLLECTION EMPTY");
     }
 }
+
+#[test]
+fn intersection_all_continues_through_mixed_dimension_steps() {
+    // sq_hole x sq_overlap is a polygon plus two lines; ell then keeps only linework.
+    let c = col(&[
+        Some("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 4 2, 4 4, 2 4, 2 2))"),
+        Some(SQ_OVERLAP),
+        Some("POLYGON ((0 0, 6 0, 6 2, 2 2, 2 6, 0 6, 0 0))"),
+    ]);
+    let out = c.intersection_all().unwrap();
+    assert_eq!(kind(&out), "MultiLineString");
+    assert_eq!(parts(&out), 4);
+    assert!((out.length()[0].unwrap() - 8.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_collection_intersects_member_by_member() {
+    let gc = "GEOMETRYCOLLECTION (POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0)), POINT (10 10), LINESTRING (6 0, 6 9))";
+    let out = run(
+        gc,
+        "POLYGON ((2 2, 12 2, 12 12, 2 12, 2 2))",
+        SetOp::Intersection,
+    );
+    assert_eq!(kind(&out), "GeometryCollection");
+    assert_eq!(parts(&out), 3);
+    // collections are still unsupported for the other operations
+    assert_eq!(
+        run(gc, SQ, SetOp::Union).to_wkt().unwrap(),
+        vec![None::<String>]
+    );
+}

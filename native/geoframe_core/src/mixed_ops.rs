@@ -33,6 +33,49 @@ pub(crate) struct Parts {
 }
 
 impl Parts {
+    /// Adds the members of `geom` (collections are flattened).
+    pub fn push_geometry(&mut self, geom: Geometry<f64>) {
+        match geom {
+            Geometry::Polygon(p) => self.polygons.push(p),
+            Geometry::MultiPolygon(m) => self.polygons.extend(m.0),
+            Geometry::Rect(r) => self.polygons.push(r.to_polygon()),
+            Geometry::Triangle(t) => self.polygons.push(t.to_polygon()),
+            Geometry::LineString(l) => self.lines.push(l),
+            Geometry::Line(l) => self.lines.push(LineString::from(l)),
+            Geometry::MultiLineString(m) => self.lines.extend(m.0),
+            Geometry::Point(p) => self.points.push(p),
+            Geometry::MultiPoint(m) => self.points.extend(m.0),
+            Geometry::GeometryCollection(c) => c.0.into_iter().for_each(|g| self.push_geometry(g)),
+        }
+    }
+
+    /// Merges overlapping lines and drops the lower-dimensional parts that lie on a
+    /// higher-dimensional one, so the parts of a collected result do not repeat each other.
+    pub fn absorb(self) -> Parts {
+        let area = MultiPolygon::new(self.polygons);
+        let mut merged: Vec<LineString<f64>> = Vec::new();
+        for l in &self.lines {
+            merged = lines_union(&merged, std::slice::from_ref(l));
+        }
+        let linework = MultiLineString::new(merged);
+        let lines = if area.0.is_empty() {
+            linework.0.clone()
+        } else {
+            line_outside_polygon(&linework, &area)
+        };
+        let mut points: Vec<Point<f64>> = Vec::new();
+        for p in self.points {
+            if !p.intersects(&area) && !p.intersects(&linework) && !points.contains(&p) {
+                points.push(p);
+            }
+        }
+        Parts {
+            polygons: area.0,
+            lines,
+            points,
+        }
+    }
+
     pub fn into_geometry(self, empty: Empty) -> Geometry<f64> {
         let present = [
             !self.polygons.is_empty(),

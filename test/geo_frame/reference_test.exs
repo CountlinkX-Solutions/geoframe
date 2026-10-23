@@ -19,6 +19,7 @@ defmodule GeoFrame.ReferenceTest do
   @files ~w(measures unary_predicates binary_predicates constructive set_ops affine
             linear_referencing crs geodesic io)
   @frame_ops ~w(sjoin sjoin_nearest dissolve union_all)
+  @overlay_ops ~w(overlay clip explode intersection_all)
 
   {deviations, _} = Code.eval_file(Path.expand("../reference/known_deviations.exs", __DIR__))
   @deviations deviations
@@ -29,7 +30,7 @@ defmodule GeoFrame.ReferenceTest do
               do: {file, group["label"]}
 
   setup_all do
-    results = Reference.run() ++ Reference.run_frames()
+    results = Reference.run() ++ Reference.run_frames() ++ Reference.run_overlay()
     if System.get_env("REFERENCE_REPORT"), do: report(results)
     %{results: results}
   end
@@ -54,6 +55,12 @@ defmodule GeoFrame.ReferenceTest do
   for op <- @frame_ops do
     test "frames: #{op}", %{results: results} do
       check(Enum.filter(results, &(&1.file == "frames" and &1.op == unquote(op))))
+    end
+  end
+
+  for op <- @overlay_ops do
+    test "overlay fixtures: #{op}", %{results: results} do
+      check(Enum.filter(results, &(&1.file == "overlay" and &1.op == unquote(op))))
     end
   end
 
