@@ -49,8 +49,8 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | `count_interior_rings` | — | `count_interior_rings/1` | ✅ | 0 for non-polygons as Shapely; null rows `nil` |
 | `get_geometry(index)` | — | `get_geometry/2` | 🟡 | scalar integer index only (negative from end); no per-row index array |
 | `get_precision` / `set_precision` | — | — | ❌ | needs grid snapping; low value |
-| `hausdorff_distance` | — | — | ❌ | geo `HausdorffDistance` |
-| `frechet_distance` | — | — | ❌ | geo `FrechetDistance` (line_measures) |
+| `hausdorff_distance` | — | `hausdorff_distance/3` | ✅ | GEOS discrete algorithm (vertex to whole geometry), `densify:`; not geo's vertex-to-vertex `HausdorffDistance` |
+| `frechet_distance` | — | `frechet_distance/3` | 🟡 | `densify:`; discrete over vertices; `LineString` only, other types are `nil` |
 | `minimum_bounding_radius` | — | — | ❌ | Welzl; geo has no direct trait (compute from circle) |
 | `minimum_clearance` | — | — | ❌ | no geo trait; hard |
 | `offset_curve` | — | — | ❌ | geo-buf crate may provide; otherwise own impl |
@@ -72,7 +72,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | `is_ring` | `is_ring` yes | `is_ring/1` | ✅ | closed, >= 4 vertices, simple; quadratic check |
 | `is_closed` | — | `is_closed/1` | ✅ | lines and multilines; others false (Shapely) |
 | `is_simple` | `self_intersects` (inverse, lines) | — | ❌ | linestring self-intersection via geo `Intersects`/sweep |
-| `is_ccw` | `is_ccw` yes | — | ❌ | geo `Orient`/`WindingOrder` |
+| `is_ccw` | `is_ccw` yes | `is_ccw/1` | ✅ | closed `LineString` only; open lines and other types `false` |
 | `has_z`, `has_m` | via dtype | — | ⛔ | GeoFrame is 2D only (revisit with z/m) |
 | `is_valid_coverage`, `invalid_coverage_edges` | — | — | ❌ | GEOS-only concept; no geo equivalent; low value |
 | — | `null_out_invalid` yes | `null_out_invalid/1` | ✅ | |
@@ -135,15 +135,15 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | `maximum_inscribed_circle` | no | — | ❌ | polylabel (geo has `Polylabel`? verify; geo 0.33 has `polylabel` feature) |
 | `minimum_clearance_line` | no | — | ❌ | hard |
 | `extract_unique_points` | no | `extract_unique_points/1` | ✅ | MultiPoint in first-seen order |
-| `remove_repeated_points` | no | — | ❌ | geo `RemoveRepeatedPoints` |
-| `reverse` | no | — | ❌ | geo `orient`/reverse; easy |
+| `remove_repeated_points` | no | `remove_repeated_points/2` | ✅ | `tolerance`; own thinning keeps first and last vertex; 0 uses geo |
+| `reverse` | no | `reverse/1` | ✅ | every type; multi-geometry part order kept |
 | `normalize` | no | — | ❌ | canonical ordering; medium (GEOS-specific order) |
-| `orient_polygons` | no | — | ❌ | geo `Orient` |
-| `segmentize` | no | — | ❌ | geo `Densify` (Euclidean) |
+| `orient_polygons` | no | `orient_polygons/2` | ✅ | `exterior_cw:` |
+| `segmentize` | no | `segmentize/2` | ✅ | Euclidean, `Densify` |
 | `force_2d` | dtype | (always 2D) | ✅ | implicit |
 | `force_3d` | dtype | — | ⛔ | no Z storage |
 | `snap` | no | — | ❌ | no geo trait; hard |
-| `shortest_line` | no | — | ❌ | geo `ClosestPoint` + pairing; medium |
+| `shortest_line` | no | `shortest_line/2` | ✅ | composed from `ClosestPoint` both ways plus segment crossings; ties may differ from GEOS |
 | `sample_points` | no | — | ❌ | random points in polygons; needs rand; medium |
 | `make_grid` (tools) | no | — | ❌ | pure construction; easy |
 | `transform` (apply function to coordinates) | no | — | ⛔ | arbitrary callbacks over NIF coordinates; `to_crs`/affine cover real uses |
@@ -169,12 +169,12 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `interpolate` | roadmap | — | ❌ | geo `LineInterpolatePoint` (normalized option) |
-| `project` | roadmap | — | ❌ | geo `LineLocatePoint` |
-| `line_merge` | roadmap ("Linestring joining") | — | ❌ | no geo trait; own impl (endpoint graph); medium |
+| `interpolate` | roadmap | `interpolate/3` | ✅ | `normalized:`, negative distance, per-row distance; MultiLineString parts concatenated; non-lines `nil` |
+| `project` | roadmap | `project/3` | ✅ | `normalized:`, `other` broadcasts |
+| `line_merge` | roadmap ("Linestring joining") | `line_merge/2` | ✅ | own endpoint-graph merge; `directed:`; non-lines give an empty collection |
 | `shared_paths` | no | — | ❌ | hard |
 | `offset_curve` | no | — | ❌ | see §2 |
-| `shortest_line` | no | — | ❌ | see §6 |
+| `shortest_line` | no | `shortest_line/2` | ✅ | see §6 |
 | `chaikin`-style smoothing | no | — | ❌ | not in GeoPandas; skip |
 
 ## 9. Aggregation / dissolve
@@ -286,7 +286,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | — | `skew`, `skew_about_centroid` | `skew/4` (`origin: :centroid`) | ✅ | see §7 |
 | — | `null_out_invalid` | `null_out_invalid/1` | ✅ | see §3 |
 | — | `count_coordinates` | `count_coordinates/1` | ✅ | |
-| — | `is_ccw` | — | ❌ | see §3 |
+| — | `is_ccw` | `is_ccw/1` | ✅ | see §3 |
 | — | `mean_coordinate` | `mean_coordinate/1` | ✅ | see §2 |
 | — | `affine_transform` | `affine_transform/2` | ✅ | see §7 |
 | — | `rotate_about_centroid`, `scale_about_centroid` | `rotate`/`scale` with `origin: :centroid` | ✅ | |
@@ -326,6 +326,7 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 - Members: `interpolate`, `project`, `segmentize`, `remove_repeated_points`, `reverse`, `orient_polygons`, `is_ccw`, `line_merge`, `shortest_line`, `hausdorff_distance`, `frechet_distance`.
 - Crates: `LineInterpolatePoint`, `LineLocatePoint`, `Densify`, `RemoveRepeatedPoints`, `Orient`, `HausdorffDistance`, `FrechetDistance`, `ClosestPoint`; `line_merge` own implementation (endpoint adjacency graph).
 - Difficulty: low except `line_merge` and `shortest_line` (medium).
+- Status: done (issue #38). Deviations: `hausdorff_distance` follows GEOS (vertex to whole geometry) instead of geo's vertex-to-vertex trait; `remove_repeated_points` with a tolerance and `interpolate` for multi-part lines are own code; `frechet_distance` is `LineString` only.
 
 ## Batch D - Affine completeness and per-row parameters (medium value, easy)
 - Members: `skew`, `affine_transform`, per-row (column) offsets/angles/origins for `translate`/`scale`/`rotate`/`skew`, `wrap_longitude`, `is_geographic`.
@@ -361,4 +362,4 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 `plot` (use Kino map), `geocode`/`reverse_geocode`, pandas index alignment (`align=`), `iterfeatures`, Shapely object constructors, persistent `sindex` object, arbitrary-callback `transform`, deprecated `unary_union`.
 
 ---
-Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 87, '🟡': 29, '❌': 68, '⛔': 15}
+Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 99, '🟡': 30, '❌': 55, '⛔': 15}

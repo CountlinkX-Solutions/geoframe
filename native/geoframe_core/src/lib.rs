@@ -6,7 +6,9 @@ mod attributes;
 pub(crate) mod column;
 mod flatgeobuf_io;
 mod geojson_io;
+mod line_merge;
 mod parity_a;
+mod parity_c;
 mod parity_h;
 mod parquet_io;
 mod predicates;
@@ -34,6 +36,8 @@ mod flatgeobuf_tests;
 mod geojson_tests;
 #[cfg(test)]
 mod parity_a_tests;
+#[cfg(test)]
+mod parity_c_tests;
 #[cfg(test)]
 mod parity_h_tests;
 #[cfg(test)]

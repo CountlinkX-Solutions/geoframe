@@ -651,6 +651,194 @@ defmodule GeoFrame.GeoSeries do
     end
   end
 
+  # -- linear referencing and linestring operations --------------------------------------
+
+  @doc """
+  The point at `distance` along each line.
+
+  `distance` is a number, or a list or `Explorer.Series` with one entry per row (a `nil`
+  entry nulls that row). A negative distance counts from the end of the line; distances past
+  either end clamp to that end. A `MultiLineString` is measured as its parts laid end to end.
+  Rows that are not lines (points, polygons) are `nil`, where Shapely raises.
+
+  Options: `:normalized` - when `true`, `distance` is a fraction of the length (default
+  `false`).
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0)"])
+      iex> s |> GeoFrame.GeoSeries.interpolate(0.25, normalized: true) |> GeoFrame.GeoSeries.to_wkt()
+      ["POINT(2.5 0)"]
+  """
+  @spec interpolate(t(), param(), keyword()) :: t()
+  def interpolate(%__MODULE__{ref: ref} = series, distance, opts \\ []) do
+    opts = Keyword.validate!(opts, normalized: false)
+
+    ref
+    |> Native.interpolate(param!(distance, size(series), "distance"), opts[:normalized] == true)
+    |> wrap()
+    |> unwrap!()
+  end
+
+  @doc """
+  The distance along each line to the point on it nearest `other` (Shapely `project`).
+
+  `other` is a series of points (positional) or a single point (a WKT string or a one-row
+  series, broadcast). With `normalized: true` the result is a fraction of the length
+  (default `false`). Rows that are not lines, or whose partner is not a point, are `nil`.
+  Pairing and CRS rules are those of `intersects/2`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0)"])
+      iex> s |> GeoFrame.GeoSeries.project("POINT (4 3)") |> Explorer.Series.to_list()
+      [4.0]
+  """
+  @spec project(t(), other(), keyword()) :: Series.t()
+  def project(%__MODULE__{ref: left} = series, other, opts \\ []) do
+    opts = Keyword.validate!(opts, normalized: false)
+
+    left
+    |> Native.project(other_ref(series, other), opts[:normalized] == true)
+    |> unwrap!()
+    |> float_series()
+  end
+
+  @doc """
+  Adds vertices so that no segment is longer than `max_segment_length` (a positive number,
+  in CRS units; Euclidean). Each segment is split into equal parts. Points are unchanged.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 4 0)"])
+      iex> s |> GeoFrame.GeoSeries.segmentize(2) |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(0 0,2 0,4 0)"]
+  """
+  @spec segmentize(t(), number()) :: t()
+  def segmentize(%__MODULE__{ref: ref}, max_segment_length) do
+    ref
+    |> Native.segmentize(number!(max_segment_length, "max_segment_length"))
+    |> wrap()
+    |> unwrap!()
+  end
+
+  @doc """
+  Removes consecutive repeated vertices. With a `tolerance` (default `0.0`: exact repeats
+  only) a vertex within that distance of the last kept one is dropped too; the first and last
+  vertex of every line and ring are always kept. A ring or line that collapses becomes empty
+  (polygon) or keeps its two endpoints (line).
+  """
+  @spec remove_repeated_points(t(), number()) :: t()
+  def remove_repeated_points(%__MODULE__{ref: ref}, tolerance \\ 0.0) do
+    ref |> Native.remove_repeated_points(number!(tolerance, "tolerance")) |> wrap() |> unwrap!()
+  end
+
+  defp number!(value, _name) when is_number(value), do: value * 1.0
+
+  defp number!(other, name),
+    do: raise(ArgumentError, "#{name} must be a number, got: #{inspect(other)}")
+
+  @doc """
+  Reverses the vertex order of every line and ring. The parts of a multi-geometry keep their
+  order; points are unchanged.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 1 1, 2 0)"])
+      iex> s |> GeoFrame.GeoSeries.reverse() |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(2 0,1 1,0 0)"]
+  """
+  @spec reverse(t()) :: t()
+  def reverse(%__MODULE__{ref: ref}), do: ref |> Native.reverse() |> wrap() |> unwrap!()
+
+  @doc """
+  Orients polygon rings: counter-clockwise shells and clockwise holes by default, the
+  opposite with `exterior_cw: true`. Other types are unchanged.
+  """
+  @spec orient_polygons(t(), keyword()) :: t()
+  def orient_polygons(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, exterior_cw: false)
+    ref |> Native.orient_polygons(opts[:exterior_cw] == true) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  Whether each geometry is a closed line wound counter-clockwise (Shapely `is_ccw`). Open
+  lines and every non-line type are `false`; only null rows are `nil`.
+  """
+  @spec is_ccw(t()) :: Series.t()
+  # GeoPandas-compatible name, see is_valid/1.
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+  def is_ccw(%__MODULE__{ref: ref}) do
+    ref |> Native.ccw_flags() |> Series.from_list(dtype: :boolean)
+  end
+
+  @doc """
+  Discrete Hausdorff distance between each pair: the largest distance from a vertex of one
+  geometry to the *whole* other one, taken both ways (GEOS, so a vertex that lies on a segment
+  of the other geometry counts as distance zero).
+
+  Options: `:densify` - a fraction in `(0, 1]`; each segment is first split into
+  `round(1 / densify)` parts so the vertices sample the geometry more finely. Default `nil`
+  (vertices only). Pairing, null and CRS rules are those of `intersects/2`.
+  """
+  @spec hausdorff_distance(t(), other(), keyword()) :: Series.t()
+  def hausdorff_distance(%__MODULE__{ref: left} = series, other, opts \\ []) do
+    left
+    |> Native.hausdorff_distance(other_ref(series, other), densify!(opts))
+    |> unwrap!()
+    |> float_series()
+  end
+
+  @doc """
+  Discrete Fréchet distance between each pair of lines (the shortest leash for two walkers
+  that never turn back), computed over vertices. Only `LineString` rows have one: every other
+  type is `nil`, as are null and empty rows.
+
+  Options: `:densify` as for `hausdorff_distance/3`. Pairing and CRS rules are those of
+  `intersects/2`.
+  """
+  @spec frechet_distance(t(), other(), keyword()) :: Series.t()
+  def frechet_distance(%__MODULE__{ref: left} = series, other, opts \\ []) do
+    left
+    |> Native.frechet_distance(other_ref(series, other), densify!(opts))
+    |> unwrap!()
+    |> float_series()
+  end
+
+  defp densify!(opts) do
+    case Keyword.validate!(opts, densify: nil)[:densify] do
+      nil -> nil
+      value when is_number(value) -> value * 1.0
+      other -> raise ArgumentError, ":densify must be a number or nil, got: #{inspect(other)}"
+    end
+  end
+
+  @doc """
+  The `LineString` between the nearest points of each pair, running from the point on the
+  left geometry to the point on `other`. Its length equals `distance/2`. Geometries that
+  intersect give a zero-length line at a common point. Which of several equally near pairs is
+  returned may differ from GEOS. Pairing, null and CRS rules are those of `intersects/2`.
+
+      iex> a = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0)"])
+      iex> a |> GeoFrame.GeoSeries.shortest_line("POINT (4 3)") |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(4 0,4 3)"]
+  """
+  @spec shortest_line(t(), other()) :: t()
+  def shortest_line(%__MODULE__{ref: left} = series, other) do
+    left |> Native.shortest_line(other_ref(series, other)) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  Joins line parts that meet end to end. A point where exactly two parts end is merged
+  through; a junction of three or more is not. Returns a `LineString` when everything forms
+  one chain, otherwise a `MultiLineString`. A `LineString` comes back unchanged and a row with
+  no lines (a point or polygon) becomes `GEOMETRYCOLLECTION EMPTY`, as in Shapely.
+
+  Options: `:directed` - when `true`, parts only join head to tail, never flipped (default
+  `false`, where parts may be reversed to fit).
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["MULTILINESTRING ((0 0, 1 1), (1 1, 2 2))"])
+      iex> s |> GeoFrame.GeoSeries.line_merge() |> GeoFrame.GeoSeries.to_wkt()
+      ["LINESTRING(0 0,1 1,2 2)"]
+  """
+  @spec line_merge(t(), keyword()) :: t()
+  def line_merge(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, directed: false)
+    ref |> Native.line_merge(opts[:directed] == true) |> wrap() |> unwrap!()
+  end
+
   # -- accessors ------------------------------------------------------------------------
 
   @doc """
