@@ -270,3 +270,18 @@ fn predicate_names_parse() {
     assert_eq!(Predicate::from_name("geom_equals"), Some(Predicate::Equals));
     assert_eq!(Predicate::from_name("nope"), None);
 }
+
+#[test]
+fn distance_to_an_empty_geometry_is_null() {
+    let left = col(&[
+        Some("LINESTRING EMPTY"),
+        Some("POLYGON EMPTY"),
+        Some("GEOMETRYCOLLECTION EMPTY"),
+        Some("POINT (0 0)"),
+    ]);
+    let right = one("POINT (1 1)");
+    let d = left.distance(&right).unwrap();
+    assert_eq!(&d[..3], &[None, None, None]);
+    assert!(d[3].is_some());
+    assert_eq!(left.dwithin(&right, 2.0).unwrap()[..3], [None, None, None]);
+}

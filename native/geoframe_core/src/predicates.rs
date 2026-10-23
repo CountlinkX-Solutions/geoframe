@@ -154,6 +154,12 @@ impl De9im {
     }
 }
 
+/// Whether the geometry has at least one coordinate (is not an empty line, polygon or collection).
+fn has_coords(g: &Geometry<f64>) -> bool {
+    use geo::CoordsIter;
+    g.coords_count() > 0
+}
+
 /// Runs `f`, turning a panic inside `geo` into `None`.
 pub(crate) fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
     catch_unwind(AssertUnwindSafe(f)).ok()
@@ -287,11 +293,17 @@ impl GeoColumn {
     /// Planar Euclidean distance; zero when the geometries intersect.
     pub fn distance(&self, other: &GeoColumn) -> Result<Vec<Option<f64>>, String> {
         use geo::Distance;
+        // The distance to an empty geometry is undefined (Shapely: NaN), not 0 or `f64::MAX`.
         self.zip_pairs(
             other,
-            |a, b| guarded(|| Euclidean.distance(a, b)),
+            |a, b| {
+                (has_coords(a) && has_coords(b)).then(|| guarded(|| Euclidean.distance(a, b)))?
+            },
             |scalar| scalar.clone(),
-            |scalar, row| guarded(|| Euclidean.distance(row, scalar)),
+            |scalar, row| {
+                (has_coords(row) && has_coords(scalar))
+                    .then(|| guarded(|| Euclidean.distance(row, scalar)))?
+            },
         )
     }
 
