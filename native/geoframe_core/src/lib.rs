@@ -5,9 +5,12 @@ mod affine;
 mod arrow_io;
 mod attributes;
 pub(crate) mod column;
+mod crs_wkt;
+mod dbf;
 mod ewkb;
 mod flatgeobuf_io;
 mod geojson_io;
+mod gpkg_io;
 mod line_merge;
 mod mixed_ops;
 mod noding;
@@ -22,6 +25,7 @@ mod predicates;
 mod projjson;
 mod reproject;
 mod set_ops;
+mod shapefile_io;
 mod sindex;
 mod unary;
 
@@ -34,6 +38,10 @@ pub use column::GeoColumn;
 pub use ewkb::{ewkb_to_iso, wkb_to_ewkb};
 pub use flatgeobuf_io::{read_flatgeobuf, write_flatgeobuf};
 pub use geojson_io::{read_geojson, read_geojson_str, write_geojson};
+pub use gpkg_io::{
+    gpkg_info, gpkg_layers, read_gpkg, write_gpkg, GpkgRead, GpkgWriteOptions, LayerInfo,
+    LayerSummary,
+};
 pub use parity_e::{GridFeature, GridType};
 pub use parquet_io::{
     read_geoparquet, read_geoparquet_filtered, write_geoparquet, write_geoparquet_with,
@@ -42,6 +50,7 @@ pub use parquet_io::{
 pub use predicates::Predicate;
 pub use reproject::{crs_is_geographic, normalize_crs};
 pub use set_ops::SetOp;
+pub use shapefile_io::{read_shapefile, shapefile_info, write_shapefile};
 pub use sindex::{NearestPairs, QueryPredicate};
 pub use unary::{BufferOptions, Origin, UnaryOp};
 
@@ -53,6 +62,8 @@ mod ewkb_tests;
 mod flatgeobuf_tests;
 #[cfg(test)]
 mod geojson_tests;
+#[cfg(test)]
+mod gpkg_tests;
 #[cfg(test)]
 mod io_g1_tests;
 #[cfg(test)]
@@ -75,6 +86,8 @@ mod predicates_tests;
 mod reproject_tests;
 #[cfg(test)]
 mod set_ops_tests;
+#[cfg(test)]
+mod shapefile_tests;
 #[cfg(test)]
 mod sindex_tests;
 #[cfg(test)]

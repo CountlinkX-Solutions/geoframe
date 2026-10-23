@@ -105,6 +105,9 @@ pub(crate) enum Cell<'a> {
 pub(crate) struct Table {
     pub names: Vec<String>,
     pub arrays: Vec<ArrayRef>,
+    /// The type each column had before it was reduced (a date column is `Date32` here but
+    /// text in `arrays`), for formats that have a native type for it.
+    pub source_types: Vec<DataType>,
 }
 
 impl Table {
@@ -112,11 +115,17 @@ impl Table {
         let (fields, columns) = decode_attributes(ipc, rows)?;
         let mut names = Vec::with_capacity(fields.len());
         let mut arrays = Vec::with_capacity(fields.len());
+        let mut source_types = Vec::with_capacity(fields.len());
         for (field, column) in fields.iter().zip(columns) {
             names.push(field.name().clone());
+            source_types.push(column.data_type().clone());
             arrays.push(normalize(field.name(), column)?);
         }
-        Ok(Self { names, arrays })
+        Ok(Self {
+            names,
+            arrays,
+            source_types,
+        })
     }
 
     pub fn cell(&self, column: usize, row: usize) -> Cell<'_> {
