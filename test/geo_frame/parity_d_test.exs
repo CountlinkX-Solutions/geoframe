@@ -69,16 +69,20 @@ defmodule GeoFrame.ParityDTest do
              ]) == [true, nil]
     end
 
-    test "only 6-element numeric matrices are accepted" do
+    test "only 6- or 12-element numeric matrices are accepted" do
       series = s([@unit])
 
       assert_raise ArgumentError, ~r/6 numbers/, fn ->
         GeoSeries.affine_transform(series, [1, 0, 0])
       end
 
-      assert_raise ArgumentError, ~r/12/, fn ->
-        GeoSeries.affine_transform(series, [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0])
+      assert_raise ArgumentError, ~r/12 numbers/, fn ->
+        GeoSeries.affine_transform(series, [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0])
       end
+
+      assert series
+             |> GeoSeries.affine_transform([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0])
+             |> GeoSeries.to_wkt() == GeoSeries.to_wkt(series)
 
       assert_raise ArgumentError, fn ->
         GeoSeries.affine_transform(series, [1, 0, 0, 1, 0, "a"])

@@ -572,7 +572,8 @@ defmodule GeoFrame.GeoSeries do
     @doc """
     #{text}
     Returns a `GeoSeries` with the same CRS. Null rows, and rows the operation is undefined
-    for, are `nil`. Output is 2D: Z and M ordinates are dropped.
+    for, are `nil`. `boundary` and `exterior` keep Z and M; the other operations return 2D
+    geometries (Shapely drops Z there too).
     """
     @spec unquote(name)(t()) :: t()
     def unquote(name)(%__MODULE__{ref: ref}) do
@@ -678,7 +679,8 @@ defmodule GeoFrame.GeoSeries do
   needed. Axis order is always x = easting/longitude, y = northing/latitude, for every CRS
   including `EPSG:4326` (GeoPandas `always_xy=True`). A source CRS stored as PROJJSON must
   carry a top-level `id` with authority and code. Rows that are null, or whose transform fails
-  (outside the projection's domain), become null. Output is 2D: Z is dropped.
+  (outside the projection's domain), become null. Z is kept (unchanged between CRSs that are
+  not geocentric; transformed to or from a geocentric CRS such as `EPSG:4978`); M is dropped.
 
       iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (0 0)"], crs: "EPSG:4326")
       iex> s |> GeoFrame.GeoSeries.to_crs(3857) |> GeoFrame.GeoSeries.crs()
@@ -704,21 +706,25 @@ defmodule GeoFrame.GeoSeries do
   # -- affine transforms ----------------------------------------------------------------
 
   @doc """
-  Shifts every coordinate by `xoff` and `yoff`. Output is 2D.
+  Shifts every coordinate by `xoff` and `yoff`.
 
   Each offset is a number, or a list or `Explorer.Series` with one entry per row (a `nil`
-  entry nulls that row).
+  entry nulls that row). Z is kept; the `:zoff` option (a number, default `0`) shifts it.
+  M is dropped (Shapely). `:zoff` is not available with per-row offsets.
 
       iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1 1)"])
       iex> s |> GeoFrame.GeoSeries.translate(2, 3) |> GeoFrame.GeoSeries.to_wkt()
       ["POINT(3 4)"]
   """
-  @spec translate(t(), param(), param()) :: t()
-  def translate(%__MODULE__{ref: ref} = series, xoff, yoff) do
+  @spec translate(t(), param(), param(), keyword()) :: t()
+  def translate(%__MODULE__{ref: ref} = series, xoff, yoff, opts \\ []) do
+    zoff = z_factor!(opts, :zoff, 0)
+
     if is_number(xoff) and is_number(yoff) do
-      ref |> Native.translate(xoff * 1.0, yoff * 1.0) |> wrap() |> unwrap!()
+      ref |> Native.translate(xoff * 1.0, yoff * 1.0, zoff) |> wrap() |> unwrap!()
     else
       n = size(series)
+      if zoff != 0.0, do: raise(ArgumentError, ":zoff needs scalar xoff and yoff")
 
       ref
       |> Native.translate_rows(param!(xoff, n, "xoff"), param!(yoff, n, "yoff"))
@@ -732,17 +738,24 @@ defmodule GeoFrame.GeoSeries do
 
   `:origin` is `:center` (default; the centre of each geometry's bounding box, as in
   GeoPandas), `:centroid`, an `{x, y}` pair used for every row, or a list with one `{x, y}`
-  (or `nil`) per row. The factors are numbers, lists or `Explorer.Series` (see `translate/3`).
-  Output is 2D.
+  (or `nil`) per row. The factors are numbers, lists or `Explorer.Series` (see `translate/4`).
+  Z is kept; the `:zfact` option (a number, default `1`) scales it about zero. M is dropped
+  (Shapely). `:zfact` is not available with per-row factors.
   """
   @spec scale(t(), param(), param(), keyword()) :: t()
   def scale(%__MODULE__{ref: ref} = series, xfact, yfact, opts \\ []) do
-    case origin!(opts, size(series)) do
+    zfact = z_factor!(opts, :zfact, 1)
+
+    case origin!(Keyword.delete(opts, :zfact), size(series)) do
       {:scalar, origin, ox, oy} when is_number(xfact) and is_number(yfact) ->
-        ref |> Native.scale(xfact * 1.0, yfact * 1.0, origin, ox, oy) |> wrap() |> unwrap!()
+        ref
+        |> Native.scale(xfact * 1.0, yfact * 1.0, zfact, origin, ox, oy)
+        |> wrap()
+        |> unwrap!()
 
       {_, origin, ox, oy} ->
         n = size(series)
+        if zfact != 1.0, do: raise(ArgumentError, ":zfact needs scalar xfact, yfact and origin")
 
         ref
         |> Native.scale_rows(
@@ -761,7 +774,7 @@ defmodule GeoFrame.GeoSeries do
   Rotates counter-clockwise by `angle` **degrees** about `:origin`.
 
   `:origin` accepts the same values as in `scale/4` and defaults to `:center`; `angle` is a
-  number, list or `Explorer.Series`. Output is 2D.
+  number, list or `Explorer.Series`. Z is kept; M is dropped.
   """
   @spec rotate(t(), param(), keyword()) :: t()
   def rotate(%__MODULE__{ref: ref} = series, angle, opts \\ []) do
@@ -789,7 +802,7 @@ defmodule GeoFrame.GeoSeries do
   (y - y0), y' = y + tan(ys) * (x - x0)).
 
   Options: `:origin` as in `scale/4` (default `:center`), `:use_radians` (default `false`,
-  angles are degrees). `xs` and `ys` are numbers, lists or `Explorer.Series`. Output is 2D.
+  angles are degrees). `xs` and `ys` are numbers, lists or `Explorer.Series`. Z is kept; M is dropped.
 
       iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 0 2)"])
       iex> skewed = GeoFrame.GeoSeries.skew(s, 45, 0, origin: {0, 0})
@@ -817,11 +830,13 @@ defmodule GeoFrame.GeoSeries do
   end
 
   @doc """
-  Applies the 2D affine matrix `[a, b, d, e, xoff, yoff]` (Shapely order) to every
-  coordinate: `x' = a*x + b*y + xoff`, `y' = d*x + e*y + yoff`.
+  Applies an affine matrix to every coordinate (Shapely order).
 
-  Only the 6-element 2D form is accepted; the 12-element 3D form raises `ArgumentError`
-  because geometries are stored in 2D.
+  The 6-element form `[a, b, d, e, xoff, yoff]` is `x' = a*x + b*y + xoff`,
+  `y' = d*x + e*y + yoff` and leaves Z alone. The 12-element form
+  `[a, b, c, d, e, f, g, h, i, xoff, yoff, zoff]` also transforms Z:
+  `x' = a*x + b*y + c*z + xoff`, `y' = d*x + e*y + f*z + yoff`, `z' = g*x + h*y + i*z + zoff`.
+  A geometry without Z only uses `a, b, d, e, xoff, yoff`. M is dropped (Shapely).
 
       iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (1 2)"])
       iex> s |> GeoFrame.GeoSeries.affine_transform([0, 1, 1, 0, 0, 0]) |> GeoFrame.GeoSeries.to_wkt()
@@ -829,19 +844,13 @@ defmodule GeoFrame.GeoSeries do
   """
   @spec affine_transform(t(), [number()]) :: t()
   def affine_transform(%__MODULE__{ref: ref}, matrix) when is_list(matrix) do
-    cond do
-      Kernel.length(matrix) == 12 ->
-        raise ArgumentError,
-              "the 12-element 3D affine matrix is not supported (geometries are 2D); " <>
-                "pass the 6 numbers [a, b, d, e, xoff, yoff]"
-
-      Kernel.length(matrix) != 6 or not Enum.all?(matrix, &is_number/1) ->
-        raise ArgumentError,
-              "affine_transform needs 6 numbers [a, b, d, e, xoff, yoff], got: #{inspect(matrix)}"
-
-      true ->
-        ref |> Native.affine_transform(Enum.map(matrix, &(&1 * 1.0))) |> wrap() |> unwrap!()
+    if Kernel.length(matrix) not in [6, 12] or not Enum.all?(matrix, &is_number/1) do
+      raise ArgumentError,
+            "affine_transform needs 6 numbers [a, b, d, e, xoff, yoff] or 12 numbers " <>
+              "[a, b, c, d, e, f, g, h, i, xoff, yoff, zoff], got: #{inspect(matrix)}"
     end
+
+    ref |> Native.affine_transform(Enum.map(matrix, &(&1 * 1.0))) |> wrap() |> unwrap!()
   end
 
   @doc """
@@ -899,6 +908,13 @@ defmodule GeoFrame.GeoSeries do
   defp row_coords(coords, _n) when is_list(coords), do: coords
 
   defp row_coords(scalar, n), do: List.duplicate(scalar, n)
+
+  defp z_factor!(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_number(value) -> value * 1.0
+      other -> raise ArgumentError, "#{inspect(key)} must be a number, got: #{inspect(other)}"
+    end
+  end
 
   defp origin!(opts, n) do
     opts = Keyword.validate!(opts, origin: :center)
