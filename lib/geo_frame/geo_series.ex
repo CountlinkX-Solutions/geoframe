@@ -27,6 +27,8 @@ defmodule GeoFrame.GeoSeries do
 
   @type t :: %__MODULE__{ref: reference()}
   @type bounds :: {float(), float(), float(), float()}
+  @typedoc "The right-hand side of a binary operation: a series, or a WKT string that broadcasts."
+  @type other :: t() | String.t()
 
   @preview_rows 5
 
@@ -159,6 +161,123 @@ defmodule GeoFrame.GeoSeries do
   @doc "Centroids as a new series of points, keeping the CRS."
   @spec centroid(t()) :: t()
   def centroid(%__MODULE__{ref: ref}), do: ref |> Native.centroid() |> wrap() |> unwrap!()
+
+  # -- binary predicates ----------------------------------------------------------------
+
+  @predicate_docs [
+    intersects: """
+    Whether the geometries share at least one point (boundary contact counts).
+    This is the negation of `disjoint/2`.
+    """,
+    contains: """
+    Whether no point of `other` lies outside the geometry and their interiors share a point.
+
+    Boundary points are **not** contained: a polygon does not `contains` a point on its edge,
+    nor a line lying along its boundary (use `covers/2` for that). `contains(a, b)` equals
+    `within(b, a)`.
+    """,
+    within: """
+    Whether the geometry lies inside `other` with interiors sharing a point. The converse of
+    `contains/2`, so a point on the boundary of `other` is not `within` it (see `covered_by/2`).
+    """,
+    touches: """
+    Whether the geometries share boundary points but no interior points, such as two squares
+    sharing an edge or a point on a polygon edge.
+    """,
+    crosses: """
+    Whether the interiors intersect and the intersection has a lower dimension than the larger
+    geometry, such as two lines crossing at a point or a line passing through a polygon.
+    Polygons never cross polygons.
+    """,
+    overlaps: """
+    Whether the geometries have the same dimension, their interiors intersect, and neither
+    contains the other.
+    """,
+    disjoint: """
+    Whether the geometries share no point at all. This is the negation of `intersects/2`.
+    """,
+    covers: """
+    Whether no point of `other` lies outside the geometry. Unlike `contains/2` this is true for
+    points and lines on the boundary: a square covers a point on its edge.
+    """,
+    covered_by: """
+    Whether no point of the geometry lies outside `other`. The converse of `covers/2`; unlike
+    `within/2` it is true for boundary points.
+    """,
+    geom_equals: """
+    Topological equality: both geometries describe the same set of points, regardless of vertex
+    order, start vertex, ring orientation or redundant vertices. Named `geom_equals` after
+    GeoPandas' `geom_equals` (the exact-coordinate comparison is not provided).
+    """
+  ]
+
+  @predicate_intro """
+  Element-wise, with GeoPandas semantics, returning a boolean `Explorer.Series`.
+
+  `other` is a `GeoSeries` of the same length, or a single geometry (a WKT string, or a
+  one-row `GeoSeries`) that is compared with every row. Rows where either side is null, or is
+  an empty geometry, are `nil`. A length mismatch raises `ArgumentError`, as does a CRS
+  mismatch between two series that both have a CRS (GeoPandas only warns; GeoFrame fails
+  loudly). Series with no CRS are compatible with any CRS.
+  """
+
+  for {name, text} <- @predicate_docs do
+    native_name = Atom.to_string(name)
+
+    @doc "#{text}
+#{@predicate_intro}"
+    @spec unquote(name)(t(), other()) :: Series.t()
+    def unquote(name)(%__MODULE__{ref: left} = series, other) do
+      right = other_ref(series, other)
+      left |> Native.predicate(right, unquote(native_name)) |> boolean_series()
+    end
+  end
+
+  @doc """
+  Planar Euclidean distance between each pair, as an f64 series. Zero when they intersect.
+
+  Distances are in CRS units (degrees for `EPSG:4326`); there is no geodesic variant.
+  Pairing, null and CRS rules are those of `intersects/2`.
+  """
+  @spec distance(t(), other()) :: Series.t()
+  def distance(%__MODULE__{ref: left} = series, other) do
+    left |> Native.distance(other_ref(series, other)) |> unwrap!() |> float_series()
+  end
+
+  @doc """
+  Whether each pair is within `limit` of each other: `distance(a, b) <= limit` (inclusive).
+
+  Pairing, null and CRS rules are those of `intersects/2`.
+  """
+  @spec dwithin(t(), other(), number()) :: Series.t()
+  def dwithin(%__MODULE__{ref: left} = series, other, limit) when is_number(limit) do
+    left |> Native.dwithin(other_ref(series, other), limit * 1.0) |> boolean_series()
+  end
+
+  @doc """
+  The DE-9IM intersection matrix of each pair as a nine-character string series.
+
+  Characters are ordered interior/boundary/exterior of the left geometry against
+  interior/boundary/exterior of `other`, each one of `F` (empty), `0`, `1` or `2` (the
+  dimension of the intersection). For example two squares sharing an edge give `"FF2F11212"`.
+  Pairing, null and CRS rules are those of `intersects/2`.
+  """
+  @spec relate(t(), other()) :: Series.t()
+  def relate(%__MODULE__{ref: left} = series, other) do
+    left
+    |> Native.relate(other_ref(series, other))
+    |> unwrap!()
+    |> Series.from_list(dtype: :string)
+  end
+
+  defp other_ref(_series, %__MODULE__{ref: ref}), do: ref
+
+  defp other_ref(%__MODULE__{} = series, wkt) when is_binary(wkt) do
+    %__MODULE__{ref: ref} = from_wkt!([wkt], crs: crs(series))
+    ref
+  end
+
+  defp boolean_series(result), do: result |> unwrap!() |> Series.from_list(dtype: :boolean)
 
   # -- helpers --------------------------------------------------------------------------
 

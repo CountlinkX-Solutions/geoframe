@@ -188,7 +188,7 @@ impl GeoColumn {
     }
 
     /// Per-row `geo` geometry; `None` for null rows and rows `geo` cannot represent.
-    fn geo_rows(&self) -> Vec<Option<Geometry<f64>>> {
+    pub(crate) fn geo_rows(&self) -> Vec<Option<Geometry<f64>>> {
         (0..self.len())
             .map(|i| match self.array.get(i) {
                 Ok(Some(scalar)) => geometry_to_geo(&scalar).ok(),
