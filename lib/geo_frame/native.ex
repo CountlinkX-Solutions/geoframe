@@ -110,6 +110,7 @@ defmodule GeoFrame.Native do
   def build_area(_ref, _node), do: err()
   def valid_coverage(_ref, _gap_width), do: err()
   def invalid_coverage_edges(_ref, _gap_width), do: err()
+  def simplify_coverage(_ref, _tolerance, _simplify_boundary), do: err()
   def offset_curve(_ref, _distances, _quad_segs, _join_style, _mitre_limit), do: err()
   def fill_null(_ref, _fill), do: err()
   def closed_flags(_ref), do: err()

@@ -1098,6 +1098,18 @@ fn invalid_coverage_edges(column: Handle, gap_width: f64) -> Result<Handle, Stri
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn simplify_coverage(
+    column: Handle,
+    tolerance: f64,
+    simplify_boundary: bool,
+) -> Result<Handle, String> {
+    column
+        .0
+        .simplify_coverage(tolerance, simplify_boundary)
+        .map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn offset_curve(
     column: Handle,
     distances: Vec<Option<f64>>,

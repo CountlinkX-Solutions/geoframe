@@ -1592,6 +1592,44 @@ defmodule GeoFrame.GeoSeries do
     |> unwrap!()
   end
 
+  @doc """
+  Simplifies the polygons of the whole series as one coverage, keeping it a valid coverage
+  (GeoPandas `simplify_coverage`, GEOS `CoverageSimplifier`).
+
+  The edges the polygons share are simplified once, with Visvalingam-Whyatt, so neighbours keep
+  matching vertex for vertex; no vertex is removed if that would make an edge cross or touch
+  another. `tolerance` is roughly the square root of the area of the triangles removed (in the
+  units of the coordinates; a negative value counts as its absolute value). Each polygon is
+  rebuilt from its edges, so a ring may start at another vertex (the first node of the coverage)
+  and, where a neighbour met a shared edge first, run the other way round.
+
+  Option `:simplify_boundary` (default `true`) - `false` only simplifies the edges two polygons
+  share and keeps the outer boundary of the coverage as it is.
+
+  Rows that are null, not polygons or multipolygons, or that hold a NaN or infinite
+  coordinate are `nil` (GeoPandas raises); empty polygons stay empty. The input is assumed to be
+  a valid coverage (see `is_valid_coverage/2`); an overlapping one is still simplified, but
+  the result may not be valid. Raises `ArgumentError` for a tolerance that is not a finite
+  number, and when the coverage has over 10,000,000 vertices or its checks visit over
+  50,000,000 vertices.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 1 1.1, 2 0, 1.5 1, 2 2, 0 2, 0 0))", "POLYGON ((2 0, 4 0, 4 2, 2 2, 1.5 1, 2 0))"])
+      iex> s |> GeoFrame.GeoSeries.simplify_coverage(1) |> GeoFrame.GeoSeries.to_wkt()
+      ["POLYGON((2 0,2 2,0 2,2 0))", "POLYGON((2 0,4 0,4 2,2 2,2 0))"]
+  """
+  @spec simplify_coverage(t(), number(), keyword()) :: t()
+  def simplify_coverage(%__MODULE__{ref: ref}, tolerance, opts \\ []) do
+    opts = Keyword.validate!(opts, simplify_boundary: true)
+
+    ref
+    |> Native.simplify_coverage(
+      number!(tolerance, "tolerance"),
+      opts[:simplify_boundary] != false
+    )
+    |> wrap()
+    |> unwrap!()
+  end
+
   @max_quad_segs 10_000
 
   @doc """

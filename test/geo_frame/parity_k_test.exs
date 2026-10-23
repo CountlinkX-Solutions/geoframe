@@ -81,4 +81,54 @@ defmodule GeoFrame.ParityKTest do
                [canon("LINESTRING (2 0, 2 2)"), canon("LINESTRING (2.1 2, 2.1 0)")]
     end
   end
+
+  describe "simplify_coverage/3" do
+    @doc_rows [
+      "POLYGON ((0 0, 1 1.1, 2 0, 1.5 1, 2 2, 0 2, 0 0))",
+      "POLYGON ((2 0, 4 0, 4 2, 2 2, 1.5 1, 2 0))"
+    ]
+
+    test "simplifies the shared edge once for both polygons and the boundary too" do
+      result = @doc_rows |> s() |> GeoSeries.simplify_coverage(1)
+
+      assert GeoSeries.to_wkt(result) ==
+               [
+                 canon("POLYGON ((2 0, 2 2, 0 2, 2 0))"),
+                 canon("POLYGON ((2 0, 4 0, 4 2, 2 2, 2 0))")
+               ]
+
+      assert GeoSeries.is_valid_coverage(result)
+    end
+
+    test "simplify_boundary: false leaves the outer boundary alone" do
+      result = @doc_rows |> s() |> GeoSeries.simplify_coverage(1, simplify_boundary: false)
+
+      assert GeoSeries.to_wkt(result) ==
+               [
+                 canon("POLYGON ((2 0, 2 2, 0 2, 0 0, 1 1.1, 2 0))"),
+                 canon("POLYGON ((2 0, 4 0, 4 2, 2 2, 2 0))")
+               ]
+    end
+
+    test "keeps CRS, nulls and non-polygons as nulls, and empty polygons" do
+      series =
+        s(Enum.take(@doc_rows, 1) ++ [nil, "POINT (1 1)", "POLYGON EMPTY"], crs: "EPSG:3857")
+
+      result = GeoSeries.simplify_coverage(series, 1.0)
+
+      assert GeoSeries.crs(result) == "EPSG:3857"
+      assert [_, nil, nil, empty] = GeoSeries.to_wkt(result)
+      assert empty == canon("POLYGON EMPTY")
+    end
+
+    test "rejects a bad tolerance and unknown options" do
+      assert_raise ArgumentError, ~r/tolerance/, fn ->
+        GeoSeries.simplify_coverage(s(@doc_rows), "x")
+      end
+
+      assert_raise ArgumentError, fn ->
+        GeoSeries.simplify_coverage(s(@doc_rows), 1, bogus: true)
+      end
+    end
+  end
 end

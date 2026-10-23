@@ -7,6 +7,7 @@ mod atomic;
 mod attributes;
 pub(crate) mod column;
 mod coverage;
+mod coverage_simplify;
 mod crs_wkt;
 mod dbf;
 mod ewkb;
@@ -66,6 +67,8 @@ pub use unary::{BufferOptions, Origin, UnaryOp};
 
 #[cfg(test)]
 mod affine_tests;
+#[cfg(test)]
+mod coverage_simplify_tests;
 #[cfg(test)]
 mod coverage_tests;
 #[cfg(test)]
