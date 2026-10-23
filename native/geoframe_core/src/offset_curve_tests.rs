@@ -612,3 +612,33 @@ fn offset_curve_of_a_closed_line_with_mitre_keeps_its_end_pieces() {
         Some("LINESTRING(0 -1,5 -1,5 5,-1 5,-1 0)")
     );
 }
+
+#[test]
+fn offset_curve_limited_mitre_cuts_the_corner_at_the_limit() {
+    // GEOS: LINESTRING (-1 0, -1 5.697056274848, -0.697056274848 6, 3.697056274848 6,
+    //                   4 5.697056274848, 4 0), a bevel whose ends lie on the offset lines.
+    let limited = OffsetParams {
+        mitre_limit: 1.2,
+        ..params("mitre", 8)
+    };
+    let out = one("LINESTRING (0 0, 0 5, 3 5, 3 0)")
+        .offset_curve(&[Some(1.0)], &limited)
+        .unwrap();
+    let want = one(
+        "LINESTRING (-1 0, -1 5.697056274848, -0.697056274848 6, 3.697056274848 6, 4 5.697056274848, 4 0)",
+    );
+    same_curve(&out, &want, "limited mitre").unwrap();
+}
+
+#[test]
+fn offset_curve_through_a_polygonal_arc_joins_at_the_crossing() {
+    // Short segments make the arc of one corner cross the offset of another: the pieces must
+    // meet in one line (GEOS: a single LINESTRING).
+    let out = offset(
+        "LINESTRING (0 0, 0.3 0.1, 0.6 0, 1 0.4, 1.2 1)",
+        1.0,
+        "round",
+    );
+    let text = out.to_wkt().unwrap().remove(0).unwrap();
+    assert!(text.starts_with("LINESTRING("), "{text}");
+}

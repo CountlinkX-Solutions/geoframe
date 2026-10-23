@@ -45,6 +45,7 @@ use rstar::primitives::{GeomWithData, Line as RLine};
 use rstar::RTree;
 
 use crate::noding;
+use crate::polygonize::node_lines;
 use crate::predicates::guarded;
 use crate::GeoColumn;
 
@@ -269,7 +270,14 @@ fn runs_with(from: Coord<f64>, to: Coord<f64>, lines: &[LineString<f64>]) -> boo
 }
 
 fn shared_pair(a: &Geometry<f64>, b: &Geometry<f64>) -> Option<Geometry<f64>> {
-    let (la, lb) = (lineal_parts(a)?, lineal_parts(b)?);
+    // Each input is first noded against itself, as the overlay does: a self-crossing splits the
+    // stretches that pass through it.
+    let la = node_lines(&lineal_parts(a)?).ok()?;
+    let lb = node_lines(&lineal_parts(b)?).ok()?;
+    let (la, lb): (Vec<LineString<f64>>, Vec<LineString<f64>>) = (
+        la.into_iter().map(LineString::new).collect(),
+        lb.into_iter().map(LineString::new).collect(),
+    );
     let noded = noding::node(&la, &lb);
     let mut seen: HashSet<Vec<(u64, u64)>> = HashSet::new();
     let (mut forward, mut backward) = (Vec::new(), Vec::new());

@@ -76,6 +76,8 @@ const MAX_RAW_VERTICES: u64 = 10_000_000;
 /// Most (raw segment, input segment) pairs examined for one geometry.
 const PAIR_BUDGET: u64 = 50_000_000;
 
+/// How far (as a multiple of the distance) a cut may move onto a crossing of the raw curve.
+const SNAP_REACH: f64 = 0.02;
 const SNAP_FACTOR: f64 = 1.0e-6;
 const SEPARATION_FACTOR: f64 = 1.0e-3;
 const INSIDE_SNAP_FACTOR: f64 = 1.0e-3;
@@ -307,7 +309,8 @@ impl Gen {
                 return;
             }
         }
-        // Limited mitre: a bevel cut off at the mitre limit, built on the input corner.
+        // Limited mitre: the corner is cut off by a bevel perpendicular to the bisector at
+        // the mitre limit; its ends lie on the two shifted segments.
         let base = self.s1;
         let ang0 = angle(base, self.s0);
         let mut diff = angle(base, self.s2) - ang0;
@@ -316,27 +319,30 @@ impl Gen {
         } else if diff > std::f64::consts::PI {
             diff -= 2.0 * std::f64::consts::PI;
         }
-        let half = diff / 2.0;
-        let mid = normalize_angle(ang0 + half);
+        let mid = normalize_angle(ang0 + diff / 2.0);
         let mitre_mid = normalize_angle(mid + std::f64::consts::PI);
         let mitre_dist = self.mitre_limit * self.d;
-        let bevel_half = self.d - mitre_dist * half.sin().abs();
-        let bevel_mid = Coord {
+        let cut = Coord {
             x: base.x + mitre_dist * mitre_mid.cos(),
             y: base.y + mitre_dist * mitre_mid.sin(),
         };
-        let along = |offset: f64| {
-            let (dx, dy) = (bevel_mid.x - base.x, bevel_mid.y - base.y);
-            let len = (dx * dx + dy * dy).sqrt();
-            let (ux, uy) = (offset * dx / len, offset * dy / len);
-            Coord {
-                x: bevel_mid.x - uy,
-                y: bevel_mid.y + ux,
-            }
+        let across = Coord {
+            x: cut.x - mitre_mid.sin(),
+            y: cut.y + mitre_mid.cos(),
         };
-        let (left, right) = (along(bevel_half), along(-bevel_half));
-        self.add(left, Tag::Offset(prev_seg));
-        self.add(right, Tag::Join(vertex));
+        match (
+            line_line(a.0, a.1, cut, across),
+            line_line(b.0, b.1, cut, across),
+        ) {
+            (Some(first), Some(second)) => {
+                self.add(first, Tag::Offset(prev_seg));
+                self.add(second, Tag::Join(vertex));
+            }
+            _ => {
+                self.add(a.1, Tag::Offset(prev_seg));
+                self.add(b.0, Tag::Join(vertex));
+            }
+        }
     }
 
     fn inside(&mut self, prev_seg: usize) {
@@ -474,6 +480,78 @@ fn locus_crossings(a: C, b: C, p: C, q: C, d: f64, out: &mut Vec<f64>) {
     }
 }
 
+/// Every polyline of the buffer outline of the parts: the raw curve on each side (the offset
+/// curve is the part of one side that stays on the outline) and the end caps of open lines.
+struct Outline {
+    /// Segments of all polylines, with the index of the polyline they belong to and their
+    /// position in it.
+    segs: Vec<(C, C, usize, usize)>,
+    tree: RTree<GeomWithData<Rectangle<[f64; 2]>, usize>>,
+    /// Number of segments of each polyline and whether it is closed.
+    lengths: Vec<(usize, bool)>,
+}
+
+impl Outline {
+    fn new(polylines: &[Vec<C>]) -> Self {
+        let mut segs = Vec::new();
+        let mut lengths = Vec::new();
+        for (p, line) in polylines.iter().enumerate() {
+            let n = line.len().saturating_sub(1);
+            lengths.push((n, n > 1 && line[0] == line[n]));
+            for k in 0..n {
+                segs.push((line[k], line[k + 1], p, k));
+            }
+        }
+        let tree = RTree::bulk_load(
+            segs.iter()
+                .enumerate()
+                .map(|(i, s)| GeomWithData::new(Rectangle::from_aabb(envelope(s.0, s.1, 0.0)), i))
+                .collect(),
+        );
+        Self {
+            segs,
+            tree,
+            lengths,
+        }
+    }
+
+    /// For each segment of polyline `poly` (whose vertices are `line`), the points where it
+    /// crosses the rest of the outline, as (parameter along the segment, point). Neighbouring
+    /// segments of the same polyline only touch and are left out.
+    fn crossings(&self, poly: usize, line: &[C], pairs: &mut u64) -> Option<Vec<Vec<(f64, C)>>> {
+        let (n, closed) = self.lengths[poly];
+        let mut out: Vec<Vec<(f64, C)>> = vec![Vec::new(); n];
+        for (k, found) in out.iter_mut().enumerate() {
+            let (a, b) = (line[k], line[k + 1]);
+            for hit in self
+                .tree
+                .locate_in_envelope_intersecting(&envelope(a, b, 0.0))
+            {
+                let (c, e, other, j) = self.segs[hit.data];
+                if other == poly {
+                    let gap = k.abs_diff(j);
+                    if gap <= 1 || (closed && gap == n - 1) {
+                        continue;
+                    }
+                }
+                *pairs += 1;
+                if *pairs > PAIR_BUDGET {
+                    return None;
+                }
+                if let Some(LineIntersection::SinglePoint { intersection, .. }) =
+                    line_intersection(Line::new(a, b), Line::new(c, e))
+                {
+                    let (dx, dy) = (b.x - a.x, b.y - a.y);
+                    let t = ((intersection.x - a.x) * dx + (intersection.y - a.y) * dy)
+                        / (dx * dx + dy * dy);
+                    found.push((t, intersection));
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
 /// The segments the raw curves are cut and tested against.
 struct Input {
     segs: Vec<InputSeg>,
@@ -483,6 +561,8 @@ struct Input {
     d: f64,
     tol: f64,
     scale: f64,
+    /// Candidate pairs examined so far (the work budget).
+    pairs: std::cell::Cell<u64>,
 }
 
 impl Input {
@@ -526,6 +606,7 @@ impl Input {
             d,
             tol: 1.0e-9 * d + 1.0e-12 * scale,
             scale,
+            pairs: std::cell::Cell::new(0),
         }
     }
 
@@ -557,14 +638,14 @@ impl Input {
         part: usize,
         raw: &[C],
         tags: &[Tag],
-        pairs: &mut u64,
+        crossings: &[Vec<(f64, C)>],
     ) -> Option<Vec<Vec<C>>> {
         let (d, tol) = (self.d, self.tol);
         let base = self.first[part];
         let count = self.first[part + 1] - base;
         let mut runs: Vec<Vec<C>> = Vec::new();
         let mut current: Vec<C> = Vec::new();
-        let mut cuts: Vec<f64> = Vec::new();
+        let mut cuts: Vec<(f64, Option<C>)> = Vec::new();
         for k in 0..raw.len().saturating_sub(1) {
             let (a, b) = (raw[k], raw[k + 1]);
             let tag = tags[k + 1];
@@ -573,8 +654,8 @@ impl Input {
                 .locate_in_envelope_intersecting(&envelope(a, b, d + tol))
                 .map(|e| e.data)
                 .collect();
-            *pairs += candidates.len() as u64;
-            if *pairs > PAIR_BUDGET {
+            self.pairs.set(self.pairs.get() + candidates.len() as u64);
+            if self.pairs.get() > PAIR_BUDGET {
                 return None;
             }
             // Segments left out of this raw segment's cuts and distance test: the two meeting
@@ -591,14 +672,31 @@ impl Input {
                 if skipped(id) || is_source {
                     continue;
                 }
-                locus_crossings(a, b, self.segs[id].a, self.segs[id].b, d, &mut cuts);
+                let mut ts = Vec::new();
+                locus_crossings(a, b, self.segs[id].a, self.segs[id].b, d, &mut ts);
+                cuts.extend(ts.into_iter().map(|t| (t, None)));
             }
-            cuts.sort_by(f64::total_cmp);
-            cuts.dedup_by(|x, y| (*x - *y).abs() < 1.0e-12);
+            // A cut close to a crossing of the raw curve with itself moves onto it, so that
+            // both curves meeting there end in the very same point (a polygonal arc crosses
+            // the line a little before or after the exact circle does).
+            let reach = SNAP_REACH * d / dist(a, b).max(f64::MIN_POSITIVE);
+            for cut in &mut cuts {
+                let near = crossings[k]
+                    .iter()
+                    .filter(|(t, _)| (t - cut.0).abs() <= reach)
+                    .min_by(|x, y| (x.0 - cut.0).abs().total_cmp(&(y.0 - cut.0).abs()));
+                if let Some(&(t, x)) = near {
+                    *cut = (t, Some(x));
+                }
+            }
+            cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
+            cuts.dedup_by(|x, y| (x.0 - y.0).abs() < 1.0e-12);
             let mut points = vec![a];
-            points.extend(cuts.iter().map(|&t| Coord {
-                x: a.x + t * (b.x - a.x),
-                y: a.y + t * (b.y - a.y),
+            points.extend(cuts.iter().map(|&(t, at)| {
+                at.unwrap_or(Coord {
+                    x: a.x + t * (b.x - a.x),
+                    y: a.y + t * (b.y - a.y),
+                })
             }));
             points.push(b);
             for (index, w) in points.windows(2).enumerate() {
@@ -741,6 +839,26 @@ fn join_runs(runs: Vec<Vec<C>>, tol: f64) -> Vec<Vec<C>> {
     lines
 }
 
+/// The round cap at the end `to` of a line arriving from `from`: from its left side round to its
+/// right side.
+fn cap(params: &OffsetParams, d: f64, from: C, to: C) -> Vec<C> {
+    let mut gen = Gen::new(params, d);
+    let (dx, dy) = (to.x - from.x, to.y - from.y);
+    let len = (dx * dx + dy * dy).sqrt();
+    let (ux, uy) = (d * dx / len, d * dy / len);
+    let left = Coord {
+        x: to.x - uy,
+        y: to.y + ux,
+    };
+    let right = Coord {
+        x: to.x + uy,
+        y: to.y - ux,
+    };
+    gen.s1 = to;
+    gen.fillet(left, right, Orientation::Clockwise, 0);
+    gen.pts
+}
+
 /// Offsets a set of parts (the rings of one polygon, or one line) against each other.
 fn offset_parts(parts: &[Part], d: f64, params: &OffsetParams) -> Option<Vec<LineString<f64>>> {
     let distance = d.abs();
@@ -757,14 +875,38 @@ fn offset_parts(parts: &[Part], d: f64, params: &OffsetParams) -> Option<Vec<Lin
         })
         .collect();
     let input = Input::new(&oriented, distance);
-    let mut pairs = 0_u64;
+    // The outline of the buffer: for every part its raw curve on the left (the candidate for the
+    // offset curve), on the right, and the end caps of a line.
+    let mut lefts: Vec<(Vec<C>, Vec<Tag>)> = Vec::new();
+    let mut polylines: Vec<Vec<C>> = Vec::new();
+    for p in &oriented {
+        let (raw, tags) = raw_curve(p, params, distance);
+        polylines.push(raw.clone());
+        lefts.push((raw, tags));
+    }
+    for p in &oriented {
+        let reversed = Part {
+            coords: p.coords.iter().rev().copied().collect(),
+            ring: p.ring,
+        };
+        polylines.push(raw_curve(&reversed, params, distance).0);
+        if !p.ring {
+            let n = p.coords.len();
+            polylines.push(cap(params, distance, p.coords[n - 2], p.coords[n - 1]));
+            polylines.push(cap(params, distance, p.coords[1], p.coords[0]));
+        }
+    }
+    let outline = Outline::new(&polylines);
     let mut runs: Vec<Vec<C>> = Vec::new();
     for (index, p) in oriented.iter().enumerate() {
-        let (raw, tags) = raw_curve(p, params, distance);
+        let (raw, tags) = &lefts[index];
         if raw.len() < 2 {
             continue;
         }
-        let mut found = input.valid_runs(index, &raw, &tags, &mut pairs)?;
+        let mut pairs = input.pairs.get();
+        let crossings = outline.crossings(index, raw, &mut pairs)?;
+        input.pairs.set(pairs);
+        let mut found = input.valid_runs(index, raw, tags, &crossings)?;
         // A ring's curve is closed: its last run continues into its first.
         if p.ring && found.len() > 1 && raw.first() == raw.last() {
             let joins = found[0][0] == raw[0] && found[found.len() - 1].last() == raw.last();

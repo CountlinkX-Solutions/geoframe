@@ -46,6 +46,7 @@ use rstar::{Envelope, RTree, AABB};
 
 use crate::mixed_ops::line_outside_polygon;
 use crate::noding::key;
+use crate::predicates::guarded;
 use crate::GeoColumn;
 
 /// Most candidate segment pairs the noding examines.
@@ -118,7 +119,7 @@ fn fraction(a: C, b: C, c: C) -> f64 {
 /// Splits `lines` at every point where they cross or touch (each other or themselves) and at
 /// their own ends; identical pieces appear once. Returns the edges (chains of vertices between
 /// nodes).
-fn node_lines(lines: &[LineString<f64>]) -> Result<Vec<Vec<C>>, String> {
+pub(crate) fn node_lines(lines: &[LineString<f64>]) -> Result<Vec<Vec<C>>, String> {
     struct Seg {
         a: C,
         b: C,
@@ -564,16 +565,14 @@ fn edges_of(rows: &[Geometry<f64>], node: bool) -> Result<Vec<Vec<C>>, String> {
         return Err("polygonize: coordinates must be finite".to_string());
     }
     if !node {
-        let mut edges = Vec::new();
-        let mut seen = HashSet::new();
-        for line in work
+        // Every line is an edge, duplicates included: two equal edges form a ring of no area.
+        return Ok(work
             .lines
             .iter()
             .chain(work.polygons.iter().flat_map(rings))
-        {
-            push_edge(&mut edges, &mut seen, dedup(&line.0));
-        }
-        return Ok(edges);
+            .map(|line| dedup(&line.0))
+            .filter(|coords| coords.len() >= 2)
+            .collect());
     }
     // A union: polygons merged, lines inside them dropped.
     let area: MultiPolygon<f64> = if work.polygons.is_empty() {
@@ -612,10 +611,14 @@ fn lines_column(template: &GeoColumn, lines: Vec<Vec<C>>) -> Result<GeoColumn, S
 impl GeoColumn {
     fn polygonize_outcome(&self, node: bool) -> Result<(Outcome, Vec<Polygon<f64>>), String> {
         let rows: Vec<Geometry<f64>> = self.geo_rows().into_iter().flatten().collect();
-        let chains = edges_of(&rows, node)?;
-        let outcome = polygonize_chains(chains);
-        let polygons = assemble(&outcome.shells, &outcome.holes);
-        Ok((outcome, polygons))
+        // `geo` can panic on degenerate input; that must not take the VM down.
+        guarded(|| {
+            let chains = edges_of(&rows, node)?;
+            let outcome = polygonize_chains(chains);
+            let polygons = assemble(&outcome.shells, &outcome.holes);
+            Ok((outcome, polygons))
+        })
+        .unwrap_or_else(|| Err("polygonize: the linework could not be processed".to_string()))
     }
 
     /// Polygons formed by the linework of all rows together (see the module documentation),

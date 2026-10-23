@@ -146,6 +146,15 @@ fn cases() -> Vec<Case> {
             invalid: &[],
         },
         Case {
+            name: "equal edges that are not noded form a ring of no area",
+            input: &[SQUARE, "LINESTRING (0 0, 4 0)", "LINESTRING (4 0, 0 0)"],
+            node: false,
+            polygons: &["POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0))"],
+            cuts: &[],
+            dangles: &[],
+            invalid: &["LINESTRING (0 0, 4 0, 0 0)"],
+        },
+        Case {
             name: "a point has no linework",
             input: &["POINT (1 1)"],
             node: true,

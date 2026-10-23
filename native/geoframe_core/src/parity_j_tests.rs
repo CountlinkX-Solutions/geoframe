@@ -136,6 +136,13 @@ fn snap_matches_geos() {
             0.5,
             "LINESTRING (0 0, 1 0.1, 1.5 -0.1, 2 0, 3 0.2, 4 0)",
         ),
+        // Equally near segments: the first one takes the snap point.
+        (
+            "POLYGON ((0 0, 6 0, 3 5, 0 0))",
+            "POINT (3 4)",
+            1.0,
+            "POLYGON ((0 0, 6 0, 3 4, 3 5, 0 0))",
+        ),
         // One snap point takes only the nearest vertex of a line.
         (
             "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))",
@@ -263,6 +270,12 @@ fn shared_paths_matches_geos() {
             "LINESTRING EMPTY",
             "LINESTRING (0 0, 1 1)",
             "GEOMETRYCOLLECTION (MULTILINESTRING EMPTY, MULTILINESTRING EMPTY)",
+        ),
+        // A line that crosses itself is split at the crossing.
+        (
+            "LINESTRING (0 0, 4 4, 4 0, 0 4)",
+            "LINESTRING (0 0, 4 0, 4 4, 0 0)",
+            "GEOMETRYCOLLECTION (MULTILINESTRING EMPTY, MULTILINESTRING ((0 0, 2 2), (2 2, 4 4), (4 4, 4 0)))",
         ),
         (
             "LINESTRING (0 0, 1 0, 1 1, 0 1, 0 0)",
@@ -394,4 +407,41 @@ fn minimum_clearance_scales_to_many_vertices() {
     let line = format!("LINESTRING ({})", coords.join(", "));
     let got = one(&line).minimum_clearance()[0].unwrap();
     assert!(got > 0.0 && got < 4.0);
+}
+
+// -- hardening ----------------------------------------------------------------------------
+
+#[test]
+fn extreme_coordinates_and_parameters_neither_panic_nor_hang() {
+    use crate::{OffsetJoin, OffsetParams};
+    let huge = col(&[
+        Some("LINESTRING (-1e308 -1e308, 1e308 1e308, -1e308 1e308, 1e308 -1e308)"),
+        Some("POLYGON ((-1e308 -1e308, 1e308 -1e308, 1e308 1e308, -1e308 1e308, -1e308 -1e308))"),
+        Some("LINESTRING (1e-320 0, 2e-320 0, 2e-320 1e-320)"),
+        Some("LINESTRING (0 0, 0 0, 0 0)"),
+    ]);
+    // snap
+    for tol in [f64::NAN, f64::INFINITY, -1.0, 1e308] {
+        let _ = huge.snap(&huge, tol).unwrap();
+    }
+    // shared paths and clearance
+    let _ = huge.shared_paths(&huge).unwrap();
+    let _ = huge.minimum_clearance();
+    let _ = huge.minimum_clearance_line().unwrap();
+    // offset_curve
+    for join in ["round", "mitre", "bevel"] {
+        let params = OffsetParams {
+            quad_segs: 8,
+            join: OffsetJoin::parse(join).unwrap(),
+            mitre_limit: 5.0,
+        };
+        for d in [1e308, 1e-320, 1.0, -1e300, f64::MIN_POSITIVE] {
+            let rows = vec![Some(d); huge.len()];
+            let _ = huge.offset_curve(&rows, &params).unwrap();
+        }
+    }
+    // polygonize
+    let _ = huge.polygonize(true);
+    let _ = huge.polygonize(false);
+    let _ = huge.build_area(true);
 }
