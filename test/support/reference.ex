@@ -15,8 +15,10 @@ defmodule GeoFrame.Reference do
   alias GeoFrame.SpatialJoin
 
   @fixtures ~w(measures unary_predicates binary_predicates constructive constructive_e set_ops
-               affine linear_referencing crs geodesic io parity_i)
+               affine linear_referencing crs geodesic io parity_i parity_j)
   @dir Path.expand("../reference/fixtures", __DIR__)
+  # GEOS' DBL_MAX, which stands for "no clearance" in the fixtures.
+  @dbl_max 1.797_693_134_862_315_7e308
 
   @type result :: %{
           file: String.t(),
@@ -263,6 +265,34 @@ defmodule GeoFrame.Reference do
   defp apply_param("to_geo_interface", _, a, _),
     do: a |> GeoSeries.to_geo_interface() |> Jason.encode!()
 
+  defp apply_param("offset_curve", args, a, _) do
+    opts =
+      [
+        quad_segs: args["quad_segs"],
+        join_style: String.to_atom(args["join_style"]),
+        mitre_limit: args["mitre_limit"]
+      ]
+      |> Enum.reject(fn {_, v} -> is_nil(v) end)
+
+    GeoSeries.offset_curve(a, args["distance"], opts)
+  end
+
+  defp apply_param("snap", args, a, b), do: GeoSeries.snap(a, b, args["tolerance"])
+  defp apply_param("shared_paths", _, a, b), do: GeoSeries.shared_paths(a, b)
+
+  # Shapely says infinity where the fixture holds GEOS' DBL_MAX.
+  defp apply_param("minimum_clearance", _, a, _) do
+    a
+    |> GeoSeries.minimum_clearance()
+    |> Series.to_list()
+    |> Enum.map(fn
+      :infinity -> @dbl_max
+      value -> value
+    end)
+  end
+
+  defp apply_param("minimum_clearance_line", _, a, _), do: GeoSeries.minimum_clearance_line(a)
+
   defp apply_param("to_crs", args, a, _), do: GeoSeries.to_crs(a, args["target"])
   defp apply_param("estimate_utm_crs", _, a, _), do: GeoSeries.estimate_utm_crs(a)
   defp apply_param("to_wkb_hex", _, a, _), do: GeoSeries.to_wkb(a, hex: true)
@@ -301,6 +331,10 @@ defmodule GeoFrame.Reference do
                 segmentize remove_repeated_points orient_polygons exterior interiors
                 to_wkt_roundtrip simplify get_geometry centroid shortest_line normalize)
   defp geom_mode(%{"op" => "buffer"}), do: :buffer
+  defp geom_mode(%{"op" => "offset_curve"}), do: :curve
+  defp geom_mode(%{"op" => "snap"}), do: :exact
+  defp geom_mode(%{"op" => "shared_paths"}), do: :shared
+  defp geom_mode(%{"op" => "minimum_clearance_line"}), do: :clearance_line
   defp geom_mode(%{"op" => "representative_point"}), do: :representative
 
   defp geom_mode(%{"op" => op})
@@ -472,6 +506,49 @@ defmodule GeoFrame.Reference do
 
       true ->
         {:differ, {wkt, e}}
+    end
+  end
+
+  # Offset curves: the same curve up to vertex placement: equal length and within 1e-6 of each
+  # other (Hausdorff).
+  defp compare_mode(:curve, _group, actual, expected, _a, _crs, wkt, e) do
+    [al] = actual |> GeoSeries.length() |> Series.to_list()
+    [el] = expected |> GeoSeries.length() |> Series.to_list()
+    [hd] = actual |> GeoSeries.hausdorff_distance(expected) |> Series.to_list()
+
+    if is_number(hd) and hd <= 1.0e-6 and abs(al - el) <= 1.0e-6 * (1.0 + abs(el)),
+      do: {:agree, nil},
+      else: {:differ, {wkt, e}}
+  end
+
+  # Shared paths: the same-direction and the opposite-direction multi-line, each in canonical
+  # form (the collection itself would be sorted by GEOS' normalize, losing which is which).
+  defp compare_mode(:shared, _group, actual, expected, _a, _crs, wkt, e) do
+    same =
+      for n <- [0, 1] do
+        got = actual |> GeoSeries.get_geometry(n) |> GeoSeries.normalize()
+        want = expected |> GeoSeries.get_geometry(n) |> GeoSeries.normalize()
+        both_empty = empty?(got) and empty?(want)
+        both_empty or GeoSeries.geom_equals_exact(got, want, 1.0e-9) |> Series.to_list() == [true]
+      end
+
+    if Enum.all?(same), do: {:agree, nil}, else: {:differ, {wkt, e}}
+  end
+
+  # The clearance line joins the closest pair; equally close pairs are a tie, so the same
+  # length is enough when the lines differ.
+  defp compare_mode(:clearance_line, _group, actual, expected, _a, _crs, wkt, e) do
+    case GeoSeries.geom_equals(actual, expected) |> Series.to_list() do
+      [true] ->
+        {:agree, nil}
+
+      _ ->
+        [al] = actual |> GeoSeries.length() |> Series.to_list()
+        [el] = expected |> GeoSeries.length() |> Series.to_list()
+
+        if abs(al - el) <= 1.0e-9 * (1.0 + el),
+          do: {:agree, :tie},
+          else: {:differ, {wkt, e}}
     end
   end
 
@@ -748,6 +825,97 @@ defmodule GeoFrame.Reference do
   defp same_union?(a, b) do
     union = fn wkts -> wkts |> GeoSeries.from_wkt!() |> GeoSeries.union_all() end
     GeoSeries.geom_equals(union.(a), union.(b)) |> Series.to_list() == [true]
+  end
+
+  @doc """
+  Evaluates the whole-series polygonization fixtures (`polygonize` with `full: true` and
+  `build_area`): the polygons, cut edges, dangles and invalid rings must match as sets of
+  shapes (same area and within 1e-9 by Hausdorff distance).
+  """
+  @spec run_aggregates() :: [result()]
+  def run_aggregates do
+    doc = read("parity_j_aggregate")
+    corpus = Map.merge(corpus(), doc["extra"])
+
+    for c <- doc["cases"] do
+      series = GeoSeries.from_wkt!(Enum.map(c["ids"], &corpus[&1]))
+
+      {status, detail} =
+        try do
+          aggregate(c["op"], c["args"]["node"], series, c["e"])
+        rescue
+          e -> {:differ, {:raised, Exception.message(e)}}
+        end
+
+      %{
+        file: "parity_j_aggregate",
+        op: c["op"],
+        label: c["label"],
+        id: c["label"],
+        status: status,
+        nullish: false,
+        detail: detail
+      }
+    end
+  end
+
+  defp aggregate("polygonize", node, series, e) do
+    {polygons, cuts, dangles, invalid} = GeoSeries.polygonize(series, node: node, full: true)
+
+    misses =
+      for {name, got} <- [
+            {"polygons", polygons},
+            {"cuts", cuts},
+            {"dangles", dangles},
+            {"invalid", invalid}
+          ],
+          not same_shapes?(GeoSeries.to_wkt(got), e[name]),
+          do: {name, GeoSeries.to_wkt(got), e[name]}
+
+    if misses == [], do: {:agree, nil}, else: {:differ, misses}
+  end
+
+  defp aggregate("build_area", node, series, e) do
+    got = GeoSeries.build_area(series, node: node)
+    want = e["polygons"]
+
+    if GeoSeries.size(got) == length(want) and same_area?(GeoSeries.to_wkt(got), want),
+      do: {:agree, nil},
+      else: {:differ, {GeoSeries.to_wkt(got), want}}
+  end
+
+  # Both lists describe the same shapes, in any order.
+  defp same_shapes?(got, want) when length(got) != length(want), do: false
+
+  defp same_shapes?(got, want) do
+    {_, ok} =
+      Enum.reduce(want, {got, true}, fn shape, {pool, ok} ->
+        case Enum.find_index(pool, &close_shape?(&1, shape)) do
+          nil -> {pool, false}
+          i -> {List.delete_at(pool, i), ok}
+        end
+      end)
+
+    ok
+  end
+
+  defp close_shape?(a, b) do
+    sa = GeoSeries.from_wkt!([a])
+    sb = GeoSeries.from_wkt!([b])
+    [hd] = sa |> GeoSeries.hausdorff_distance(sb) |> Series.to_list()
+    [aa] = sa |> GeoSeries.area() |> Series.to_list()
+    [ba] = sb |> GeoSeries.area() |> Series.to_list()
+    is_number(hd) and hd <= 1.0e-9 and abs(aa - ba) <= 1.0e-9 * (1.0 + abs(ba))
+  end
+
+  # The union of both lists covers the same area.
+  defp same_area?([], []), do: true
+
+  defp same_area?(got, want) do
+    union = fn wkts -> wkts |> GeoSeries.from_wkt!() |> GeoSeries.union_all() end
+    sym = GeoSeries.symmetric_difference(union.(got), union.(want))
+    [area] = sym |> GeoSeries.area() |> Series.to_list()
+    is_number(area) and area <= 1.0e-9
   end
 
   @doc "Evaluates the overlay, clip, explode and intersection_all fixtures."
