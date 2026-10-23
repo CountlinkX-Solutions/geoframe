@@ -59,7 +59,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | `boundary` | `boundary` yes | `boundary/1` | ✅ | |
 | `representative_point` | — | `representative_point/1` | ✅ | geo `InteriorPoint` |
 | — | `mean_coordinate` yes | `mean_coordinate/1` | ✅ | vertex mean; polygon ring closing vertex not double counted |
-| — | `is_geographic` yes | — | ❌ | proj4rs; easy |
+| — | `is_geographic` yes | `is_geographic/1`, `GeoFrame.CRS.geographic?/1` | ✅ | proj4rs `is_latlong`; `nil` without or with an unresolvable CRS |
 | — | `rings_overlap`, `self_intersects` yes | — | ❌ | niche; partial overlap with `is_simple` |
 
 ## 3. Unary predicates
@@ -158,12 +158,12 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `translate` | `translate` yes | `translate/3` | ✅ | scalars only; GeoPolars allows per-row column offsets |
+| `translate` | `translate` yes | `translate/3` | ✅ | numbers, lists or Explorer series per row |
 | `scale` | `scale`, `scale_about_centroid` yes | `scale/4` | ✅ | origin: `:center`, `:centroid`, `{x,y}` |
 | `rotate` | `rotate`, `rotate_about_centroid` yes | `rotate/3` | ✅ | |
-| `skew` | `skew`, `skew_about_centroid` yes | — | ❌ | geo `Skew` |
-| `affine_transform` (6/12-param matrix) | `affine_transform` yes | — | ❌ | geo `AffineTransform` |
-| per-row parameters (column-valued offsets/angles/origin) | yes | — | ❌ | GeoFrame only takes scalars |
+| `skew` | `skew`, `skew_about_centroid` yes | `skew/4` | ✅ | degrees or `use_radians: true`; origin as in `scale/4` |
+| `affine_transform` (6/12-param matrix) | `affine_transform` yes | `affine_transform/2` | ✅ | Shapely order `[a, b, d, e, xoff, yoff]`; the 12-element 3D form raises (2D storage) |
+| per-row parameters (column-valued offsets/angles/origin) | yes | `translate`/`scale`/`rotate`/`skew` | ✅ | each numeric argument is a number, list or Explorer series; `nil` nulls the row; `origin:` may be a list of `{x, y}` |
 
 ## 8. Linestring / linear referencing
 
@@ -282,15 +282,15 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
 | — | `area_geodesic` | — | ❌ | see §2 |
-| — | `wrap_longitude` | — | ❌ | antimeridian wrap; easy-medium |
-| — | `skew`, `skew_about_centroid` | — | ❌ | see §7 |
+| — | `wrap_longitude` | `wrap_longitude/1` | ✅ | x into [-180, 180); geographic or no CRS; geometries are not split at the antimeridian |
+| — | `skew`, `skew_about_centroid` | `skew/4` (`origin: :centroid`) | ✅ | see §7 |
 | — | `null_out_invalid` | `null_out_invalid/1` | ✅ | see §3 |
 | — | `count_coordinates` | `count_coordinates/1` | ✅ | |
 | — | `is_ccw` | — | ❌ | see §3 |
 | — | `mean_coordinate` | `mean_coordinate/1` | ✅ | see §2 |
-| — | `affine_transform` | — | ❌ | see §7 |
+| — | `affine_transform` | `affine_transform/2` | ✅ | see §7 |
 | — | `rotate_about_centroid`, `scale_about_centroid` | `rotate`/`scale` with `origin: :centroid` | ✅ | |
-| — | `is_geographic` | — | ❌ | |
+| — | `is_geographic` | `is_geographic/1` | ✅ | see §2 |
 | — | `rings_overlap`, `self_intersects` | — | ❌ | |
 | — | `with_covering` (GeoParquet bbox covering) | — | ❌ | `write_parquet` opts ignored |
 | — | `geoparquet_metadata` | — | ❌ | expose `geo` metadata of a file (cheap) |
@@ -361,4 +361,4 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 `plot` (use Kino map), `geocode`/`reverse_geocode`, pandas index alignment (`align=`), `iterfeatures`, Shapely object constructors, persistent `sindex` object, arbitrary-callback `transform`, deprecated `unary_union`.
 
 ---
-Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 79, '🟡': 29, '❌': 76, '⛔': 15}
+Row status counts (sections 1-17, incl. a few cross-reference rows): {'✅': 87, '🟡': 29, '❌': 68, '⛔': 15}

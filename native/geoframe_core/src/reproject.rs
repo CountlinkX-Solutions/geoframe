@@ -97,6 +97,11 @@ pub fn normalize_crs(input: &str) -> Result<String, String> {
     resolve(input).map(|r| r.label)
 }
 
+/// Whether `input` names a geographic (lon/lat) CRS; `None` when it cannot be resolved.
+pub fn crs_is_geographic(input: &str) -> Option<bool> {
+    resolve(input).ok().map(|r| r.proj.is_latlong())
+}
+
 /// Transforms one coordinate; geographic CRSs are in degrees outside, radians inside.
 fn transform_coord(src: &Proj, dst: &Proj, c: Coord<f64>) -> Result<Coord<f64>, String> {
     let (mut x, mut y) = (c.x, c.y);

@@ -3,6 +3,7 @@ defmodule GeoFrame.DoctestTest do
 
   doctest GeoFrame
   doctest GeoFrame.GeoSeries
+  doctest GeoFrame.CRS
   doctest GeoFrame.GeoDataFrame
   doctest GeoFrame.Testing
 end

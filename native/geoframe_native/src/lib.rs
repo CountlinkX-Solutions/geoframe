@@ -479,4 +479,108 @@ fn write_flatgeobuf_file(
     )
 }
 
+/// Per-row origins: `"coord"` reads `ox`/`oy` (a `None` in either nulls the row); the other
+/// modes ignore them.
+fn row_origins(
+    origin: &str,
+    ox: &[Option<f64>],
+    oy: &[Option<f64>],
+    rows: usize,
+) -> Result<Vec<Option<Origin>>, String> {
+    match origin {
+        "coord" => {
+            if ox.len() != rows || oy.len() != rows {
+                return Err(format!(
+                    "origin has {} entries but the series has {rows} rows",
+                    ox.len()
+                ));
+            }
+            Ok(ox
+                .iter()
+                .zip(oy)
+                .map(|(x, y)| Some(Origin::Coord((*x)?, (*y)?)))
+                .collect())
+        }
+        other => {
+            let fixed = parse_origin(other, 0.0, 0.0)?;
+            Ok(vec![Some(fixed); rows])
+        }
+    }
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn translate_rows(
+    column: Handle,
+    xoff: Vec<Option<f64>>,
+    yoff: Vec<Option<f64>>,
+) -> Result<Handle, String> {
+    column.0.translate_rows(&xoff, &yoff).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn scale_rows(
+    column: Handle,
+    xfact: Vec<Option<f64>>,
+    yfact: Vec<Option<f64>>,
+    origin: String,
+    ox: Vec<Option<f64>>,
+    oy: Vec<Option<f64>>,
+) -> Result<Handle, String> {
+    let origins = row_origins(&origin, &ox, &oy, column.0.len())?;
+    column.0.scale_rows(&xfact, &yfact, &origins).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn rotate_rows(
+    column: Handle,
+    degrees: Vec<Option<f64>>,
+    origin: String,
+    ox: Vec<Option<f64>>,
+    oy: Vec<Option<f64>>,
+) -> Result<Handle, String> {
+    let origins = row_origins(&origin, &ox, &oy, column.0.len())?;
+    column.0.rotate_rows(&degrees, &origins).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+#[allow(clippy::too_many_arguments)]
+fn skew_rows(
+    column: Handle,
+    xs: Vec<Option<f64>>,
+    ys: Vec<Option<f64>>,
+    origin: String,
+    ox: Vec<Option<f64>>,
+    oy: Vec<Option<f64>>,
+    use_radians: bool,
+) -> Result<Handle, String> {
+    let origins = row_origins(&origin, &ox, &oy, column.0.len())?;
+    column
+        .0
+        .skew_rows(&xs, &ys, &origins, use_radians)
+        .map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn affine_transform(column: Handle, matrix: Vec<f64>) -> Result<Handle, String> {
+    let matrix: [f64; 6] = matrix
+        .try_into()
+        .map_err(|_| "affine_transform needs exactly 6 numbers".to_string())?;
+    column.0.affine_transform(&matrix).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn wrap_longitude(column: Handle) -> Result<Handle, String> {
+    column.0.wrap_longitude().map(wrap)
+}
+
+#[rustler::nif]
+fn geographic(column: Handle) -> Option<bool> {
+    column.0.is_geographic()
+}
+
+#[rustler::nif]
+fn crs_is_geographic(crs: String) -> Option<bool> {
+    geoframe_core::crs_is_geographic(&crs)
+}
+
 rustler::init!("Elixir.GeoFrame.Native");

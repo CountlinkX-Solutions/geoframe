@@ -218,6 +218,12 @@ defmodule GeoFrame.GeoDataFrame do
     %{gdf | geometry: GeoSeries.to_crs(geometry, target)}
   end
 
+  @doc "Whether the CRS is geographic. See `GeoFrame.GeoSeries.is_geographic/1`."
+  @spec is_geographic(t()) :: boolean() | nil
+  # GeoPandas-compatible name, see GeoSeries.is_valid/1.
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+  def is_geographic(%__MODULE__{geometry: geometry}), do: GeoSeries.is_geographic(geometry)
+
   @doc "The UTM CRS for the geometry's extent. See `GeoFrame.GeoSeries.estimate_utm_crs/1`."
   @spec estimate_utm_crs(t()) :: String.t()
   def estimate_utm_crs(%__MODULE__{geometry: geometry}), do: GeoSeries.estimate_utm_crs(geometry)
