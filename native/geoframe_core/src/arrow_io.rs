@@ -16,8 +16,9 @@
 //!   GeoArrow native (`geoarrow.point`, ..., `geoarrow.multipolygon`, separated coordinates).
 //!   Native needs one geometry kind, like GeoPandas: `X` and `MultiX` mix and are promoted to
 //!   `MultiX` (with their Z and M); anything else, including rows of different dimensions, is an
-//!   error. `geometry_types` carries the dimension (`"Polygon Z"`, `"Point ZM"`, `"LineString
-//!   M"`) and the `bbox` in the metadata and the covering column are 2D, like GeoPandas.
+//!   error. `geometry_types` carries the dimension (`"Polygon Z"`, `"Point ZM"`,
+//!   `"LineString M"`); the `bbox` in the metadata and the covering column are 2D, like
+//!   GeoPandas.
 //! * **CRS:** the extension metadata carries the CRS as PROJJSON (`{"crs": {...}}`), as
 //!   GeoPandas does; the `geo` metadata keeps the GeoParquet semantics (missing key =
 //!   `OGC:CRS84`, explicit `null` = unknown) and wins over the extension metadata on read.

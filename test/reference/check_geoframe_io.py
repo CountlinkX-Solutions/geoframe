@@ -49,11 +49,63 @@ def comparable(value, expected):
     return value.item() if hasattr(value, "item") else value
 
 
+def suffix_of(geom):
+    """The GeoParquet dimension suffix of a geometry: "", " Z", " M" or " ZM"."""
+    return (" Z" if shapely.has_z(geom) and not shapely.has_m(geom) else
+            " ZM" if shapely.has_z(geom) and shapely.has_m(geom) else
+            " M" if shapely.has_m(geom) else "")
+
+
+def check_zm(file, geoms, entry):
+    """Z and M ordinates (and the has_z / has_m flags) of every geometry against the expectation."""
+    import numpy as np
+
+    zm = entry["zm"]
+    for index, (actual, expected) in enumerate(zip(geoms, entry["wkt"])):
+        if expected is None:
+            continue
+        want = swkt.loads(expected)
+        have_z, have_m = bool(shapely.has_z(actual)), bool(shapely.has_m(actual))
+        if (have_z, have_m) != (zm["has_z"][index], zm["has_m"][index]):
+            fail(file, f"row {index}: dimension Z={have_z} M={have_m}, expected {zm['has_z'][index]}/{zm['has_m'][index]}")
+        got = shapely.get_coordinates(shapely.normalize(actual), include_z=True, include_m=True)
+        exp = shapely.get_coordinates(shapely.normalize(want), include_z=True, include_m=True)
+        if got.shape != exp.shape or not np.allclose(got, exp, equal_nan=True, atol=1e-9):
+            fail(file, f"row {index}: ordinates {got.tolist()} != {exp.tolist()}")
+
+
+def read_geometries(path, layer, entry):
+    """A frame with M cannot be loaded by Shapely-based readers from GDAL: go through pyogrio's
+    Arrow path, which exports ISO WKB with Z and M, and rebuild the frame from it."""
+    import warnings
+
+    import pyogrio
+
+    zm = entry.get("zm")
+    if zm is None or not any(zm["has_m"]):
+        return gpd.read_file(path, layer=layer)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        meta, table = pyogrio.read_arrow(path, layer=layer)
+    name = meta["geometry_name"] or "wkb_geometry"
+    geoms = [None if b.as_py() is None else shapely.from_wkb(b.as_py()) for b in table.column(name)]
+    attributes = table.drop_columns([name]).to_pandas()
+    return gpd.GeoDataFrame(attributes, geometry=geoms, crs=meta["crs"])
+
+
+def comparable_crs(crs, entry):
+    """GDAL reports a layer whose first geometry has Z in the 3D variant of the CRS (EPSG:4979
+    for EPSG:4326); the horizontal part is what was written."""
+    if entry.get("zm") and len(crs.axis_info) == 3:
+        return crs.to_2d()
+    return crs
+
+
 def check_frame(file, gdf, entry):
     if entry["crs"] is None:
         if gdf.crs is not None:
             fail(file, f"crs {gdf.crs!r} != None")
-    elif gdf.crs is None or gdf.crs != CRS.from_user_input(entry["crs"]):
+    elif gdf.crs is None or comparable_crs(gdf.crs, entry) != CRS.from_user_input(entry["crs"]):
         fail(file, f"crs {gdf.crs!r} != {entry['crs']!r}")
     geoms = list(gdf.geometry)
     if len(geoms) != len(entry["wkt"]):
@@ -73,6 +125,8 @@ def check_frame(file, gdf, entry):
     extra = set(gdf.columns) - set(entry["columns"]) - {"geometry"}
     if extra:
         fail(file, f"unexpected columns {sorted(extra)}")
+    if entry.get("zm"):
+        check_zm(file, geoms, entry)
 
 
 def check_extension(file, schema, native):
@@ -102,18 +156,47 @@ def check_gpkg(file, path, entry):
     layer = entry.get("layer") or names[0]  # no layer: the layer is named after the file
     if layer not in names:
         fail(file, f"layer {layer!r} not in pyogrio's list {names}")
-    gdf = gpd.read_file(path, layer=layer)
+    gdf = read_geometries(path, layer, entry)
     check_frame(file, gdf, entry)
-    info = pyogrio.read_info(path, layer=layer)
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        info = pyogrio.read_info(path, layer=layer)
     if info["features"] != len(entry["wkt"]):
         fail(file, f"pyogrio counts {info['features']} features")
     # the R-tree is what makes a bbox read fast: it must agree with a full scan
-    wide = gpd.read_file(path, layer=layer, bbox=(-1000, -1000, 1000000, 10000000))
+    box = (-1000, -1000, 1000000, 10000000)
+    if entry.get("zm") and any(entry["zm"]["has_m"]):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            meta, table = pyogrio.read_arrow(path, layer=layer, bbox=box)
+        # the Arrow path keeps rows without a geometry
+        wide = [b for b in table.column(meta["geometry_name"]) if b.as_py() is not None]
+    else:
+        wide = gpd.read_file(path, layer=layer, bbox=box)
     present = len([w for w in entry["wkt"] if w is not None])
     if len(wide) != present:
         fail(file, f"bbox read returned {len(wide)} rows, expected {present}")
     if info["geometry_type"] is None:
         fail(file, "no geometry type")
+    check_declared_type(file, info, entry)
+
+
+def check_declared_type(file, info, entry):
+    """The layer type GDAL reports names Z when every geometry has it."""
+    zm = entry.get("zm")
+    if not zm or any(zm["has_m"]):
+        return
+    present = [z for z, w in zip(zm["has_z"], entry["wkt"]) if w is not None]
+    if present and all(present) and not info["geometry_type"].endswith(" Z"):
+        fail(file, f"layer type {info['geometry_type']!r} does not name Z")
+
+
+def pyogrio_info(path):
+    import pyogrio
+
+    return pyogrio.read_info(path)
 
 
 def main(directory):
@@ -146,6 +229,14 @@ def main(directory):
                 fail(file, "unexpected covering metadata")
             if file == "wkb_v1_0_0.parquet" and meta["version"] != "1.0.0":
                 fail(file, f"version {meta['version']}")
+            if entry.get("zm"):
+                listed = {" ".join(t.split(" ")[1:]) for t in meta["columns"]["geometry"]["geometry_types"]}
+                listed = {" " + x if x else "" for x in listed}
+                actual = {suffix_of(g) for g in gdf.geometry if g is not None}
+                if listed != actual:
+                    fail(file, f"geometry_types {meta['columns']['geometry']['geometry_types']} do not match the dimensions {sorted(actual)}")
+                if len(meta["columns"]["geometry"].get("bbox", [0] * 4)) != 4:
+                    fail(file, "the bbox in the geo metadata is not 2D")
         elif kind == "arrows":
             with pa.ipc.open_stream(path) as reader:
                 table = reader.read_all()
@@ -157,8 +248,23 @@ def main(directory):
             if len(only) != len(entry["wkt"]) or list(only.columns) != ["geometry"]:
                 fail(file, "geometry-only table")
         elif kind == "shapefile":
-            gdf = gpd.read_file(path)
+            gdf = read_geometries(path, None, entry)
             check_frame(file, gdf, entry)
+            if entry.get("zm"):
+                import warnings
+
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    check_declared_type(file, pyogrio_info(path), entry)
+        elif kind in ("geojson", "flatgeobuf"):
+            gdf = read_geometries(path, None, entry)
+            check_frame(file, gdf, entry)
+            if kind == "flatgeobuf" and entry.get("zm"):
+                import warnings
+
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    check_declared_type(file, pyogrio_info(path), entry)
         elif kind == "gpkg":
             check_gpkg(file, path, entry)
         else:
