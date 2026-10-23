@@ -1,0 +1,13 @@
+{
+"type": "FeatureCollection",
+"name": "z",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "id": 1, "name": "a" }, "geometry": { "type": "Point", "coordinates": [ 1.0, 2.0, 3.0 ] } },
+{ "type": "Feature", "properties": { "id": 2, "name": "b" }, "geometry": { "type": "Point", "coordinates": [ 4.0, 5.0 ] } },
+{ "type": "Feature", "properties": { "id": 3, "name": "c" }, "geometry": null },
+{ "type": "Feature", "properties": { "id": 4, "name": "d" }, "geometry": { "type": "LineString", "coordinates": [ [ 0.0, 0.0, 1.0 ], [ 1.0, 1.0, 2.0 ] ] } },
+{ "type": "Feature", "properties": { "id": 5, "name": "e" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 0.0, 0.0, 1.0 ], [ 4.0, 0.0, 2.0 ], [ 4.0, 4.0, 3.0 ], [ 0.0, 0.0, 1.0 ] ] ] } },
+{ "type": "Feature", "properties": { "id": 6, "name": "f" }, "geometry": { "type": "GeometryCollection", "geometries": [ { "type": "Point", "coordinates": [ 1.0, 2.0, 3.0 ] }, { "type": "LineString", "coordinates": [ [ 0.0, 0.0, 1.0 ], [ 1.0, 1.0, 2.0 ] ] } ] } }
+]
+}

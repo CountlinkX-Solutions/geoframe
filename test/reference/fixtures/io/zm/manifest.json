@@ -1,0 +1,683 @@
+{
+ "files": {
+  "lines_m.shp": {
+   "columns": {
+    "id": [
+     1,
+     2
+    ],
+    "name": [
+     "a",
+     "b"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    true,
+    true
+   ],
+   "has_z": [
+    false,
+    false
+   ],
+   "kind": "shapefile",
+   "wkt": [
+    "LINESTRING M (0 0 1, 1 1 2, 2 0 3)",
+    "MULTILINESTRING M ((0 0 1, 1 1 2), (5 5 3, 6 6 4))"
+   ]
+  },
+  "lines_z.shp": {
+   "columns": {
+    "id": [
+     1,
+     2
+    ],
+    "name": [
+     "a",
+     "b"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true
+   ],
+   "kind": "shapefile",
+   "shape_type": "LineString Z",
+   "wkt": [
+    "LINESTRING Z (0 0 1, 1 1 2, 2 0 3)",
+    "MULTILINESTRING Z ((0 0 1, 1 1 2), (5 5 3, 6 6 4))"
+   ]
+  },
+  "lines_zm.shp": {
+   "columns": {
+    "id": [
+     1,
+     2
+    ],
+    "name": [
+     "a",
+     "b"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    true,
+    true
+   ],
+   "has_z": [
+    true,
+    true
+   ],
+   "kind": "shapefile",
+   "wkt": [
+    "LINESTRING ZM (0 0 1 10, 1 1 2 11, 2 0 3 12)",
+    "MULTILINESTRING ZM ((0 0 1 1, 1 1 2 2), (5 5 3 3, 6 6 4 4))"
+   ]
+  },
+  "m.gpkg:pts_m": {
+   "columns": {
+    "id": [
+     1,
+     2
+    ],
+    "name": [
+     "a",
+     "b"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    true,
+    true
+   ],
+   "has_z": [
+    false,
+    false
+   ],
+   "kind": "gpkg",
+   "wkt": [
+    "POINT M (1 2 10)",
+    "POINT M (3 4 20.5)"
+   ]
+  },
+  "m.gpkg:pts_zm": {
+   "columns": {
+    "id": [
+     1,
+     2
+    ],
+    "name": [
+     "a",
+     "b"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    true,
+    true
+   ],
+   "has_z": [
+    true,
+    true
+   ],
+   "kind": "gpkg",
+   "wkt": [
+    "POINT ZM (1 2 3 10)",
+    "POINT ZM (3 4 5 20.5)"
+   ]
+  },
+  "multipoints_m.shp": {
+   "columns": {
+    "id": [
+     1
+    ],
+    "name": [
+     "a"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    true
+   ],
+   "has_z": [
+    false
+   ],
+   "kind": "shapefile",
+   "wkt": [
+    "MULTIPOINT M ((0 0 1), (1 1 2))"
+   ]
+  },
+  "multipoints_z.shp": {
+   "columns": {
+    "id": [
+     1,
+     2
+    ],
+    "name": [
+     "a",
+     "b"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true
+   ],
+   "kind": "shapefile",
+   "shape_type": "MultiPoint Z",
+   "wkt": [
+    "MULTIPOINT Z ((0 0 1), (1 1 2))",
+    "MULTIPOINT Z ((5 5 3), (6 6 4), (7 7 5))"
+   ]
+  },
+  "points_m.shp": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3
+    ],
+    "name": [
+     "a",
+     "b",
+     "c"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    true,
+    true,
+    false
+   ],
+   "has_z": [
+    false,
+    false,
+    false
+   ],
+   "kind": "shapefile",
+   "wkt": [
+    "POINT M (1 2 10)",
+    "POINT M (3 4 20.5)",
+    null
+   ]
+  },
+  "points_z.fgb": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3
+    ],
+    "name": [
+     "a",
+     "b",
+     "c"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true,
+    true
+   ],
+   "kind": "flatgeobuf",
+   "wkt": [
+    "POINT Z (1 2 3)",
+    "POINT Z (4 5 6)",
+    "POINT Z (-80.5 25.25 -1.5)"
+   ]
+  },
+  "points_z.shp": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3
+    ],
+    "name": [
+     "a",
+     "b",
+     "c"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true,
+    false
+   ],
+   "kind": "shapefile",
+   "shape_type": "Point Z",
+   "wkt": [
+    "POINT Z (1 2 3)",
+    "POINT Z (-80.5 25.25 -1.5)",
+    null
+   ]
+  },
+  "points_zm.shp": {
+   "columns": {
+    "id": [
+     1,
+     2
+    ],
+    "name": [
+     "a",
+     "b"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    true,
+    true
+   ],
+   "has_z": [
+    true,
+    true
+   ],
+   "kind": "shapefile",
+   "wkt": [
+    "POINT ZM (1 2 3 10)",
+    "POINT ZM (3 4 5 20.5)"
+   ]
+  },
+  "polygons_m.shp": {
+   "columns": {
+    "id": [
+     1
+    ],
+    "name": [
+     "a"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    true
+   ],
+   "has_z": [
+    false
+   ],
+   "kind": "shapefile",
+   "wkt": [
+    "POLYGON M ((0 0 1, 0 4 2, 4 4 3, 4 0 4, 0 0 1), (1 1 5, 2 1 5, 2 2 5, 1 1 5))"
+   ]
+  },
+  "polygons_z.fgb": {
+   "columns": {
+    "id": [
+     2,
+     1
+    ],
+    "name": [
+     "b",
+     "a"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true
+   ],
+   "kind": "flatgeobuf",
+   "wkt": [
+    "POLYGON Z ((10 10 7, 11 10 7, 11 11 7, 10 10 7))",
+    "POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 0 1))"
+   ]
+  },
+  "polygons_z.shp": {
+   "columns": {
+    "id": [
+     1,
+     2
+    ],
+    "name": [
+     "a",
+     "b"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true
+   ],
+   "kind": "shapefile",
+   "shape_type": "Polygon Z",
+   "wkt": [
+    "POLYGON Z ((0 0 1, 0 4 2, 4 4 3, 4 0 4, 0 0 1), (1 1 5, 2 1 5, 2 2 5, 1 1 5))",
+    "MULTIPOLYGON Z (((10 10 7, 10 11 7, 11 11 7, 10 10 7)), ((20 20 8, 20 21 8, 21 21 8, 20 20 8)))"
+   ]
+  },
+  "polygons_zm.shp": {
+   "columns": {
+    "id": [
+     1
+    ],
+    "name": [
+     "a"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    true
+   ],
+   "has_z": [
+    true
+   ],
+   "kind": "shapefile",
+   "wkt": [
+    "POLYGON ZM ((0 0 1 5, 0 4 2 6, 4 4 3 7, 4 0 4 8, 0 0 1 5))"
+   ]
+  },
+  "z.geojson": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6
+    ],
+    "name": [
+     "a",
+     "b",
+     "c",
+     "d",
+     "e",
+     "f"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    false,
+    false,
+    true,
+    true,
+    true
+   ],
+   "kind": "geojson",
+   "wkt": [
+    "POINT Z (1 2 3)",
+    "POINT (4 5)",
+    null,
+    "LINESTRING Z (0 0 1, 1 1 2)",
+    "POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 0 1))",
+    "GEOMETRYCOLLECTION Z (POINT Z (1 2 3), LINESTRING Z (0 0 1, 1 1 2))"
+   ]
+  },
+  "z.gpkg:mixed": {
+   "columns": {
+    "id": [
+     1,
+     2
+    ],
+    "name": [
+     "a",
+     "b"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "flags": {
+    "geometry_type_name": "POINT",
+    "m": 0,
+    "z": 1
+   },
+   "has_m": [
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    false
+   ],
+   "kind": "gpkg",
+   "wkt": [
+    "POINT Z (1 2 3)",
+    "POINT (4 5)"
+   ]
+  },
+  "z.gpkg:pts": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3
+    ],
+    "name": [
+     "a",
+     "b",
+     "c"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "flags": {
+    "geometry_type_name": "POINT",
+    "m": 0,
+    "z": 1
+   },
+   "has_m": [
+    false,
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true,
+    false
+   ],
+   "kind": "gpkg",
+   "wkt": [
+    "POINT Z (1 2 3)",
+    "POINT Z (4 5 6)",
+    null
+   ]
+  },
+  "z_geoarrow_points.arrows": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3
+    ],
+    "name": [
+     "a",
+     "b",
+     "c"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true,
+    false
+   ],
+   "kind": "arrows",
+   "wkt": [
+    "POINT Z (1 2 3)",
+    "POINT Z (4 5 6)",
+    null
+   ]
+  },
+  "z_geoarrow_points.parquet": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3
+    ],
+    "name": [
+     "a",
+     "b",
+     "c"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true,
+    false
+   ],
+   "kind": "parquet",
+   "wkt": [
+    "POINT Z (1 2 3)",
+    "POINT Z (4 5 6)",
+    null
+   ]
+  },
+  "z_geoarrow_polygons.parquet": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3
+    ],
+    "name": [
+     "a",
+     "b",
+     "c"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true,
+    false
+   ],
+   "kind": "parquet",
+   "wkt": [
+    "MULTIPOLYGON Z (((0 0 1, 4 0 2, 4 4 3, 0 0 1)))",
+    "MULTIPOLYGON Z (((10 10 7, 11 10 7, 11 11 7, 10 10 7)), ((20 20 8, 21 20 8, 21 21 8, 20 20 8)))",
+    null
+   ]
+  },
+  "z_wkb.feather": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3
+    ],
+    "name": [
+     "a",
+     "b",
+     "c"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true,
+    false
+   ],
+   "kind": "feather",
+   "wkt": [
+    "POINT Z (1 2 3)",
+    "POINT Z (4 5 6)",
+    null
+   ]
+  },
+  "z_wkb.parquet": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3,
+     4
+    ],
+    "name": [
+     "a",
+     "b",
+     "c",
+     "d"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "geometry_types": [
+    "LineString",
+    "Point Z",
+    "Polygon Z"
+   ],
+   "has_m": [
+    false,
+    false,
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true,
+    false,
+    false
+   ],
+   "kind": "parquet",
+   "wkt": [
+    "POINT Z (1 2 3)",
+    "POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 0 1))",
+    "LINESTRING (0 0, 1 1)",
+    null
+   ]
+  }
+ },
+ "gdal": [
+  3,
+  12,
+  4
+ ],
+ "geopandas": "1.2.0",
+ "pyogrio": "0.13.0"
+}

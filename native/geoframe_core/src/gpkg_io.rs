@@ -32,6 +32,14 @@
 //! CRS, and creating a missing layer in either mode. A file that exists but is not a
 //! GeoPackage is never overwritten.
 //!
+//! # Z and M
+//!
+//! The WKB keeps Z and M (ISO dimension codes). `gpkg_geometry_columns.z` and `.m` are 0 when
+//! no row has the ordinate, 1 when every non-null row has it and 2 when only some do; appending
+//! rows of another dimension turns a layer's flag into 2. A blob's envelope has the Z and/or M
+//! range after the XY one (indicator 2, 3 or 4) when the geometry has values for them (NaN is
+//! ignored); the R-tree and the layer extent stay 2D.
+//!
 //! A write that fails leaves no half-made file: the `application_id` and `user_version`
 //! pragmas are set inside the creating transaction, and a file the write itself created is
 //! removed again on error. Appending checks the rows against the layer: a different geometry
@@ -108,19 +116,47 @@ pub(crate) struct Blob<'a> {
     pub srs_id: i32,
     /// `[minx, miny, maxx, maxy]`
     pub envelope: Option<[f64; 4]>,
+    /// `[minz, maxz]` when the envelope has a Z range (indicator 2 or 4).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub z_range: Option<[f64; 2]>,
+    /// `[minm, maxm]` when the envelope has an M range (indicator 3 or 4).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub m_range: Option<[f64; 2]>,
     pub empty: bool,
     pub wkb: &'a [u8],
 }
 
 /// `GP` header (version 0, little-endian, XY envelope when given) followed by `wkb`.
 pub(crate) fn encode_geometry_blob(wkb: &[u8], srs_id: i32, envelope: Option<[f64; 4]>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(8 + 32 + wkb.len());
+    encode_geometry_blob_zm(wkb, srs_id, envelope, None, None)
+}
+
+/// Like [`encode_geometry_blob`] with Z and/or M ranges: the envelope indicator becomes 2 (XYZ),
+/// 3 (XYM) or 4 (XYZM) and the ranges follow the XY ones. Ranges need an XY envelope.
+pub(crate) fn encode_geometry_blob_zm(
+    wkb: &[u8],
+    srs_id: i32,
+    envelope: Option<[f64; 4]>,
+    z: Option<[f64; 2]>,
+    m: Option<[f64; 2]>,
+) -> Vec<u8> {
+    let indicator: u8 = match (envelope.is_some(), z.is_some(), m.is_some()) {
+        (false, _, _) => 0,
+        (true, false, false) => 1,
+        (true, true, false) => 2,
+        (true, false, true) => 3,
+        (true, true, true) => 4,
+    };
+    let mut out = Vec::with_capacity(8 + 64 + wkb.len());
     out.extend_from_slice(b"GP");
     out.push(0);
-    out.push(0b0000_0001 | if envelope.is_some() { 0b0000_0010 } else { 0 });
+    out.push(0b0000_0001 | (indicator << 1));
     out.extend_from_slice(&srs_id.to_le_bytes());
     if let Some([min_x, min_y, max_x, max_y]) = envelope {
         for value in [min_x, max_x, min_y, max_y] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in z.into_iter().chain(m).flatten() {
             out.extend_from_slice(&value.to_le_bytes());
         }
     }
@@ -172,9 +208,22 @@ pub(crate) fn decode_geometry_blob(blob: &[u8]) -> Result<Blob<'_>, String> {
         }
     };
     let envelope = (indicator != 0).then(|| [double(0), double(2), double(1), double(3)]);
+    let range = |first: usize| Some([double(first), double(first + 1)]);
+    let z_range = if matches!(indicator, 2 | 4) {
+        range(4)
+    } else {
+        None
+    };
+    let m_range = match indicator {
+        3 => range(4),
+        4 => range(6),
+        _ => None,
+    };
     Ok(Blob {
         srs_id,
         envelope,
+        z_range,
+        m_range,
         empty: flags & 0b0001_0000 != 0,
         wkb: &blob[8 + envelope_bytes..],
     })
@@ -1014,6 +1063,16 @@ fn write(
     }
     let blobs = geometry.to_wkb()?;
     let bounds = geometry.bounds();
+    let (row_z, row_m) = (geometry.has_z(), geometry.has_m());
+    let present = blobs.iter().flatten().count();
+    let flag = |rows: &[bool]| -> i64 {
+        match rows.iter().filter(|z| **z).count() {
+            0 => 0,
+            n if n == present => 1,
+            _ => 2,
+        }
+    };
+    let (layer_z, layer_m) = (flag(&row_z), flag(&row_m));
 
     let fresh = !Path::new(path).exists() || std::fs::metadata(path).is_ok_and(|m| m.len() == 0);
     let mut conn = Connection::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
@@ -1050,18 +1109,42 @@ fn write(
         .find(|row| row.name.eq_ignore_ascii_case(layer))
         .map(|row| row.name);
 
+    // On append: the layer's Z and M flags and whether it already holds rows.
+    let mut prior: Option<(i64, i64, bool)> = None;
     let (target, geometry_name, insert_columns) = match (&existing, options.append) {
         (Some(name), true) => {
             let (geometry_name, columns) =
                 check_append(&tx, name, &table, geometry, srs_id, crs.as_deref())?;
+            let (old_z, old_m): (i64, i64) = tx
+                .query_row(
+                    "SELECT z, m FROM gpkg_geometry_columns WHERE table_name = ?1",
+                    [name],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(sql_error)?;
+            let had_rows: bool = tx
+                .query_row(
+                    &format!("SELECT EXISTS (SELECT 1 FROM {})", quote(name)),
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(sql_error)?;
+            prior = Some((old_z, old_m, had_rows));
             (name.clone(), geometry_name, columns)
         }
         (existing, _) => {
             if let Some(name) = existing {
                 drop_layer(&tx, name)?;
             }
-            let geometry_name =
-                create_layer(&tx, layer, geometry, &table, srs_id, options.spatial_index)?;
+            let geometry_name = create_layer(
+                &tx,
+                layer,
+                geometry,
+                &table,
+                srs_id,
+                options.spatial_index,
+                (layer_z, layer_m),
+            )?;
             (
                 layer.to_string(),
                 geometry_name,
@@ -1094,7 +1177,12 @@ fn write(
                     if let Some(b) = bounds[row] {
                         total = Some(union(total, b));
                     }
-                    Value::Blob(encode_row_blob(wkb, bounds[row], srs_id))
+                    let (z, m) = if row_z[row] || row_m[row] {
+                        crate::zm_io::zm_ranges(wkb)
+                    } else {
+                        (None, None)
+                    };
+                    Value::Blob(encode_row_blob(wkb, bounds[row], srs_id, z, m))
                 }
             });
             for (column, _) in &insert_columns {
@@ -1106,6 +1194,16 @@ fn write(
         }
     }
 
+    if let (Some((old_z, old_m, had_rows)), true) = (prior, present > 0) {
+        // Rows of another dimension make the ordinate optional (2); an empty layer takes the
+        // flags of the new rows.
+        let merge = |old: i64, new: i64| if !had_rows || old == new { new } else { 2 };
+        tx.execute(
+            "UPDATE gpkg_geometry_columns SET z = ?1, m = ?2 WHERE table_name = ?3",
+            params![merge(old_z, layer_z), merge(old_m, layer_m), target],
+        )
+        .map_err(sql_error)?;
+    }
     if let Some(b) = total {
         tx.execute(
             "UPDATE gpkg_contents SET \
@@ -1128,10 +1226,16 @@ fn write(
     Ok(warnings)
 }
 
-fn encode_row_blob(wkb: &[u8], bounds: Option<[f64; 4]>, srs_id: i64) -> Vec<u8> {
+fn encode_row_blob(
+    wkb: &[u8],
+    bounds: Option<[f64; 4]>,
+    srs_id: i64,
+    z: Option<[f64; 2]>,
+    m: Option<[f64; 2]>,
+) -> Vec<u8> {
     let srs = i32::try_from(srs_id).unwrap_or(-1);
     match bounds {
-        Some(b) => encode_geometry_blob(wkb, srs, Some(b)),
+        Some(b) => encode_geometry_blob_zm(wkb, srs, Some(b), z, m),
         None => {
             // A geometry without bounds is empty: set the empty flag, no envelope.
             let mut blob = encode_geometry_blob(wkb, srs, None);
@@ -1230,6 +1334,7 @@ fn create_layer(
     table: &Table,
     srs_id: i64,
     spatial_index: bool,
+    (z, m): (i64, i64),
 ) -> Result<String, String> {
     let taken = |name: &str| table.names.iter().any(|n| n.eq_ignore_ascii_case(name));
     let geometry_name = ["geom", "geometry", "shape"]
@@ -1257,8 +1362,8 @@ fn create_layer(
     )
     .map_err(sql_error)?;
     tx.execute(
-        "INSERT INTO gpkg_geometry_columns VALUES (?1, ?2, ?3, ?4, 0, 0)",
-        params![layer, geometry_name, type_name, srs_id],
+        "INSERT INTO gpkg_geometry_columns VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![layer, geometry_name, type_name, srs_id, z, m],
     )
     .map_err(sql_error)?;
     if spatial_index {

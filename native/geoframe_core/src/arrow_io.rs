@@ -15,7 +15,10 @@
 //! * **Geometry encodings written:** WKB (`geoarrow.wkb`, default, any geometry mix) or
 //!   GeoArrow native (`geoarrow.point`, ..., `geoarrow.multipolygon`, separated coordinates).
 //!   Native needs one geometry kind, like GeoPandas: `X` and `MultiX` mix and are promoted to
-//!   `MultiX`; anything else is an error.
+//!   `MultiX` (with their Z and M); anything else, including rows of different dimensions, is an
+//!   error. `geometry_types` carries the dimension (`"Polygon Z"`, `"Point ZM"`,
+//!   `"LineString M"`); the `bbox` in the metadata and the covering column are 2D, like
+//!   GeoPandas.
 //! * **CRS:** the extension metadata carries the CRS as PROJJSON (`{"crs": {...}}`), as
 //!   GeoPandas does; the `geo` metadata keeps the GeoParquet semantics (missing key =
 //!   `OGC:CRS84`, explicit `null` = unknown) and wins over the extension metadata on read.
@@ -35,13 +38,12 @@ use arrow_ipc::reader::{FileReader, StreamReader};
 use arrow_ipc::writer::{FileWriter, IpcWriteOptions, StreamWriter};
 use arrow_ipc::CompressionType;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use geo_traits::GeometryTrait;
+use geo_traits::{GeometryTrait, LineStringTrait, PointTrait, PolygonTrait};
 use geoarrow_array::array::from_arrow_array;
 use geoarrow_array::array::GenericWkbArray;
 use geoarrow_array::builder::{MultiLineStringBuilder, MultiPointBuilder, MultiPolygonBuilder};
 use geoarrow_array::cast::{from_wkb, to_wkb};
 use geoarrow_array::{GeoArrowArray, GeoArrowArrayAccessor, IntoArrow};
-use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 use geoarrow_schema::{
     Dimension, GeoArrowType, LineStringType, MultiLineStringType, MultiPointType, MultiPolygonType,
     PointType, PolygonType,
@@ -228,6 +230,18 @@ pub(crate) fn encode_table(
     {
         column.remove("bbox");
     }
+    // The crate lists Z (and M) ranges in `bbox` for Z geometries; GeoPandas writes the 2D box
+    // and so do we (the covering column is 2D as well).
+    if column
+        .get("bbox")
+        .and_then(Value::as_array)
+        .is_some_and(|bbox| bbox.len() != 4)
+    {
+        match geometry.total_bounds() {
+            Some(bounds) => column.insert("bbox".to_string(), json!(bounds)),
+            None => column.remove("bbox"),
+        };
+    }
     let crs = crs_for_file(geometry.crs().as_deref())?;
     let extension_metadata = match &crs {
         CrsOut::Omit => json!({ "crs": CRS84, "crs_type": "authority_code" }),
@@ -327,67 +341,88 @@ fn native_array(geometry: &GeoColumn) -> Result<Arc<dyn GeoArrowArray>, String> 
     // geoarrow-array 0.9 mishandles validity when a single geometry is pushed into a multi
     // builder, so rows that need promotion are promoted here and pushed as multi geometries.
     if multi && kinds.iter().any(|(_, is_multi)| !*is_multi) {
-        return promoted_array(&wkb, target, dim);
+        return promoted_array(&wkb, target);
     }
     from_wkb(&wkb, target).map_err(|e| format!("cannot encode geometry as GeoArrow: {e}"))
 }
 
-/// Native multi array from a column that mixes `X` and `MultiX` rows (XY only).
+/// Native multi array from a column that mixes `X` and `MultiX` rows. Each single geometry is
+/// wrapped into a one-member multi geometry of the same dimension (an empty one into an empty
+/// multi), so Z and M survive.
 fn promoted_array(
     wkb: &GenericWkbArray<i32>,
     target: GeoArrowType,
-    dim: Dimension,
 ) -> Result<Arc<dyn GeoArrowArray>, String> {
-    if dim != Dimension::XY {
-        return Err(
-            "geometry_encoding \"geoarrow\" cannot promote single geometries to multi \
-             geometries with Z or M ordinates; use \"wkb\""
-                .to_string(),
-        );
-    }
-    let mut points: Vec<Option<geo::MultiPoint<f64>>> = Vec::new();
-    let mut lines: Vec<Option<geo::MultiLineString<f64>>> = Vec::new();
-    let mut polygons: Vec<Option<geo::MultiPolygon<f64>>> = Vec::new();
-    for item in wkb.iter() {
-        let geometry = match item {
-            Some(item) => Some(
-                geometry_to_geo(&item.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?,
-            ),
-            None => None,
-        };
-        match &target {
-            GeoArrowType::MultiPoint(_) => points.push(geometry.map(|g| match g {
-                geo::Geometry::Point(p) => geo::MultiPoint(vec![p]),
-                geo::Geometry::MultiPoint(m) => m,
-                _ => geo::MultiPoint(Vec::new()),
-            })),
-            GeoArrowType::MultiLineString(_) => lines.push(geometry.map(|g| match g {
-                geo::Geometry::LineString(l) => geo::MultiLineString(vec![l]),
-                geo::Geometry::MultiLineString(m) => m,
-                _ => geo::MultiLineString(Vec::new()),
-            })),
-            _ => polygons.push(geometry.map(|g| match g {
-                geo::Geometry::Polygon(p) if p.exterior().0.is_empty() => {
-                    geo::MultiPolygon(Vec::new())
-                }
-                geo::Geometry::Polygon(p) => geo::MultiPolygon(vec![p]),
-                geo::Geometry::MultiPolygon(m) => m,
-                _ => geo::MultiPolygon(Vec::new()),
-            })),
-        }
-    }
+    let multi_base: u32 = match &target {
+        GeoArrowType::MultiPoint(_) => 4,
+        GeoArrowType::MultiLineString(_) => 5,
+        _ => 6,
+    };
+    let wrapped: Vec<Option<Vec<u8>>> = wkb
+        .inner()
+        .iter()
+        .map(|row| {
+            row.map(|bytes| wrap_in_multi(bytes, multi_base))
+                .transpose()
+        })
+        .collect::<Result<_, _>>()?;
+    let parsed = wrapped
+        .iter()
+        .map(|row| {
+            row.as_deref()
+                .map(wkb::reader::read_wkb)
+                .transpose()
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let failed = |e: geoarrow_schema::error::GeoArrowError| e.to_string();
     Ok(match target {
-        GeoArrowType::MultiPoint(t) => {
-            Arc::new(MultiPointBuilder::from_nullable_multi_points(&points, t).finish())
-        }
-        GeoArrowType::MultiLineString(t) => {
-            Arc::new(MultiLineStringBuilder::from_nullable_multi_line_strings(&lines, t).finish())
-        }
-        GeoArrowType::MultiPolygon(t) => {
-            Arc::new(MultiPolygonBuilder::from_nullable_multi_polygons(&polygons, t).finish())
-        }
+        GeoArrowType::MultiPoint(t) => Arc::new(
+            MultiPointBuilder::from_nullable_geometries(&parsed, t)
+                .map_err(failed)?
+                .finish(),
+        ),
+        GeoArrowType::MultiLineString(t) => Arc::new(
+            MultiLineStringBuilder::from_nullable_geometries(&parsed, t)
+                .map_err(failed)?
+                .finish(),
+        ),
+        GeoArrowType::MultiPolygon(t) => Arc::new(
+            MultiPolygonBuilder::from_nullable_geometries(&parsed, t)
+                .map_err(failed)?
+                .finish(),
+        ),
         _ => unreachable!("promotion only targets multi types"),
     })
+}
+
+/// ISO WKB of `bytes` as the multi geometry with base type `multi_base` (4, 5 or 6): the bytes
+/// themselves when already multi, an empty multi for an empty single geometry, else a multi
+/// holding the geometry. The dimension code carries over.
+fn wrap_in_multi(bytes: &[u8], multi_base: u32) -> Result<Vec<u8>, String> {
+    let geometry = wkb::reader::read_wkb(bytes).map_err(|e| e.to_string())?;
+    let empty = match geometry.as_type() {
+        geo_traits::GeometryType::Point(p) => p.coord().is_none(),
+        geo_traits::GeometryType::LineString(l) => l.num_coords() == 0,
+        geo_traits::GeometryType::Polygon(p) => p.exterior().is_none_or(|r| r.num_coords() == 0),
+        _ => return Ok(bytes.to_vec()),
+    };
+    let raw: [u8; 4] = bytes
+        .get(1..5)
+        .and_then(|b| b.try_into().ok())
+        .ok_or("truncated WKB")?;
+    let code = if bytes[0] == 1 {
+        u32::from_le_bytes(raw)
+    } else {
+        u32::from_be_bytes(raw)
+    };
+    let mut out = vec![1];
+    out.extend_from_slice(&(code - code % 1000 + multi_base).to_le_bytes());
+    out.extend_from_slice(&u32::from(!empty).to_le_bytes());
+    if !empty {
+        out.extend_from_slice(bytes);
+    }
+    Ok(out)
 }
 
 // -- decode -------------------------------------------------------------------------------

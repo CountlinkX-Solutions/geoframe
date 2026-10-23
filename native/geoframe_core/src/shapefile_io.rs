@@ -14,7 +14,19 @@
 //! shapes. On read, a polyline with one part is a `LineString` and with several a
 //! `MultiLineString`, a polygon shape with one outer ring a `Polygon` and with several a
 //! `MultiPolygon`. Written polygon rings follow the format's orientation (exterior clockwise,
-//! holes counter-clockwise). Z and M values are dropped on read; output is 2D.
+//! holes counter-clockwise).
+//!
+//! # Z and M
+//!
+//! A column with Z writes the Z shape types (`PointZ` 11, `PolyLineZ` 13, `PolygonZ` 15,
+//! `MultiPointZ` 18); one with only M writes the M types (21, 23, 25, 28). The header and each
+//! record carry the Z and M ranges (NaN is ignored; no values give 0, 0, as GDAL writes). A Z
+//! file gets an M section only when some vertex has a measure, otherwise the record ends after
+//! Z, which is what GDAL writes. A NaN measure is written as the no-data value (-1e39) and
+//! reads back as NaN; a NaN Z (a 2D row in a Z file) is written as a NaN double. On read the
+//! shape type decides the dimension: M types are XYM, Z types XYZ, or XYZM when a vertex of the
+//! shape has a measure (GDAL decides per feature as well); measures at or below -1e38 are no
+//! data. Rings keep their Z and M when reoriented. Multipatch shapes are rejected.
 //!
 //! # Sidecar files
 //!
@@ -34,13 +46,19 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use geo::{Coord, Geometry, LineString, Polygon};
+use geo_traits::{
+    GeometryTrait, GeometryType, LineStringTrait, MultiLineStringTrait, MultiPointTrait,
+    MultiPolygonTrait, PointTrait, PolygonTrait,
+};
+use geoarrow_array::scalar::Geometry as Scalar;
+use geoarrow_array::GeoArrowArrayAccessor;
 
 use crate::attributes::{ipc_from_columns, Table};
 use crate::column::ColumnBuilder;
 use crate::crs_wkt::{crs_to_prj_wkt, prj_wkt_to_crs};
 use crate::dbf::{self, Encoding};
 use crate::gpkg_io::LayerInfo;
+use crate::zm_io::{vertex, Vertex, WkbOut};
 use crate::{GeoColumn, VectorRead};
 
 // -- reading ------------------------------------------------------------------------------
@@ -224,9 +242,12 @@ fn read(path: &str, encoding: Option<&str>) -> Result<VectorRead, String> {
             continue;
         }
         kept += 1;
-        match to_geometry(shape)? {
-            Some(geometry) => builder.push(Some(&geometry))?,
-            None => builder.push(None::<&Geometry<f64>>)?,
+        match shape_to_wkb(shape)? {
+            Some(bytes) => {
+                let parsed = wkb::reader::read_wkb(&bytes).map_err(|e| e.to_string())?;
+                builder.push(Some(&parsed))?;
+            }
+            None => builder.push(None::<&Scalar<'_>>)?,
         }
     }
 
@@ -247,20 +268,178 @@ fn read(path: &str, encoding: Option<&str>) -> Result<VectorRead, String> {
     })
 }
 
-fn to_geometry(shape: shapefile::Shape) -> Result<Option<Geometry<f64>>, String> {
-    if matches!(shape, shapefile::Shape::NullShape) {
-        return Ok(None);
+/// Point types of the `shapefile` crate as vertices; an M at or below the no-data threshold is
+/// NaN.
+trait ShapePoint {
+    fn vertex(&self) -> Vertex;
+}
+
+/// Measures at or below this are "no data" (the specification says less than -10^38).
+const NO_DATA_BELOW: f64 = -1e38;
+
+fn measure(m: f64) -> f64 {
+    if m <= NO_DATA_BELOW {
+        f64::NAN
+    } else {
+        m
     }
-    let geometry = Geometry::<f64>::try_from(shape).map_err(|e| format!("invalid shape: {e}"))?;
-    Ok(Some(match geometry {
-        Geometry::MultiLineString(mut lines) if lines.0.len() == 1 => {
-            Geometry::LineString(lines.0.remove(0))
+}
+
+impl ShapePoint for shapefile::Point {
+    fn vertex(&self) -> Vertex {
+        Vertex {
+            x: self.x,
+            y: self.y,
+            z: f64::NAN,
+            m: f64::NAN,
         }
-        Geometry::MultiPolygon(mut polygons) if polygons.0.len() == 1 => {
-            Geometry::Polygon(polygons.0.remove(0))
+    }
+}
+
+impl ShapePoint for shapefile::PointM {
+    fn vertex(&self) -> Vertex {
+        Vertex {
+            x: self.x,
+            y: self.y,
+            z: f64::NAN,
+            m: measure(self.m),
         }
-        other => other,
-    }))
+    }
+}
+
+impl ShapePoint for shapefile::PointZ {
+    fn vertex(&self) -> Vertex {
+        Vertex {
+            x: self.x,
+            y: self.y,
+            z: self.z,
+            m: measure(self.m),
+        }
+    }
+}
+
+/// ISO WKB of a shape, keeping Z and M; `None` for a null shape. The dimension is the shape
+/// type's: a Z type is XYZ (XYZM when any vertex has a measure, as GDAL decides per feature),
+/// an M type is XYM. A polyline with one part is a `LineString`, with several a
+/// `MultiLineString`; a polygon shape with one outer ring a `Polygon`, with several a
+/// `MultiPolygon`.
+fn shape_to_wkb(shape: shapefile::Shape) -> Result<Option<Vec<u8>>, String> {
+    use shapefile::Shape as S;
+    let (z, m_type) = match &shape {
+        S::NullShape => return Ok(None),
+        S::Point(_) | S::Polyline(_) | S::Polygon(_) | S::Multipoint(_) => (false, false),
+        S::PointM(_) | S::PolylineM(_) | S::PolygonM(_) | S::MultipointM(_) => (false, true),
+        S::PointZ(_) | S::PolylineZ(_) | S::PolygonZ(_) | S::MultipointZ(_) => (true, false),
+        S::Multipatch(_) => return Err("invalid shape: multipatch shapes are not supported".into()),
+    };
+    // Each part is a list of vertices; polygons also flag which rings are outer rings.
+    fn parts<P: ShapePoint>(lists: &[Vec<P>]) -> Vec<Vec<Vertex>> {
+        lists
+            .iter()
+            .map(|l| l.iter().map(ShapePoint::vertex).collect())
+            .collect()
+    }
+    fn rings<P: ShapePoint>(rings: &[shapefile::PolygonRing<P>]) -> (Vec<Vec<Vertex>>, Vec<bool>) {
+        let outer = rings
+            .iter()
+            .map(|r| matches!(r, shapefile::PolygonRing::Outer(_)))
+            .collect();
+        let lists = rings
+            .iter()
+            .map(|r| r.points().iter().map(ShapePoint::vertex).collect())
+            .collect();
+        (lists, outer)
+    }
+    let single = |points: Vec<Vertex>| vec![points];
+    let (family, lists, outer): (u32, Vec<Vec<Vertex>>, Vec<bool>) = match &shape {
+        S::Point(p) => (1, single(vec![p.vertex()]), Vec::new()),
+        S::PointM(p) => (1, single(vec![p.vertex()]), Vec::new()),
+        S::PointZ(p) => (1, single(vec![p.vertex()]), Vec::new()),
+        S::Multipoint(p) => (
+            4,
+            single(p.points().iter().map(ShapePoint::vertex).collect()),
+            Vec::new(),
+        ),
+        S::MultipointM(p) => (
+            4,
+            single(p.points().iter().map(ShapePoint::vertex).collect()),
+            Vec::new(),
+        ),
+        S::MultipointZ(p) => (
+            4,
+            single(p.points().iter().map(ShapePoint::vertex).collect()),
+            Vec::new(),
+        ),
+        S::Polyline(p) => (2, parts(p.parts()), Vec::new()),
+        S::PolylineM(p) => (2, parts(p.parts()), Vec::new()),
+        S::PolylineZ(p) => (2, parts(p.parts()), Vec::new()),
+        S::Polygon(p) => {
+            let (l, o) = rings(p.rings());
+            (3, l, o)
+        }
+        S::PolygonM(p) => {
+            let (l, o) = rings(p.rings());
+            (3, l, o)
+        }
+        S::PolygonZ(p) => {
+            let (l, o) = rings(p.rings());
+            (3, l, o)
+        }
+        S::NullShape | S::Multipatch(_) => unreachable!("handled above"),
+    };
+    let has_m = m_type || (z && lists.iter().flatten().any(|v| !v.m.is_nan()));
+    let mut out = WkbOut::new(z, has_m);
+    match family {
+        1 => {
+            out.header(1);
+            out.vertex(lists[0][0]);
+        }
+        4 => {
+            out.header(4);
+            out.count(lists[0].len())?;
+            for v in &lists[0] {
+                out.header(1);
+                out.vertex(*v);
+            }
+        }
+        2 if lists.len() == 1 => {
+            out.header(2);
+            out.vertices(&lists[0])?;
+        }
+        2 => {
+            out.header(5);
+            out.count(lists.len())?;
+            for line in &lists {
+                out.header(2);
+                out.vertices(line)?;
+            }
+        }
+        _ => {
+            // Group rings: every outer ring opens a polygon, inner rings join the last one.
+            let mut polygons: Vec<Vec<&Vec<Vertex>>> = Vec::new();
+            for (ring, is_outer) in lists.iter().zip(&outer) {
+                match (is_outer, polygons.last_mut()) {
+                    (true, _) => polygons.push(vec![ring]),
+                    (false, Some(last)) => last.push(ring),
+                    (false, None) => {
+                        return Err("invalid shape: an inner ring has no outer ring".to_string())
+                    }
+                }
+            }
+            if polygons.len() != 1 {
+                out.header(6);
+                out.count(polygons.len())?;
+            }
+            for polygon in &polygons {
+                out.header(3);
+                out.count(polygon.len())?;
+                for ring in polygon {
+                    out.vertices(ring)?;
+                }
+            }
+        }
+    }
+    Ok(Some(out.bytes))
 }
 
 // -- info -----------------------------------------------------------------------------------
@@ -366,19 +545,19 @@ impl Kind {
     }
 }
 
-fn kind_of(geometry: &Geometry<f64>) -> Result<Kind, String> {
-    Ok(match geometry {
-        Geometry::Point(_) => Kind::Point,
-        Geometry::MultiPoint(_) => Kind::MultiPoint,
-        Geometry::Line(_) | Geometry::LineString(_) | Geometry::MultiLineString(_) => Kind::Line,
-        Geometry::Polygon(_)
-        | Geometry::MultiPolygon(_)
-        | Geometry::Rect(_)
-        | Geometry::Triangle(_) => Kind::Polygon,
-        Geometry::GeometryCollection(_) => {
+/// The shape kind of a geometry; `None` for an empty point, which has no shape.
+fn kind_of(geometry: &Scalar<'_>) -> Result<Option<Kind>, String> {
+    Ok(Some(match geometry.as_type() {
+        GeometryType::Point(p) if p.coord().is_none() => return Ok(None),
+        GeometryType::Point(_) => Kind::Point,
+        GeometryType::MultiPoint(_) => Kind::MultiPoint,
+        GeometryType::LineString(_) | GeometryType::MultiLineString(_) => Kind::Line,
+        GeometryType::Polygon(_) | GeometryType::MultiPolygon(_) => Kind::Polygon,
+        GeometryType::GeometryCollection(_) => {
             return Err("a shapefile cannot store a GeometryCollection".to_string())
         }
-    })
+        _ => return Ok(None),
+    }))
 }
 
 /// Writes a shapefile (`.shp` path, or a `.zip`). Returns warnings (changed field names,
@@ -404,11 +583,16 @@ fn write(
     let encoding = encoding.map_or(Ok(Encoding::Utf8), Encoding::parse)?;
     let rows = geometry.len();
     let table = Table::from_ipc(attributes_ipc, rows)?;
-    let shapes = geometry.geo_rows();
+    let array = geometry.geometry_array();
+    let scalars = (0..rows)
+        .map(|row| array.get(row).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
 
     let mut kind: Option<Kind> = None;
-    for shape in shapes.iter().flatten() {
-        let this = kind_of(shape)?;
+    for shape in scalars.iter().flatten() {
+        let Some(this) = kind_of(shape)? else {
+            continue;
+        };
         match kind {
             None => kind = Some(this),
             Some(previous) if previous != this => {
@@ -424,7 +608,15 @@ fn write(
     let kind = kind.unwrap_or(Kind::Point);
 
     let mut warnings = Vec::new();
-    let (shp, shx) = encode_shapes(&shapes, kind);
+    let shapes: Vec<Option<Shape>> = scalars
+        .iter()
+        .map(|row| row.as_ref().and_then(|g| shape_parts(g, kind)))
+        .collect();
+    let dims = Dims {
+        z: geometry.has_z().contains(&true),
+        m: geometry.has_m().contains(&true),
+    };
+    let (shp, shx) = encode_shapes(&shapes, kind, dims);
     let dbf = dbf::write_dbf(&table, rows, encoding, &mut warnings)?;
     let crs = geometry.crs();
     let prj = match crs.as_deref() {
@@ -592,55 +784,68 @@ fn commit_files(files: Vec<(PathBuf, Option<Vec<u8>>)>) -> Result<(), String> {
 
 // -- .shp / .shx encoding --------------------------------------------------------------------
 
-/// The points of every part of a shape and the start index of each part.
+/// The vertices of every part of a shape.
 struct Shape {
-    parts: Vec<Vec<Coord<f64>>>,
+    parts: Vec<Vec<Vertex>>,
 }
 
-fn signed_area(ring: &[Coord<f64>]) -> f64 {
+fn signed_area(ring: &[Vertex]) -> f64 {
     ring.windows(2)
         .map(|w| w[0].x * w[1].y - w[1].x * w[0].y)
         .sum::<f64>()
         / 2.0
 }
 
-/// The ring's points oriented clockwise (`clockwise`) or counter-clockwise.
-fn oriented(ring: &LineString<f64>, clockwise: bool) -> Vec<Coord<f64>> {
-    let mut points = ring.0.clone();
+/// The ring's vertices oriented clockwise (`clockwise`) or counter-clockwise; Z and M travel
+/// with their vertices.
+fn oriented(mut points: Vec<Vertex>, clockwise: bool) -> Vec<Vertex> {
     if (signed_area(&points) < 0.0) != clockwise {
         points.reverse();
     }
     points
 }
 
-fn polygon_parts(polygon: &Polygon<f64>, parts: &mut Vec<Vec<Coord<f64>>>) {
-    if polygon.exterior().0.len() < 4 {
+fn line_vertices<L: LineStringTrait<T = f64>>(line: &L) -> Vec<Vertex> {
+    line.coords().map(|c| vertex(&c)).collect()
+}
+
+fn polygon_parts<P: PolygonTrait<T = f64>>(polygon: &P, parts: &mut Vec<Vec<Vertex>>) {
+    let Some(exterior) = polygon.exterior() else {
+        return;
+    };
+    if exterior.num_coords() < 4 {
         return;
     }
-    parts.push(oriented(polygon.exterior(), true));
-    for hole in polygon.interiors().iter().filter(|h| h.0.len() >= 4) {
-        parts.push(oriented(hole, false));
+    parts.push(oriented(line_vertices(&exterior), true));
+    for hole in polygon.interiors().filter(|h| h.num_coords() >= 4) {
+        parts.push(oriented(line_vertices(&hole), false));
     }
 }
 
-fn shape_parts(geometry: &Geometry<f64>, kind: Kind) -> Option<Shape> {
-    let mut parts: Vec<Vec<Coord<f64>>> = Vec::new();
-    match (kind, geometry) {
-        (Kind::Point, Geometry::Point(p)) => parts.push(vec![p.0]),
-        (Kind::MultiPoint, Geometry::MultiPoint(m)) => {
-            parts.push(m.0.iter().map(|p| p.0).collect());
+fn shape_parts(geometry: &Scalar<'_>, kind: Kind) -> Option<Shape> {
+    let mut parts: Vec<Vec<Vertex>> = Vec::new();
+    match (kind, geometry.as_type()) {
+        (Kind::Point, GeometryType::Point(p)) => parts.push(vec![vertex(&p.coord()?)]),
+        (Kind::MultiPoint, GeometryType::MultiPoint(m)) => {
+            parts.push(
+                m.points()
+                    .filter_map(|p| p.coord())
+                    .map(|c| vertex(&c))
+                    .collect(),
+            );
         }
-        (Kind::Line, Geometry::Line(l)) => parts.push(vec![l.start, l.end]),
-        (Kind::Line, Geometry::LineString(l)) => parts.push(l.0.clone()),
-        (Kind::Line, Geometry::MultiLineString(m)) => {
-            parts.extend(m.0.iter().filter(|l| l.0.len() >= 2).map(|l| l.0.clone()));
+        (Kind::Line, GeometryType::LineString(l)) => parts.push(line_vertices(l)),
+        (Kind::Line, GeometryType::MultiLineString(m)) => {
+            parts.extend(
+                m.line_strings()
+                    .filter(|l| l.num_coords() >= 2)
+                    .map(|l| line_vertices(&l)),
+            );
         }
-        (Kind::Polygon, Geometry::Polygon(p)) => polygon_parts(p, &mut parts),
-        (Kind::Polygon, Geometry::MultiPolygon(m)) => {
-            m.0.iter().for_each(|p| polygon_parts(p, &mut parts));
+        (Kind::Polygon, GeometryType::Polygon(p)) => polygon_parts(p, &mut parts),
+        (Kind::Polygon, GeometryType::MultiPolygon(m)) => {
+            m.polygons().for_each(|p| polygon_parts(&p, &mut parts));
         }
-        (Kind::Polygon, Geometry::Rect(r)) => polygon_parts(&r.to_polygon(), &mut parts),
-        (Kind::Polygon, Geometry::Triangle(t)) => polygon_parts(&t.to_polygon(), &mut parts),
         _ => return None,
     }
     parts.retain(|p| !p.is_empty());
@@ -655,42 +860,114 @@ fn push_i32_le(out: &mut Vec<u8>, value: i32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
-fn file_header(shape_type: i32, length_words: i32, bounds: [f64; 4]) -> Vec<u8> {
+/// Min and max of the values that are not NaN; `[0, 0]` when there are none (as GDAL writes).
+#[derive(Clone, Copy)]
+struct Range(Option<(f64, f64)>);
+
+impl Range {
+    fn add(&mut self, value: f64) {
+        if value.is_nan() {
+            return;
+        }
+        self.0 = Some(match self.0 {
+            None => (value, value),
+            Some((lo, hi)) => (lo.min(value), hi.max(value)),
+        });
+    }
+
+    fn merge(&mut self, other: Range) {
+        if let Some((lo, hi)) = other.0 {
+            self.add(lo);
+            self.add(hi);
+        }
+    }
+
+    fn pair(self) -> [f64; 2] {
+        self.0.map_or([0.0, 0.0], |(lo, hi)| [lo, hi])
+    }
+}
+
+/// The ordinates a file stores beyond XY.
+#[derive(Clone, Copy)]
+struct Dims {
+    z: bool,
+    m: bool,
+}
+
+impl Dims {
+    /// The shape type for a kind: Z types hold M too when the data has it.
+    fn shape_type(self, kind: Kind) -> i32 {
+        kind.shape_type()
+            + if self.z {
+                10
+            } else if self.m {
+                20
+            } else {
+                0
+            }
+    }
+}
+
+fn file_header(
+    shape_type: i32,
+    length_words: i32,
+    bounds: [f64; 4],
+    z: Range,
+    m: Range,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(100);
     out.extend_from_slice(&9994_i32.to_be_bytes());
     out.extend_from_slice(&[0; 20]);
     out.extend_from_slice(&length_words.to_be_bytes());
     push_i32_le(&mut out, 1000);
     push_i32_le(&mut out, shape_type);
-    for value in bounds {
+    for value in bounds.into_iter().chain(z.pair()).chain(m.pair()) {
         push_f64(&mut out, value);
     }
-    out.extend_from_slice(&[0; 32]); // z and m ranges
     out
 }
 
+/// A measure for the file: NaN is "no data".
+fn measure_value(m: f64) -> f64 {
+    if m.is_nan() {
+        shapefile::NO_DATA
+    } else {
+        m
+    }
+}
+
 /// The `.shp` and `.shx` bytes for `rows`; rows without a (non-empty) shape are null shapes.
-fn encode_shapes(rows: &[Option<Geometry<f64>>], kind: Kind) -> (Vec<u8>, Vec<u8>) {
+fn encode_shapes(rows: &[Option<Shape>], kind: Kind, dims: Dims) -> (Vec<u8>, Vec<u8>) {
+    let shape_type = dims.shape_type(kind);
+    // Z types carry measures only when some vertex has one; an M-only file has no Z section.
+    let write_m = dims.m;
+
     let mut records = Vec::new();
     let mut index = Vec::with_capacity(rows.len() * 8);
     let mut extent: Option<[f64; 4]> = None;
+    let (mut file_z, mut file_m) = (Range(None), Range(None));
 
     for (number, row) in rows.iter().enumerate() {
         let offset_words = ((100 + records.len()) / 2) as i32;
         let mut content = Vec::new();
-        match row.as_ref().and_then(|g| shape_parts(g, kind)) {
+        match row {
             None => push_i32_le(&mut content, 0),
             Some(shape) => {
-                push_i32_le(&mut content, kind.shape_type());
-                let points: Vec<&Coord<f64>> = shape.parts.iter().flatten().collect();
+                push_i32_le(&mut content, shape_type);
+                let points: Vec<&Vertex> = shape.parts.iter().flatten().collect();
                 let (mut min_x, mut min_y, mut max_x, mut max_y) =
                     (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-                for c in &points {
-                    min_x = min_x.min(c.x);
-                    min_y = min_y.min(c.y);
-                    max_x = max_x.max(c.x);
-                    max_y = max_y.max(c.y);
+                let (mut z_range, mut m_range) = (Range(None), Range(None));
+                for v in &points {
+                    min_x = min_x.min(v.x);
+                    min_y = min_y.min(v.y);
+                    max_x = max_x.max(v.x);
+                    max_y = max_y.max(v.y);
+                    z_range.add(v.z);
+                    m_range.add(v.m);
                 }
+                file_z.merge(z_range);
+                file_m.merge(m_range);
                 extent = Some(match extent {
                     None => [min_x, min_y, max_x, max_y],
                     Some(e) => [
@@ -700,20 +977,46 @@ fn encode_shapes(rows: &[Option<Geometry<f64>>], kind: Kind) -> (Vec<u8>, Vec<u8
                         e[3].max(max_y),
                     ],
                 });
+                // Z and M arrays that follow the XY points (everything but a point record).
+                let tail = |content: &mut Vec<u8>| {
+                    if dims.z {
+                        for value in z_range.pair() {
+                            push_f64(content, value);
+                        }
+                        for v in &points {
+                            push_f64(content, v.z);
+                        }
+                    }
+                    if write_m {
+                        for value in m_range.pair() {
+                            push_f64(content, value);
+                        }
+                        for v in &points {
+                            push_f64(content, measure_value(v.m));
+                        }
+                    }
+                };
                 match kind {
                     Kind::Point => {
                         push_f64(&mut content, points[0].x);
                         push_f64(&mut content, points[0].y);
+                        if dims.z {
+                            push_f64(&mut content, points[0].z);
+                        }
+                        if write_m {
+                            push_f64(&mut content, measure_value(points[0].m));
+                        }
                     }
                     Kind::MultiPoint => {
                         for v in [min_x, min_y, max_x, max_y] {
                             push_f64(&mut content, v);
                         }
                         push_i32_le(&mut content, points.len() as i32);
-                        for c in &points {
-                            push_f64(&mut content, c.x);
-                            push_f64(&mut content, c.y);
+                        for v in &points {
+                            push_f64(&mut content, v.x);
+                            push_f64(&mut content, v.y);
                         }
+                        tail(&mut content);
                     }
                     Kind::Line | Kind::Polygon => {
                         for v in [min_x, min_y, max_x, max_y] {
@@ -726,10 +1029,11 @@ fn encode_shapes(rows: &[Option<Geometry<f64>>], kind: Kind) -> (Vec<u8>, Vec<u8
                             push_i32_le(&mut content, start as i32);
                             start += part.len();
                         }
-                        for c in &points {
-                            push_f64(&mut content, c.x);
-                            push_f64(&mut content, c.y);
+                        for v in &points {
+                            push_f64(&mut content, v.x);
+                            push_f64(&mut content, v.y);
                         }
+                        tail(&mut content);
                     }
                 }
             }
@@ -744,12 +1048,20 @@ fn encode_shapes(rows: &[Option<Geometry<f64>>], kind: Kind) -> (Vec<u8>, Vec<u8
 
     let bounds = extent.unwrap_or([0.0; 4]);
     let mut shp = file_header(
-        kind.shape_type(),
+        shape_type,
         ((100 + records.len()) / 2) as i32,
         bounds,
+        file_z,
+        file_m,
     );
     shp.extend_from_slice(&records);
-    let mut shx = file_header(kind.shape_type(), ((100 + index.len()) / 2) as i32, bounds);
+    let mut shx = file_header(
+        shape_type,
+        ((100 + index.len()) / 2) as i32,
+        bounds,
+        file_z,
+        file_m,
+    );
     shx.extend_from_slice(&index);
     (shp, shx)
 }

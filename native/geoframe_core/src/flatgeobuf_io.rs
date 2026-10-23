@@ -19,9 +19,17 @@
 //! # Geometry
 //!
 //! The header geometry type is the common type of all rows, or `Unknown` for a mix, so
-//! polygons are never silently promoted to multipolygons. Coordinates are 2D. Null rows and
-//! geometries `geo` cannot represent (such as empty points) are stored as features without
-//! geometry (the encoder writes them as empty geometries, which read back as null). Curve geometries are rejected on read.
+//! polygons are never silently promoted to multipolygons. Null rows and empty points are
+//! stored as features without geometry (the encoder writes them as empty geometries, which
+//! read back as null). Curve geometries are rejected on read.
+//!
+//! # Z and M
+//!
+//! The header carries `has_z` and `has_m` for the whole file and each feature carries one Z (M)
+//! value per vertex. The writer sets a flag when any row has that ordinate; rows with fewer
+//! ordinates are promoted with NaN (GDAL refuses mixed files). The reader requires the
+//! ordinates the header declares to be present with one value per vertex, and fails on a file
+//! that declares them and omits them (the crate would otherwise panic on the missing array).
 //!
 //! # Index
 //!
@@ -51,7 +59,9 @@ use flatgeobuf::{
     ColumnType, FallibleStreamingIterator, FeatureProperties, FgbCrs, FgbFeature, FgbReader,
     FgbWriter, FgbWriterOptions, GeometryType, Header,
 };
-use geo::Geometry;
+use geo_traits::{GeometryTrait, PointTrait};
+use geoarrow_array::scalar::Geometry as Scalar;
+use geoarrow_array::GeoArrowArrayAccessor;
 use geozero::error::Result as GeozeroResult;
 use geozero::{ColumnValue, GeomProcessor, GeozeroGeometry, PropertyProcessor};
 
@@ -222,6 +232,7 @@ fn read(path: &str, bbox: Option<[f64; 4]>) -> Result<VectorRead, String> {
         })
         .unwrap_or_default();
     let empty = header.features_count() == 0;
+    let (has_z, has_m) = (header.has_z(), header.has_m());
 
     let mut builder = ColumnBuilder::new(crs.as_deref());
     let mut cells: Vec<Vec<Option<Value>>> = vec![Vec::new(); columns.len()];
@@ -247,8 +258,12 @@ fn read(path: &str, bbox: Option<[f64; 4]>) -> Result<VectorRead, String> {
                 if bbox.is_some() {
                     continue;
                 }
-                builder.push(None::<&Geometry<f64>>)?;
+                builder.push(None::<&Scalar<'_>>)?;
             } else {
+                if let Some(raw) = feature.geometry() {
+                    check_ordinates(&raw, has_z, has_m)
+                        .map_err(|e| format!("cannot read {path}: {e}"))?;
+                }
                 let geometry = feature
                     .geometry_trait()
                     .map_err(|e| format!("unsupported geometry in {path}: {e}"))?;
@@ -279,6 +294,30 @@ fn read(path: &str, bbox: Option<[f64; 4]>) -> Result<VectorRead, String> {
         geometry,
         attributes_ipc: ipc_from_columns(fields, arrays, rows)?,
     })
+}
+
+/// Requires every geometry part to carry as many Z (and M) values as it has vertices when the
+/// header declares them. The crate's reader indexes those arrays without a check, so a file
+/// that declares an ordinate and omits it would otherwise panic.
+fn check_ordinates(
+    geometry: &flatgeobuf::Geometry<'_>,
+    has_z: bool,
+    has_m: bool,
+) -> Result<(), String> {
+    let vertices = geometry.xy().map_or(0, |xy| xy.len() / 2);
+    let short = |values: Option<usize>| vertices > 0 && values != Some(vertices);
+    if (has_z && short(geometry.z().map(|v| v.len())))
+        || (has_m && short(geometry.m().map(|v| v.len())))
+    {
+        return Err(
+            "a feature does not carry the Z or M ordinates the header declares (one value per vertex)"
+                .to_string(),
+        );
+    }
+    for part in geometry.parts().into_iter().flatten() {
+        check_ordinates(&part, has_z, has_m)?;
+    }
+    Ok(())
 }
 
 fn is_empty_geometry(feature: &FgbFeature) -> bool {
@@ -351,12 +390,11 @@ pub fn write_flatgeobuf(
         .map(|(array, name)| fgb_type(name, array.data_type()))
         .collect::<Result<Vec<_>, _>>()?;
     let crs = crs_fields(geometry.crs().as_deref())?;
-    let rows = geometry.geo_rows();
 
     // Build in memory first: the crate writes through a temp file and only emits the output
     // at the end, so a failure here costs nothing and leaves no partial file.
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-        build(&rows, &table, &column_types, &crs, layer_name, index)
+        build(geometry, &table, &column_types, &crs, layer_name, index)
     }))
     .unwrap_or_else(|_| Err("FlatGeobuf encoder failed".to_string()))?;
 
@@ -368,7 +406,7 @@ pub fn write_flatgeobuf(
 }
 
 fn build(
-    rows: &[Option<Geometry<f64>>],
+    geometry: &GeoColumn,
     table: &Table,
     column_types: &[ColumnType],
     crs: &OwnedCrs,
@@ -379,6 +417,9 @@ fn build(
         write_index: index,
         detect_type: false,
         promote_to_multi: false,
+        // One dimension for the whole file: rows with fewer ordinates are promoted with NaN.
+        has_z: geometry.has_z().contains(&true),
+        has_m: geometry.has_m().contains(&true),
         crs: FgbCrs {
             org: crs.org.as_deref(),
             code: crs.code,
@@ -388,26 +429,31 @@ fn build(
         },
         ..Default::default()
     };
-    let mut writer = FgbWriter::create_with_options(layer_name, common_type(rows), options)
+    let mut writer = FgbWriter::create_with_options(layer_name, common_type(geometry), options)
         .map_err(|e| e.to_string())?;
     for (name, kind) in table.names.iter().zip(column_types) {
         writer.add_column(name, *kind, |_, column| column.nullable = true);
     }
 
-    for (row, geometry) in rows.iter().enumerate() {
+    let array = geometry.geometry_array();
+    for row in 0..geometry.len() {
         let mut failure = None;
+        let scalar = array.get(row).map_err(|e| e.to_string())?;
         writer
-            .add_feature_geom(RowGeometry(geometry.as_ref()), |feature| {
-                for (column, kind) in column_types.iter().enumerate() {
-                    let Some(value) = column_value(*kind, table.cell(column, row)) else {
-                        continue;
-                    };
-                    if let Err(e) = feature.property(column, &table.names[column], &value) {
-                        failure = Some(e.to_string());
-                        return;
+            .add_feature_geom(
+                RowGeometry(scalar.as_ref().filter(|g| !is_empty_point(g))),
+                |feature| {
+                    for (column, kind) in column_types.iter().enumerate() {
+                        let Some(value) = column_value(*kind, table.cell(column, row)) else {
+                            continue;
+                        };
+                        if let Err(e) = feature.property(column, &table.names[column], &value) {
+                            failure = Some(e.to_string());
+                            return;
+                        }
                     }
-                }
-            })
+                },
+            )
             .map_err(|e| format!("cannot encode row {row}: {e}"))?;
         if let Some(message) = failure {
             return Err(format!("cannot encode row {row}: {message}"));
@@ -420,28 +466,38 @@ fn build(
 }
 
 /// A row's geometry for the FlatGeobuf encoder; a null row emits nothing.
-struct RowGeometry<'a>(Option<&'a Geometry<f64>>);
+struct RowGeometry<'a, 'b>(Option<&'a Scalar<'b>>);
 
-impl GeozeroGeometry for RowGeometry<'_> {
+impl GeozeroGeometry for RowGeometry<'_, '_> {
     fn process_geom<P: GeomProcessor>(&self, processor: &mut P) -> GeozeroResult<()> {
         match self.0 {
-            Some(geometry) => geometry.process_geom(processor),
+            Some(geometry) => crate::zm_io::Source(geometry).process_geom(processor),
             None => Ok(()),
         }
     }
 }
 
+/// Empty points have no FlatGeobuf form; like a null they become a geometry-less feature.
+fn is_empty_point(geometry: &Scalar<'_>) -> bool {
+    matches!(geometry.as_type(), geo_traits::GeometryType::Point(p) if p.coord().is_none())
+}
+
 /// The header geometry type: the one type all rows share, else `Unknown`.
-fn common_type(rows: &[Option<Geometry<f64>>]) -> GeometryType {
-    let mut types = rows.iter().flatten().map(|g| match g {
-        Geometry::Point(_) => GeometryType::Point,
-        Geometry::Line(_) | Geometry::LineString(_) => GeometryType::LineString,
-        Geometry::Polygon(_) | Geometry::Rect(_) | Geometry::Triangle(_) => GeometryType::Polygon,
-        Geometry::MultiPoint(_) => GeometryType::MultiPoint,
-        Geometry::MultiLineString(_) => GeometryType::MultiLineString,
-        Geometry::MultiPolygon(_) => GeometryType::MultiPolygon,
-        Geometry::GeometryCollection(_) => GeometryType::GeometryCollection,
-    });
+fn common_type(geometry: &GeoColumn) -> GeometryType {
+    use geo_traits::GeometryType as G;
+    let mut types = geometry
+        .map_scalars(|g| match g.as_type() {
+            G::Point(_) => GeometryType::Point,
+            G::LineString(_) => GeometryType::LineString,
+            G::Polygon(_) => GeometryType::Polygon,
+            G::MultiPoint(_) => GeometryType::MultiPoint,
+            G::MultiLineString(_) => GeometryType::MultiLineString,
+            G::MultiPolygon(_) => GeometryType::MultiPolygon,
+            G::GeometryCollection(_) => GeometryType::GeometryCollection,
+            _ => GeometryType::Unknown,
+        })
+        .into_iter()
+        .flatten();
     match types.next() {
         Some(first) if types.all(|t| t == first) => first,
         _ => GeometryType::Unknown,
