@@ -771,6 +771,303 @@ defmodule GeoFrame.GeoSeries do
     |> float_series()
   end
 
+  # -- hulls, bounding shapes, triangulations, sampling and grids ------------------------
+
+  @doc """
+  The concave hull of each geometry's vertices (GEOS `ConcaveHull`, as GeoPandas
+  `concave_hull`).
+
+  The hull erodes the border of the Delaunay triangulation of the vertices. `ratio` (a number
+  from `0.0` to `1.0`, default `0.0`) is the share of the triangulation's edge-length range
+  above which border triangles are removed: `0.0` erodes as much as possible and `1.0` is the
+  convex hull. With `allow_holes: true` long interior triangles are removed too, which can
+  leave holes. One vertex gives a point and two (or collinear) vertices a line.
+
+  Hulls on exactly tied Delaunay choices (cocircular vertices, equal edge lengths) can differ
+  from GEOS; see `docs/parity.md`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["MULTIPOINT ((0 0), (4 0), (4 4), (0 4), (2 3))"])
+      iex> s |> GeoFrame.GeoSeries.concave_hull(ratio: 1.0) |> GeoFrame.GeoSeries.area() |> Explorer.Series.to_list()
+      [16.0]
+  """
+  @spec concave_hull(t(), keyword()) :: t()
+  def concave_hull(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, ratio: 0.0, allow_holes: false)
+
+    ref
+    |> Native.concave_hull(unit_ratio!(opts[:ratio]), opts[:allow_holes] == true)
+    |> wrap()
+    |> unwrap!()
+  end
+
+  defp unit_ratio!(ratio) when is_number(ratio) and ratio >= 0 and ratio <= 1, do: ratio * 1.0
+
+  defp unit_ratio!(other),
+    do: raise(ArgumentError, "ratio must be a number between 0 and 1, got: #{inspect(other)}")
+
+  @doc """
+  The minimum-area rotated rectangle around each geometry's vertices. Fewer than three or
+  collinear vertices give a point or the line between the extreme vertices.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["MULTIPOINT ((0 0), (4 0), (4 2))"])
+      iex> s |> GeoFrame.GeoSeries.minimum_rotated_rectangle() |> GeoFrame.GeoSeries.area() |> Explorer.Series.to_list() |> Enum.map(&Float.round(&1, 6))
+      [8.0]
+  """
+  @spec minimum_rotated_rectangle(t()) :: t()
+  def minimum_rotated_rectangle(%__MODULE__{ref: ref}) do
+    ref |> Native.minimum_rotated_rectangle() |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  The minimum bounding circle of each geometry as a 32-sided polygon laid out like Shapely's
+  (a buffered center, starting east and turning clockwise). A zero radius gives the point. The
+  polygon is inscribed in the true circle, so a vertex of the input between two circle
+  vertices can lie a hair outside it (use `minimum_bounding_radius/1` for the exact radius).
+  """
+  @spec minimum_bounding_circle(t()) :: t()
+  def minimum_bounding_circle(%__MODULE__{ref: ref}) do
+    ref |> Native.minimum_bounding_circle() |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  The radius of the minimum bounding circle of each geometry (`0.0` for a point; `nil` for null
+  and empty rows).
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0)"])
+      iex> s |> GeoFrame.GeoSeries.minimum_bounding_radius() |> Explorer.Series.to_list()
+      [5.0]
+  """
+  @spec minimum_bounding_radius(t()) :: Series.t()
+  def minimum_bounding_radius(%__MODULE__{ref: ref}) do
+    ref |> Native.minimum_bounding_radius() |> float_series()
+  end
+
+  @doc """
+  The largest circle that fits inside each polygon, as the line from its center to the nearest
+  boundary point (its length is the radius). The center is found by the cell search of
+  JTS/GEOS and lies within `:tolerance` of the optimum; the default is the longer side of the
+  bounding box divided by 1000. Rows that are not polygons are `nil`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 8 0, 8 4, 0 4, 0 0))"])
+      iex> s |> GeoFrame.GeoSeries.maximum_inscribed_circle(tolerance: 0.001) |> GeoFrame.GeoSeries.length() |> Explorer.Series.to_list() |> Enum.map(&Float.round(&1))
+      [2.0]
+  """
+  @spec maximum_inscribed_circle(t(), keyword()) :: t()
+  def maximum_inscribed_circle(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, tolerance: nil)
+
+    tolerance =
+      case opts[:tolerance] do
+        nil ->
+          nil
+
+        t when is_number(t) and t > 0 ->
+          t * 1.0
+
+        other ->
+          raise ArgumentError, "tolerance must be a positive number, got: #{inspect(other)}"
+      end
+
+    ref |> Native.maximum_inscribed_circle(tolerance) |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  The Delaunay triangulation of the vertices of the whole series, as GeoPandas does: every
+  geometry contributes its vertices to one point cloud, and the result has one row per triangle
+  (a new series, not aligned with the input). Fewer than three or collinear vertices give an
+  empty series.
+
+  Options: `:tolerance` (default `0.0`) merges vertices closer than that; `:only_edges`
+  (default `false`) returns one `LineString` per unique edge instead.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (0 0)", "POINT (4 0)", "POINT (0 4)", "POINT (4 4)"])
+      iex> s |> GeoFrame.GeoSeries.delaunay_triangles() |> GeoFrame.GeoSeries.area() |> Explorer.Series.to_list()
+      [8.0, 8.0]
+  """
+  @spec delaunay_triangles(t(), keyword()) :: t()
+  def delaunay_triangles(%__MODULE__{ref: ref}, opts \\ []) do
+    opts = Keyword.validate!(opts, tolerance: 0.0, only_edges: false)
+
+    ref
+    |> Native.delaunay_triangles(tolerance!(opts[:tolerance]), opts[:only_edges] == true)
+    |> wrap()
+    |> unwrap!()
+  end
+
+  defp tolerance!(t) when is_number(t) and t >= 0, do: t * 1.0
+
+  defp tolerance!(other),
+    do: raise(ArgumentError, "tolerance must be a non-negative number, got: #{inspect(other)}")
+
+  @doc """
+  Triangles that fill each polygon (holes respected, no extra vertices), as a
+  `GeometryCollection`. Rows that are not polygons give an empty collection. The triangulation
+  is constrained Delaunay: where several are valid (cocircular vertices) the choice can differ
+  from GEOS.
+  """
+  @spec constrained_delaunay_triangles(t()) :: t()
+  def constrained_delaunay_triangles(%__MODULE__{ref: ref}) do
+    ref |> Native.constrained_delaunay_triangles() |> wrap() |> unwrap!()
+  end
+
+  @doc """
+  The Voronoi diagram of the vertices of the whole series, as GeoPandas does: every geometry
+  contributes its vertices to one point cloud, and the result has one polygon per distinct
+  vertex, in vertex order (a new series, not aligned with the input). Fewer than two vertices
+  give an empty series.
+
+  The cells are clipped to the envelope of the vertices grown by its longer side on every
+  side, like GEOS. Options:
+
+    * `:tolerance` - merge vertices closer than this (default `0.0`);
+    * `:extend_to` - a geometry (series or WKT) whose envelope the diagram must also cover;
+    * `:only_edges` - return one `LineString` per interior cell side instead of the cells;
+    * `:ordered` - accepted for Shapely compatibility; cells always come in vertex order.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (0 0)", "POINT (2 0)", "POINT (5 0)"])
+      iex> s |> GeoFrame.GeoSeries.voronoi_polygons() |> GeoFrame.GeoSeries.area() |> Explorer.Series.to_list()
+      [60.0, 25.0, 65.0]
+  """
+  @spec voronoi_polygons(t(), keyword()) :: t()
+  def voronoi_polygons(%__MODULE__{ref: ref} = series, opts \\ []) do
+    opts =
+      Keyword.validate!(opts, tolerance: 0.0, extend_to: nil, only_edges: false, ordered: false)
+
+    extend_to = if opts[:extend_to], do: other_ref(series, opts[:extend_to])
+
+    ref
+    |> Native.voronoi_polygons(
+      tolerance!(opts[:tolerance]),
+      extend_to,
+      opts[:only_edges] == true,
+      opts[:ordered] == true
+    )
+    |> wrap()
+    |> unwrap!()
+  end
+
+  @doc """
+  Random points inside each polygon or along each line, one `MultiPoint` per row.
+
+  `size` is the number of points: one non-negative integer for every row, or a list with one
+  integer per row. Options:
+
+    * `:method` - only `:uniform` (the GeoPandas `pointpats` methods are not available);
+    * `:seed` - a non-negative integer. The same seed always gives the same points, but not
+      NumPy's stream, so samples do not match GeoPandas'. Without a seed the clock decides.
+
+  Points, collections and zero-area polygons give an empty `MultiPoint`; null rows stay null.
+  A polygon that is too thin to hit by rejection sampling gives `nil`.
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))"])
+      iex> s |> GeoFrame.GeoSeries.sample_points(5, seed: 1) |> GeoFrame.GeoSeries.count_geometries() |> Explorer.Series.to_list()
+      [5]
+  """
+  @spec sample_points(t(), non_neg_integer() | [non_neg_integer()], keyword()) :: t()
+  def sample_points(%__MODULE__{ref: ref}, size, opts \\ []) do
+    opts = Keyword.validate!(opts, method: :uniform, seed: nil)
+
+    unless opts[:method] == :uniform do
+      raise ArgumentError, "method must be :uniform, got: #{inspect(opts[:method])}"
+    end
+
+    sizes = sample_sizes!(size)
+
+    seed =
+      case opts[:seed] do
+        nil ->
+          nil
+
+        n when is_integer(n) and n >= 0 and n < 18_446_744_073_709_551_616 ->
+          n
+
+        other ->
+          raise ArgumentError, "seed must be a non-negative integer, got: #{inspect(other)}"
+      end
+
+    ref |> Native.sample_points(sizes, seed) |> wrap() |> unwrap!()
+  end
+
+  defp sample_sizes!(size) when is_integer(size) and size >= 0, do: [size]
+
+  defp sample_sizes!(sizes) when is_list(sizes) and sizes != [] do
+    if Enum.all?(sizes, &(is_integer(&1) and &1 >= 0)) do
+      sizes
+    else
+      raise ArgumentError, "size must be non-negative integers, got: #{inspect(sizes)}"
+    end
+  end
+
+  defp sample_sizes!(other),
+    do:
+      raise(
+        ArgumentError,
+        "size must be a non-negative integer or a list of them, got: #{inspect(other)}"
+      )
+
+  @doc """
+  A square or hexagonal grid over the total bounds of the series (GeoPandas `make_grid`),
+  with the series' CRS.
+
+  `cell_size` is the side of a square cell, or the distance between opposite sides of a
+  hexagon. Options:
+
+    * `:grid_type` - `:square` (default) or `:hexagon`;
+    * `:feature_type` - `:polygons` (default), `:centers` or `:corners`;
+    * `:offset` - `{x, y}` of the grid origin (default: the lower left corner of the bounds);
+    * `:intersect` - keep only the elements that intersect a geometry (default `true`);
+    * `:flat_topped` - orient hexagons with a flat top (default: a corner points up).
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))"])
+      iex> s |> GeoFrame.GeoSeries.make_grid(2) |> GeoFrame.GeoSeries.area() |> Explorer.Series.to_list()
+      [4.0, 4.0, 4.0, 4.0]
+  """
+  @spec make_grid(t(), number(), keyword()) :: t()
+  def make_grid(%__MODULE__{ref: ref}, cell_size, opts \\ []) do
+    opts =
+      Keyword.validate!(opts,
+        grid_type: :square,
+        feature_type: :polygons,
+        offset: nil,
+        intersect: true,
+        flat_topped: false
+      )
+
+    unless is_number(cell_size) and cell_size > 0 do
+      raise ArgumentError, "cell_size must be a positive number, got: #{inspect(cell_size)}"
+    end
+
+    grid_type = choice!(opts[:grid_type], [:square, :hexagon], "grid_type")
+    feature_type = choice!(opts[:feature_type], [:centers, :corners, :polygons], "feature_type")
+
+    offset =
+      case opts[:offset] do
+        nil -> nil
+        {x, y} when is_number(x) and is_number(y) -> {x * 1.0, y * 1.0}
+        other -> raise ArgumentError, "offset must be an {x, y} tuple, got: #{inspect(other)}"
+      end
+
+    ref
+    |> Native.make_grid(
+      cell_size * 1.0,
+      Atom.to_string(grid_type),
+      Atom.to_string(feature_type),
+      offset,
+      opts[:intersect] != false,
+      opts[:flat_topped] == true
+    )
+    |> wrap()
+    |> unwrap!()
+  end
+
+  defp choice!(value, allowed, name) do
+    if value in allowed do
+      value
+    else
+      raise ArgumentError, "#{name} must be one of #{inspect(allowed)}, got: #{inspect(value)}"
+    end
+  end
+
   @doc """
   Adds vertices so that no segment is longer than `max_segment_length` (a positive number,
   in CRS units; Euclidean). Each segment is split into equal parts. Points are unchanged.

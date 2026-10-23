@@ -78,6 +78,19 @@ defmodule GeoFrame.Native do
   def get_geometry(_ref, _n), do: err()
   def interiors(_ref), do: err()
   def extract_unique_points(_ref), do: err()
+  def concave_hull(_ref, _ratio, _allow_holes), do: err()
+  def minimum_rotated_rectangle(_ref), do: err()
+  def minimum_bounding_circle(_ref), do: err()
+  def minimum_bounding_radius(_ref), do: err()
+  def maximum_inscribed_circle(_ref, _tolerance), do: err()
+  def delaunay_triangles(_ref, _tolerance, _only_edges), do: err()
+  def constrained_delaunay_triangles(_ref), do: err()
+  def voronoi_polygons(_ref, _tolerance, _extend_to, _only_edges, _ordered), do: err()
+  def sample_points(_ref, _sizes, _seed), do: err()
+
+  def make_grid(_ref, _cell_size, _grid_type, _feature_type, _offset, _intersect, _flat_topped),
+    do: err()
+
   def mean_coordinate(_ref), do: err()
   def collect(_ref, _multi), do: err()
   def null_rows(_ref), do: err()
