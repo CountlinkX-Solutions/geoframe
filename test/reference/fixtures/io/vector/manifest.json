@@ -1,0 +1,277 @@
+{
+ "files": {
+  "latin1.shp": {
+   "columns": {
+    "name": [
+     "caf\u00e9",
+     "\u00f1and\u00fa",
+     null
+    ]
+   },
+   "cpg": "ISO-8859-1",
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 1)",
+    "POINT (2 2)",
+    "POINT (3 3)"
+   ]
+  },
+  "lines_utm.shp": {
+   "columns": {
+    "id": [
+     1,
+     2
+    ]
+   },
+   "crs": "EPSG:32617",
+   "wkt": [
+    "LINESTRING (500000 4000000, 500100 4000100, 500200 4000050)",
+    "MULTILINESTRING ((0 0, 1 1), (5 5, 6 6, 7 5))"
+   ]
+  },
+  "multi.gpkg:polys": {
+   "columns": {
+    "k": [
+     1,
+     2
+    ]
+   },
+   "crs": "EPSG:3857",
+   "info": {
+    "crs": "EPSG:3857",
+    "driver": "GPKG",
+    "features": 2,
+    "fields": [
+     "k"
+    ],
+    "geometry_type": "MultiPolygon",
+    "total_bounds": [
+     0.0,
+     0.0,
+     6.0,
+     6.0
+    ]
+   },
+   "wkt": [
+    "MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)))",
+    "MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), ((5 5, 6 5, 6 6, 5 5)))"
+   ]
+  },
+  "multi.gpkg:pts": {
+   "columns": {
+    "flag": [
+     true,
+     false,
+     true
+    ],
+    "id": [
+     1.0,
+     null,
+     3.0
+    ],
+    "name": [
+     "a",
+     null,
+     "c"
+    ],
+    "v": [
+     1.5,
+     2.5,
+     null
+    ],
+    "when": [
+     "2020-01-02T03:04:05",
+     null,
+     "2021-03-04T00:00:00"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "info": {
+    "crs": "EPSG:4326",
+    "driver": "GPKG",
+    "features": 3,
+    "fields": [
+     "id",
+     "name",
+     "v",
+     "flag",
+     "when"
+    ],
+    "geometry_type": "Point",
+    "total_bounds": [
+     1.0,
+     2.0,
+     3.0,
+     4.0
+    ]
+   },
+   "wkt": [
+    "POINT (1 2)",
+    null,
+    "POINT (3 4)"
+   ]
+  },
+  "points.shp": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "name": [
+     "a",
+     "b c",
+     null,
+     "d",
+     "e"
+    ],
+    "ok": [
+     true,
+     false,
+     true,
+     false,
+     true
+    ],
+    "score": [
+     1.5,
+     null,
+     3.25,
+     4.0,
+     -5.5
+    ]
+   },
+   "crs": "EPSG:4326",
+   "info": {
+    "crs": "EPSG:4326",
+    "driver": "ESRI Shapefile",
+    "features": 5,
+    "fields": [
+     "id",
+     "name",
+     "score",
+     "ok"
+    ],
+    "geometry_type": "Point",
+    "total_bounds": [
+     -80.5,
+     0.0,
+     3.0,
+     25.25
+    ]
+   },
+   "wkt": [
+    "POINT (1 2)",
+    "POINT (-80.5 25.25)",
+    null,
+    "POINT (3 4)",
+    "POINT (0 0)"
+   ]
+  },
+  "polygons.zip": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3
+    ]
+   },
+   "crs": "EPSG:3857",
+   "info": {
+    "crs": "EPSG:3857",
+    "driver": "ESRI Shapefile",
+    "features": 3,
+    "fields": [
+     "id"
+    ],
+    "geometry_type": "Polygon",
+    "total_bounds": [
+     0.0,
+     0.0,
+     21.0,
+     21.0
+    ]
+   },
+   "wkt": [
+    "POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0), (1 1, 2 1, 2 2, 1 1))",
+    "MULTIPOLYGON (((10 10, 10 11, 11 11, 10 10)), ((20 20, 20 21, 21 21, 20 20)))",
+    null
+   ]
+  },
+  "single.gpkg": {
+   "columns": {
+    "n": [
+     1,
+     2,
+     3
+    ]
+   },
+   "crs": "EPSG:4269",
+   "info": {
+    "crs": "EPSG:4269",
+    "driver": "GPKG",
+    "features": 3,
+    "fields": [
+     "n"
+    ],
+    "geometry_type": "LineString",
+    "total_bounds": [
+     0.0,
+     0.0,
+     3.0,
+     5.0
+    ]
+   },
+   "wkt": [
+    "LINESTRING (0 0, 1 1)",
+    null,
+    "LINESTRING (2 2, 3 5)"
+   ]
+  },
+  "truncated.shp": {
+   "columns": {
+    "populati_1": [
+     3,
+     4
+    ],
+    "populati_2": [
+     5,
+     6
+    ],
+    "population": [
+     1,
+     2
+    ],
+    "short": [
+     7,
+     8
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 1)",
+    "POINT (2 2)"
+   ]
+  }
+ },
+ "gdal": [
+  3,
+  12,
+  4
+ ],
+ "geopandas": "1.2.0",
+ "layers": {
+  "multi.gpkg": [
+   [
+    "pts",
+    "Point"
+   ],
+   [
+    "polys",
+    "MultiPolygon"
+   ]
+  ]
+ },
+ "pyogrio": "0.13.0"
+}

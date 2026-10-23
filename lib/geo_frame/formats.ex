@@ -1,6 +1,7 @@
 defmodule GeoFrame.Formats do
   @moduledoc false
   # GeoParquet, Feather, Arrow IPC, GeoJSON and FlatGeobuf readers/writers and the
+  # (shapefile and GeoPackage live in `GeoFrame.VectorFiles`)
   # extension/driver dispatch behind `GeoFrame.read_file/2` and `GeoFrame.write_file/3`.
   # Public documentation lives on the delegating functions in `GeoFrame`.
 
@@ -9,7 +10,7 @@ defmodule GeoFrame.Formats do
   alias GeoFrame.GeoSeries
   alias GeoFrame.Native
 
-  @drivers [:parquet, :geojson, :flatgeobuf, :feather]
+  @drivers [:parquet, :geojson, :flatgeobuf, :feather, :shapefile, :gpkg]
 
   @extensions %{
     ".parquet" => :parquet,
@@ -18,7 +19,10 @@ defmodule GeoFrame.Formats do
     ".json" => :geojson,
     ".fgb" => :flatgeobuf,
     ".feather" => :feather,
-    ".arrow" => :feather
+    ".arrow" => :feather,
+    ".shp" => :shapefile,
+    ".zip" => :shapefile,
+    ".gpkg" => :gpkg
   }
 
   @parquet_compressions [:snappy, :zstd, :gzip, :lz4, :brotli, :none]
@@ -214,6 +218,8 @@ defmodule GeoFrame.Formats do
       :geojson -> read_geojson(path, opts)
       :flatgeobuf -> read_flatgeobuf(path, opts)
       :feather -> read_feather(path, opts)
+      :shapefile -> GeoFrame.VectorFiles.read_shapefile(path, opts)
+      :gpkg -> GeoFrame.VectorFiles.read_gpkg(path, opts)
     end
   end
 
@@ -225,10 +231,13 @@ defmodule GeoFrame.Formats do
       :geojson -> write_geojson(gdf, path, opts)
       :flatgeobuf -> write_flatgeobuf(gdf, path, opts)
       :feather -> write_feather(gdf, path, opts)
+      :shapefile -> GeoFrame.VectorFiles.write_shapefile(gdf, path, opts)
+      :gpkg -> GeoFrame.VectorFiles.write_gpkg(gdf, path, opts)
     end
   end
 
-  defp driver_for(path, opts) do
+  @doc false
+  def driver_for(path, opts) do
     case Keyword.pop(opts, :driver) do
       {nil, rest} ->
         {driver_from_extension!(path), rest}
@@ -254,7 +263,7 @@ defmodule GeoFrame.Formats do
 
         raise ArgumentError,
               "cannot infer the format of #{inspect(to_string(path))} (#{shown}); " <>
-                "use .parquet, .geoparquet, .geojson, .json, .fgb, .feather or .arrow, or pass driver: " <>
+                "use .parquet, .geoparquet, .geojson, .json, .fgb, .feather, .arrow, .shp, .zip or .gpkg, or pass driver: " <>
                 "#{Enum.map_join(@drivers, " | ", &inspect/1)}"
     end
   end
@@ -267,7 +276,8 @@ defmodule GeoFrame.Formats do
     end
   end
 
-  defp assemble(ref, ipc, opts) do
+  @doc false
+  def assemble(ref, ipc, opts) do
     with {:ok, data} <- Attributes.load(ipc),
          {:ok, column} <- geometry_column(Explorer.DataFrame.names(data), opts) do
       {:ok, GeoDataFrame.new(data, %GeoSeries{ref: ref}, geometry_column: column)}
@@ -356,7 +366,8 @@ defmodule GeoFrame.Formats do
     end
   end
 
-  defp validate_options!(opts, allowed) do
+  @doc false
+  def validate_options!(opts, allowed) do
     unknown = Keyword.keys(opts) -- allowed
 
     if unknown != [] do

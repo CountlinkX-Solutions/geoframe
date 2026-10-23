@@ -13,10 +13,22 @@ defmodule GeoFrame do
   | GeoJSON     | `read_geojson/2`    | `write_geojson/3`    | `.geojson`, `.json`             |
   | FlatGeobuf  | `read_flatgeobuf/2` | `write_flatgeobuf/3` | `.fgb`                          |
   | Feather v2  | `read_feather/2`    | `write_feather/3`    | `.feather`, `.arrow`            |
+  | Shapefile   | `read_shapefile/2`  | `write_shapefile/3`  | `.shp`, `.zip`                  |
+  | GeoPackage  | `read_gpkg/2`       | `write_gpkg/3`       | `.gpkg`                         |
 
   `read_file/2` and `write_file/3` pick the format from the extension or from the
   `:driver` option. All formats share one data path: geometry stays in Rust, and the
-  other columns cross the NIF boundary as an Arrow IPC stream. Shapefile is not supported.
+  other columns cross the NIF boundary as an Arrow IPC stream. No format needs GDAL.
+  `list_layers/2` and `read_file_info/2` describe a file without reading all of it (GeoPackage
+  and Shapefile) and work for every format.
+
+  ## Shapefile and GeoPackage
+
+  Shapefile is read with the pure-Rust `shapefile` crate and written by GeoFrame itself; the
+  GeoPackage format is SQLite, through `rusqlite` with the **bundled** SQLite amalgamation.
+  That SQLite is the only C code GeoFrame compiles (with `cc`, no system library needed). See
+  `read_shapefile/2`, `write_shapefile/3`, `read_gpkg/2` and `write_gpkg/3` for the details
+  and the deviations from GDAL.
 
   `GeoFrame.GeoSeries.to_arrow/2`, `GeoFrame.GeoDataFrame.to_arrow/2` and the matching
   `from_arrow` functions exchange an Arrow IPC **stream** as a binary, with GeoArrow
@@ -60,6 +72,7 @@ defmodule GeoFrame do
   alias GeoFrame.Formats
   alias GeoFrame.GeoDataFrame
   alias GeoFrame.GeoSeries
+  alias GeoFrame.VectorFiles
 
   @doc """
   Concatenates a list of `GeoFrame.GeoSeries` or a list of `GeoFrame.GeoDataFrame` row-wise.
@@ -378,12 +391,187 @@ defmodule GeoFrame do
     do: Formats.write_flatgeobuf(gdf, path, opts)
 
   @doc """
+  Reads a Shapefile (a `.shp` path or a `.zip` holding exactly one) into a
+  `GeoFrame.GeoDataFrame`.
+
+  The `.shx`, `.dbf`, `.prj` and `.cpg` next to the `.shp` (any letter case) are used when
+  present; without a `.dbf` only the geometry is read. Geometry: a polyline with one part is
+  a `LineString` and with several a `MultiLineString`; a polygon shape with one outer ring a
+  `Polygon` and with several a `MultiPolygon`; null shapes are null geometries; Z and M values
+  are dropped.
+
+  Attributes follow the dBase types: `C` strings (trailing blanks trimmed; an empty value is
+  `nil`, as in GDAL), `N` with no decimals as `s32` (width up to 9) or `s64` (up to 18),
+  other `N`/`F` as `f64`, `L` booleans, `D` dates. Deleted records are skipped. Memo and
+  other binary field types are an error.
+
+  The CRS is taken from the `.prj`: an `AUTHORITY["EPSG", ...]` or one of the well-known
+  ESRI names (`GCS_WGS_1984`, `WGS_1984_Web_Mercator_Auxiliary_Sphere`, WGS 84 and NAD83 UTM
+  zones, ...) becomes `"EPSG:<code>"`, any other definition is kept as its WKT text, and
+  no `.prj` means `nil`.
+
+  Options:
+
+    * `:encoding` - the text encoding of the `.dbf` (`"UTF-8"`, `"ASCII"`, `"ISO-8859-1"`,
+      `"CP1252"`). Defaults to the `.cpg` file, then to UTF-8 (the language-driver byte of
+      the `.dbf` is ignored, as in pyogrio).
+
+  Returns `{:error, message}` when the file cannot be read.
+  """
+  @spec read_shapefile(Path.t(), keyword()) :: {:ok, GeoDataFrame.t()} | {:error, String.t()}
+  def read_shapefile(path, opts \\ []), do: VectorFiles.read_shapefile(path, opts)
+
+  @doc "Like `read_shapefile/2` but raises `ArgumentError` on failure."
+  @spec read_shapefile!(Path.t(), keyword()) :: GeoDataFrame.t()
+  def read_shapefile!(path, opts \\ []), do: unwrap!(read_shapefile(path, opts))
+
+  @doc """
+  Writes a `GeoFrame.GeoDataFrame` as a Shapefile (`.shp`, `.shx`, `.dbf`, `.cpg` and, when
+  the CRS has a definition, `.prj`); a path ending in `.zip` writes one zip archive holding
+  those files.
+
+  A shapefile holds one geometry type. `Polygon` and `MultiPolygon` rows are both polygon
+  shapes, `LineString` and `MultiLineString` both polyline shapes; any other mix, or a
+  `GeometryCollection`, raises `ArgumentError` (GDAL refuses it too). Null and empty
+  geometries become null shapes; coordinates are 2D; polygon rings are written in the
+  format's orientation (exterior clockwise).
+
+  Column types: integers `N(9,0)` (8 to 32 bits) or `N(18,0)` (64 bits and unsigned),
+  floats `N(24,15)` (fewer decimals for large values, `NaN` and infinity become null),
+  booleans `L`, dates `D`, strings `C` sized to the longest value (at most 254 bytes, longer
+  values are truncated with a warning). Timestamps and other types are written as text;
+  binary columns are an error. Null strings and empty strings are not distinguished.
+
+  **Field names hold 10 bytes.** Longer names are truncated at a character boundary and a
+  clash gets `_1`, `_2`, ... (stem shortened to fit): `population_total` and
+  `population_urban` become `population` and `populati_1`, exactly as GDAL does. Each changed
+  name is logged with `Logger.warning/1`. A frame without attributes gets a `FID` column, as
+  in GDAL.
+
+  The `.prj` is the OGC WKT definition of the CRS for any EPSG code in the bundled table
+  (GDAL writes the ESRI flavour; GDAL, GeoPandas and pyproj read both); a WKT CRS string is
+  written as given. A CRS GeoFrame has no definition for (an unknown code, `ESRI:` codes) writes
+  no `.prj` and logs a warning. A stale `.prj` from an earlier write is removed when there is
+  no CRS.
+
+  Options:
+
+    * `:encoding` - `"UTF-8"` (default), `"ASCII"`, `"ISO-8859-1"` or `"CP1252"`; recorded in
+      the `.cpg`. Characters the encoding lacks are written as `?` with a warning.
+
+  Returns `:ok` or `{:error, message}`.
+  """
+  @spec write_shapefile(GeoDataFrame.t(), Path.t(), keyword()) :: :ok | {:error, String.t()}
+  def write_shapefile(%GeoDataFrame{} = gdf, path, opts \\ []),
+    do: VectorFiles.write_shapefile(gdf, path, opts)
+
+  @doc """
+  Reads one layer of a GeoPackage into a `GeoFrame.GeoDataFrame`.
+
+  Without `:layer` a file with a single feature layer reads that layer; with several layers
+  the call fails and names them (GeoPandas warns and takes the first one instead). Geometry is
+  decoded from the GeoPackageBinary blobs (header, optional envelope, WKB); empty-flagged
+  geometries are `nil`. The integer primary key (`fid`) is not an attribute. Column types
+  follow the declared SQL type (`BOOLEAN`, `TINYINT` to `INTEGER`, `FLOAT`, `REAL`/`DOUBLE`,
+  `TEXT`, `BLOB`; `DATE` as dates and `DATETIME` as naive microsecond timestamps, unparseable
+  text as `nil`). The CRS comes from `gpkg_spatial_ref_sys`: `"EPSG:<code>"`, another
+  `"ORG:code"`, a custom definition as WKT, `nil` for the undefined SRS ids.
+
+  Options: `:layer` - the layer (table) name.
+  """
+  @spec read_gpkg(Path.t(), keyword()) :: {:ok, GeoDataFrame.t()} | {:error, String.t()}
+  def read_gpkg(path, opts \\ []), do: VectorFiles.read_gpkg(path, opts)
+
+  @doc "Like `read_gpkg/2` but raises `ArgumentError` on failure."
+  @spec read_gpkg!(Path.t(), keyword()) :: GeoDataFrame.t()
+  def read_gpkg!(path, opts \\ []), do: unwrap!(read_gpkg(path, opts))
+
+  @doc """
+  Writes a `GeoFrame.GeoDataFrame` as a layer of an OGC GeoPackage 1.3 file.
+
+  Creates the file with its metadata tables, or adds the layer to an existing GeoPackage
+  (a file that is not a GeoPackage is never overwritten). The feature table has an `fid`
+  integer primary key, the geometry column `geom` and one typed column per attribute
+  (`BOOLEAN`, `TINYINT`, `SMALLINT`, `MEDIUMINT`, `INTEGER`, `FLOAT`, `REAL`, `TEXT`, `BLOB`,
+  `DATE`, `DATETIME`); a frame column named `fid` is an error. Geometry is stored as
+  GeoPackageBinary with an envelope. The layer geometry type is the common type of the rows,
+  or `GEOMETRY` for a mix; unlike GDAL, single and multi geometries are **not** promoted to
+  multi, so rows read back as written. Coordinates are 2D.
+
+  The CRS must be an `"AUTHORITY:CODE"` string, `"OGC:CRS84"` (stored as EPSG 4326), PROJJSON
+  with an identifier, or WKT. An EPSG code outside the bundled table is stored with the
+  definition `undefined` and a warning; `nil` is stored as GDAL's "Undefined SRS" (id 99999), which GDAL and GeoPandas read back as no CRS.
+
+  Options:
+
+    * `:layer` - the layer name (default: the file name without extension).
+    * `:mode` - `:w` (default) creates the file or replaces the layer of that name, keeping
+      the file's other layers; `:a` appends rows to an existing layer after checking that its
+      columns contain the frame's and that the CRS matches (a missing layer is created).
+    * `:spatial_index` - create the `rtree_<layer>_geom` R-tree index and its triggers for a new
+      layer (default `true`).
+
+  Returns `:ok` or `{:error, message}`.
+  """
+  @spec write_gpkg(GeoDataFrame.t(), Path.t(), keyword()) :: :ok | {:error, String.t()}
+  def write_gpkg(%GeoDataFrame{} = gdf, path, opts \\ []),
+    do: VectorFiles.write_gpkg(gdf, path, opts)
+
+  @doc """
+  The layers of a file as an `Explorer.DataFrame` with the string columns `name` and
+  `geometry_type` (GeoPandas `list_layers`).
+
+  A GeoPackage lists its feature and attribute tables in file order (`geometry_type` is `nil`
+  for an attribute table); geometry types are pyogrio's names (`"Point"`, `"MultiPolygon"`,
+  `"Unknown"` for a mix, with ` Z`/` M` suffixes). Every other format has one layer named
+  after the file: Shapefile reports the type in its header, the rest are read to find the
+  common geometry type (`"Unknown"` for a mix).
+
+  Options: `:driver` - as in `read_file/2`. Raises `ArgumentError` if the file cannot be read.
+  """
+  @spec list_layers(Path.t(), keyword()) :: Explorer.DataFrame.t()
+  def list_layers(path, opts \\ []) do
+    {driver, rest} = Formats.driver_for(path, opts)
+    Formats.validate_options!(rest, [])
+    VectorFiles.list_layers(path, driver)
+  end
+
+  @doc """
+  Facts about a vector file, shaped after pyogrio's `read_info`, as a map:
+  `:driver`, `:layer`, `:crs`, `:encoding`, `:geometry_type`, `:features` (row count),
+  `:total_bounds` (`{minx, miny, maxx, maxy}` or `nil`), `:fields` (attribute names) and
+  `:dtypes` (pandas-style dtype names such as `"int64"`, `"object"`).
+
+  GeoPackage and Shapefile answer from their metadata (a GeoPackage without `:layer` describes
+  its first feature layer); other formats are read in full. Raises `ArgumentError` if the file
+  cannot be read.
+
+  Options: `:driver` as in `read_file/2`; `:layer` (GeoPackage); `:encoding` (Shapefile).
+  """
+  @spec read_file_info(Path.t(), keyword()) :: map()
+  def read_file_info(path, opts \\ []) do
+    {driver, rest} = Formats.driver_for(path, opts)
+
+    allowed =
+      case driver do
+        :gpkg -> [:layer]
+        :shapefile -> [:encoding]
+        _other -> []
+      end
+
+    Formats.validate_options!(rest, allowed)
+    VectorFiles.read_file_info(path, driver, rest)
+  end
+
+  @doc """
   Reads a vector file, choosing the format from the extension (`.parquet`, `.geoparquet`,
-  `.geojson`, `.json`, `.fgb`, `.feather`, `.arrow`; case-insensitive) or from `driver:`
-  (`:parquet`, `:geojson`, `:flatgeobuf`, `:feather`), which wins over the extension.
+  `.geojson`, `.json`, `.fgb`, `.feather`, `.arrow`, `.shp`, `.zip`, `.gpkg`;
+  case-insensitive) or from `driver:` (`:parquet`, `:geojson`, `:flatgeobuf`, `:feather`,
+  `:shapefile`, `:gpkg`), which wins over the extension. A `.zip` is read as a zipped Shapefile.
 
   The remaining options go to the format's reader (`read_parquet/2`, `read_geojson/2`,
-  `read_flatgeobuf/2`, `read_feather/2`); unknown options raise `ArgumentError`.
+  `read_flatgeobuf/2`, `read_feather/2`, `read_shapefile/2`, `read_gpkg/2` - so `layer:`
+  selects a GeoPackage layer); unknown options raise `ArgumentError`.
   An unrecognised extension or driver raises `ArgumentError`; read failures are
   `{:error, message}`.
   """
@@ -397,7 +585,7 @@ defmodule GeoFrame do
   @doc """
   Writes a vector file, choosing the format from the extension or `driver:`; see
   `read_file/2`. The remaining options go to `write_parquet/3`, `write_geojson/3`,
-  `write_flatgeobuf/3` or `write_feather/3`.
+  `write_flatgeobuf/3`, `write_feather/3`, `write_shapefile/3` or `write_gpkg/3`.
   """
   @spec write_file(GeoDataFrame.t(), Path.t(), keyword()) :: :ok | {:error, String.t()}
   def write_file(%GeoDataFrame{} = gdf, path, opts \\ []), do: Formats.write_file(gdf, path, opts)
