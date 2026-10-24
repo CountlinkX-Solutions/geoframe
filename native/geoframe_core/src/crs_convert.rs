@@ -68,18 +68,22 @@ fn type_of(value: &Value) -> Result<&str, String> {
 /// The EPSG code of a geographic CRS: its identifier, else (as PROJ identifies a CRS) the CRS of
 /// that name that has datum shifts.
 fn geographic_code(value: &Value) -> Option<u32> {
-    epsg_code(value).or_else(|| {
-        let name = value
-            .get("name")?
-            .as_str()?
-            .to_ascii_lowercase()
-            .replace('_', " ");
-        let table = crate::crs_names::CRS_NAMES;
-        table
-            .binary_search_by(|(n, _)| (*n).cmp(name.as_str()))
-            .ok()
-            .map(|i| table[i].1)
-    })
+    let id = epsg_code(value);
+    // A 3D geographic CRS (LUREF 3D) has no operations of its own: its 2D namesake has them.
+    id.filter(|code| crate::datum::has_operations(*code))
+        .or_else(|| {
+            let name = value
+                .get("name")?
+                .as_str()?
+                .to_ascii_lowercase()
+                .replace('_', " ");
+            let table = crate::crs_names::CRS_NAMES;
+            table
+                .binary_search_by(|(n, _)| (*n).cmp(name.as_str()))
+                .ok()
+                .map(|i| table[i].1)
+        })
+        .or(id)
 }
 
 fn epsg_code(value: &Value) -> Option<u32> {
@@ -304,6 +308,7 @@ const METHOD_NAMES: &[(&str, u32)] = &[
     ("transverse mercator 3d", 1111),
     ("lambert conic conformal (1sp)", 9801),
     ("lambert conic conformal (2sp)", 9802),
+    ("lambert conic conformal (2sp belgium)", 9803),
     ("lambert conic conformal (2sp michigan)", 1051),
     ("lambert conic conformal (1sp variant b)", 1102),
     ("lambert conic conformal (west orientated)", 9826),
@@ -446,7 +451,8 @@ fn projection(conversion: &Value, axes: &Axes) -> Result<String, String> {
                 p.scale(&[8805])
             )
         }
-        9802 | 1051 => format!(
+        // Belgium 2SP differs from 2SP only in the (given) false origin on the pole.
+        9802 | 9803 | 1051 => format!(
             "+proj=lcc +lat_0={} +lon_0={} +lat_1={} +lat_2={} +x_0={} +y_0={} +k_0={}",
             p.or_zero(&[8821]),
             p.or_zero(&[8822]),
@@ -476,7 +482,9 @@ fn projection(conversion: &Value, axes: &Axes) -> Result<String, String> {
         ),
         9820 | 1027 => {
             let (lat, lon, x, y) = natural(&p)?;
-            format!("+proj=laea +lat_0={lat} +lon_0={lon} +x_0={x} +y_0={y}")
+            // The spherical variant projects on the sphere of the authalic radius (`+R_A`).
+            let sphere = if code == 1027 { " +R_A" } else { "" };
+            format!("+proj=laea{sphere} +lat_0={lat} +lon_0={lon} +x_0={x} +y_0={y}")
         }
         1125 | 9832 | 9831 => {
             let (lat, lon, x, y) = natural(&p)?;

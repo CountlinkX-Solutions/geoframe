@@ -2,11 +2,13 @@
 //!
 //! # CRS identification
 //!
-//! A CRS is identified by an authority code: `EPSG:<code>` (any code in the bundled
-//! `crs-definitions` table) or `OGC:CRS84`. A CRS stored as PROJJSON is accepted when it
-//! carries a top-level `id` with an authority and code; PROJJSON without one is rejected
-//! because the definition cannot be mapped to a proj string without a full PROJ database.
-//! Labels are canonicalised (`epsg:3857` becomes `EPSG:3857`).
+//! A CRS is identified by an authority code: `EPSG:<code>` (any code of the bundled
+//! `crs-definitions` table or of the supplementary table, see [`crate::crs_extra`]) or
+//! `OGC:CRS84`. It may also be given as a definition, PROJJSON or WKT (WKT1 or WKT2) text, as
+//! `pyproj.CRS.from_user_input` takes: one that carries the identifier of an EPSG code the tables
+//! have is that code, any other is converted to a proj string by [`crate::crs_convert`] and keeps
+//! its (canonical) text as its label. Labels are canonicalised (`epsg:3857` becomes
+//! `EPSG:3857`).
 //!
 //! # Axis order
 //!
@@ -95,7 +97,8 @@ struct Source {
 /// the bundled table, then the supplementary table (see [`crate::crs_extra`]).
 fn epsg_source(code: u32) -> Result<Source, String> {
     if let Ok(small) = u16::try_from(code) {
-        if let Some(def) = crs_definitions::from_code(small) {
+        // A few entries have a WKT but no proj string: the supplementary table serves them.
+        if let Some(def) = crs_definitions::from_code(small).filter(|d| !d.proj4.is_empty()) {
             return Ok(Source {
                 label: format!("EPSG:{code}"),
                 proj: crate::datum::with_axes(table_fix(small).unwrap_or(def.proj4), def.wkt),

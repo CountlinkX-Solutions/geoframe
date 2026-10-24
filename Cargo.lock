@@ -787,6 +787,7 @@ dependencies = [
  "crs-definitions",
  "earcut",
  "flatbuffers 24.12.23",
+ "flate2",
  "flatgeobuf",
  "geo",
  "geo-traits",

@@ -233,10 +233,18 @@ pub(crate) fn reference_frame(
     let mut ellipsoid = Map::new();
     ellipsoid.insert("name".into(), Value::from(spheroid.text(0)?));
     let inverse_flattening = spheroid.number(2)?;
+    // WKT2 gives the axis in the unit of its LENGTHUNIT (Indian foot, Clarke's foot), WKT1 in metres.
+    let axis = |value: f64| match spheroid.child("LENGTHUNIT") {
+        Some(unit) if unit.number(1).is_some_and(|f| f != 1.0) => json!({
+            "value": number(value),
+            "unit": unit_value(unit, false).unwrap_or(Value::Null),
+        }),
+        _ => number(value),
+    };
     if inverse_flattening == 0.0 {
-        ellipsoid.insert("radius".into(), number(spheroid.number(1)?));
+        ellipsoid.insert("radius".into(), axis(spheroid.number(1)?));
     } else {
-        ellipsoid.insert("semi_major_axis".into(), number(spheroid.number(1)?));
+        ellipsoid.insert("semi_major_axis".into(), axis(spheroid.number(1)?));
         ellipsoid.insert("inverse_flattening".into(), number(inverse_flattening));
     }
     if let Some(id) = spheroid.id() {

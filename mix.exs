@@ -32,7 +32,7 @@ defmodule GeoFrame.MixProject do
       links: %{"GitHub" => @source_url},
       files: ~w(lib native/geoframe_core/src native/geoframe_core/Cargo.toml
                 native/geoframe_native/src native/geoframe_native/Cargo.toml
-                Cargo.toml Cargo.lock mix.exs README.md LICENSE)
+                Cargo.toml Cargo.lock mix.exs README.md LICENSE NOTICE)
     ]
   end
 

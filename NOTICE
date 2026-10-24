@@ -1,0 +1,24 @@
+GeoFrame
+Copyright the GeoFrame authors. Licensed under the Apache License 2.0 (see LICENSE).
+
+EPSG Geodetic Parameter Dataset
+-------------------------------
+GeoFrame embeds coordinate reference system definitions and coordinate operation parameters
+derived from the EPSG Geodetic Parameter Dataset, which is the property of the International
+Association of Oil & Gas Producers (IOGP). The data come from three places:
+
+  * the `crs-definitions` crate (a dependency), generated from the EPSG registry;
+  * the tables generated from the PROJ database (proj.db, pyproj 3.8 / PROJ 9.8) by
+    test/reference/generate_crs_datum.py and committed under native/geoframe_core/src:
+    crs_extra.bin (about 1 200 CRS definitions the crate lacks, as PROJJSON),
+    datum_helmert.rs, datum_grids.rs, crs_names.rs and utm_crs.rs (datum operations by area of
+    use, grid names, CRS names, UTM zones);
+  * the PROJ database itself is part of PROJ, distributed under the MIT license by the PROJ
+    contributors (https://proj.org), and contains the EPSG data.
+
+The EPSG Dataset is made available under the EPSG terms of use
+(https://epsg.org/terms-of-use.html): it may be used and redistributed free of charge as part of
+software, provided its source is acknowledged and the data are not presented as an official
+version. The data are provided "as is" without warranty of any kind; IOGP and the other
+contributors accept no liability for their use. Use the EPSG registry (https://epsg.org) for the
+authoritative definitions.

@@ -215,7 +215,7 @@ def parse_op(definition):
 
 def is_pure_offshore(area_name):
     """PROJ prefers an operation whose area is not an offshore-only one, whatever the accuracies
-    (measured: 98.8 % of ~2 800 sampled points agree with the choice of pyproj, against 97.9 %
+    (measured: 99.2 % of ~2 800 sampled points agree with the choice of pyproj, against 97.9 %
     without the rule)."""
     n = (area_name or "").lower()
     return "offshore" in n and "onshore" not in n
@@ -523,6 +523,65 @@ def generate_name_table():
     return len(lines)
 
 
+EXTRA_TYPES = ("GEOGRAPHIC_2D_CRS", "GEOGRAPHIC_3D_CRS", "GEODETIC_CRS", "PROJECTED_CRS", "COMPOUND_CRS")
+
+
+def table_codes():
+    """The EPSG codes of the bundled `crs-definitions` table (read from its source)."""
+    import glob
+    import re
+    path = glob.glob(os.path.expanduser("~/.cargo/registry/src/*/crs-definitions-0.6.0/src/from_code.rs"))[0]
+    codes = set(int(m) for m in re.findall(r"^\s*(\d+) => EPSG", open(path).read(), re.M))
+    # entries the table leaves without a proj string are served from the supplementary table
+    empty = set(int(m) for m in re.findall(r'^EPSG_\d+\|(\d+)\|""\|', open(path.replace("from_code.rs", "defs.rs")).read(), re.M))
+    return codes - empty
+
+
+def extra_definitions():
+    """PROJJSON of every non-deprecated EPSG geographic, geocentric, projected and compound CRS
+    the bundled table lacks, minified, without the text fields (scope, area, remarks, bbox) that
+    do not matter to a transformation."""
+    from pyproj.database import query_crs_info
+    from pyproj.enums import PJType
+    have = table_codes()
+    out = {}
+    for name in EXTRA_TYPES:
+        for info in query_crs_info("EPSG", pj_types=[getattr(PJType, name)]):
+            code = int(info.code)
+            if info.deprecated or code in have or code in out:
+                continue
+            try:
+                crs = CRS.from_epsg(code)
+                if crs.is_vertical and not crs.is_compound:
+                    continue
+                if crs.is_geographic and crs.is_derived:
+                    continue
+                pj = crs.to_json_dict()
+            except Exception:
+                continue
+
+            def strip(node):
+                if isinstance(node, dict):
+                    return {k: strip(v) for k, v in node.items() if k not in ("$schema", "scope", "area", "bbox", "remarks", "usages")}
+                if isinstance(node, list):
+                    return [strip(v) for v in node]
+                return node
+            out[code] = strip(pj)
+    return out
+
+
+def generate_extra_table():
+    """Write native/geoframe_core/src/crs_extra.bin: `code<TAB>PROJJSON` lines, deflate-compressed."""
+    import zlib
+    defs = extra_definitions()
+    text = "".join("%d\t%s\n" % (c, json.dumps(defs[c], separators=(",", ":"), ensure_ascii=False)) for c in sorted(defs))
+    raw = text.encode("utf-8")
+    packed = zlib.compress(raw, 9)
+    path = os.path.join(HERE, "..", "..", "native", "geoframe_core", "src", "crs_extra.bin")
+    open(path, "wb").write(packed)
+    return len(defs), len(raw), len(packed)
+
+
 # -- synthetic NTv2 / GeoTIFF grids ----------------------------------------------------------------
 
 GRID_WEST, GRID_EAST, GRID_SOUTH, GRID_NORTH, GRID_STEP = 135.0, 141.0, 33.0, 37.0, 0.25
@@ -681,6 +740,8 @@ if __name__ == "__main__":
         generate_parity()
     if "convert" in which:
         generate_convert()
+    if "extra_table" in which:
+        print("extra table: CRSs, bytes, compressed", generate_extra_table())
     if "name_table" in which:
         print("name table rows", generate_name_table())
     if "helmert_table" in which:

@@ -95,6 +95,14 @@ pub(crate) fn locate(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// Whether the geographic CRS `code` has Helmert operations or grids to WGS 84.
+pub(crate) fn has_operations(code: u32) -> bool {
+    DATUM_HELMERT
+        .binary_search_by_key(&code, |(c, _)| *c)
+        .is_ok()
+        || DATUM_GRIDS.binary_search_by_key(&code, |(c, _)| *c).is_ok()
+}
+
 /// The grid files, best first, that may shift the geographic CRS `code` to WGS 84.
 pub(crate) fn grid_names(code: u32) -> Vec<String> {
     if let Some((_, names)) = REGISTERED.read().unwrap().iter().find(|(c, _)| *c == code) {

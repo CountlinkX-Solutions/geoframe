@@ -59,6 +59,12 @@ enum Kind {
         b_scale: f64,
     },
     ModKrovak(ModKrovak),
+    /// Spherical Lambert Azimuthal Equal Area on the sphere of the authalic radius (`+R_A`),
+    /// with the latitude of the origin as sine and cosine.
+    LaeaSphere {
+        sin0: f64,
+        cos0: f64,
+    },
 }
 
 /// The projections handled here, by `+proj` name.
@@ -76,7 +82,7 @@ pub(crate) fn handles(proj: &str) -> bool {
                 | "col_urban"
                 | "mod_krovak"
         )
-    )
+    ) || (token_value(proj, "proj") == Some("laea") && has_flag(proj, "R_A"))
 }
 
 fn token_value<'a>(proj: &'a str, key: &str) -> Option<&'a str> {
@@ -136,6 +142,7 @@ const PROJECTION_KEYS: &[&str] = &[
     "south",
     "hyperbolic",
     "h_0",
+    "R_A",
 ];
 
 /// The `+proj=longlat` string with the datum of `proj` (ellipsoid, shift, prime meridian).
@@ -166,6 +173,12 @@ pub(crate) fn build(proj: &str) -> Result<(Ext, String), String> {
     proj4rs::transform::transform(&geodetic, &geocentric, &mut pole).map_err(|e| e.to_string())?;
     let (a, b) = (equator.0, pole.2);
     let es = 1.0 - (b * b) / (a * a);
+    // The spherical projection runs on the sphere of the same surface area as the ellipsoid.
+    let a = if name == "laea" {
+        a * (qsfn(1.0, es.sqrt(), 1.0 - es) / 2.0).sqrt()
+    } else {
+        a
+    };
 
     let mut lam0 = angle(proj, "lon_0")?.unwrap_or(0.0);
     let mut phi0 = angle(proj, "lat_0")?.unwrap_or(0.0);
@@ -211,6 +224,10 @@ pub(crate) fn build(proj: &str) -> Result<(Ext, String), String> {
                 a_scale: 1.0 + h0 / nu0,
                 b_scale: 1.0 + h0 / rho0,
             }
+        }
+        "laea" => {
+            let (sin0, cos0) = phi0.sin_cos();
+            Kind::LaeaSphere { sin0, cos0 }
         }
         "mod_krovak" => {
             let alpha = angle(proj, "alpha")?.ok_or("mod_krovak needs +alpha")?;
@@ -282,6 +299,7 @@ impl Ext {
                 self.col_urban_forward(lam, phi, *a_scale, *b_scale)
             }
             Kind::ModKrovak(_) => unreachable!("handled above"),
+            Kind::LaeaSphere { sin0, cos0 } => laea_sphere_forward(*sin0, *cos0, lam, phi)?,
             Kind::Omerc(o) => o.forward(lam, phi, self.es)?,
             Kind::Poly => self.poly_forward(lam, phi),
             Kind::EqEarth { qp, rqda } => self.eqearth_forward(lam, phi, *qp, *rqda),
@@ -345,6 +363,7 @@ impl Ext {
                 self.col_urban_inverse(x, y, *a_scale, *b_scale)?
             }
             Kind::ModKrovak(_) => unreachable!("handled above"),
+            Kind::LaeaSphere { sin0, cos0 } => laea_sphere_inverse(*sin0, *cos0, x, y, self.phi0),
             Kind::Omerc(o) => o.inverse(x, y, self.es)?,
             Kind::Poly => self.poly_inverse(x, y)?,
             Kind::EqEarth { qp, rqda } => self.eqearth_inverse(x, y, *qp, *rqda),
@@ -656,6 +675,30 @@ fn zpoly1_with_derivative(z: Complex, c: &[Complex]) -> (Complex, Complex) {
     derivative.0 += acc.0 + zd.0;
     derivative.1 += acc.1 + zd.1;
     (value, derivative)
+}
+
+// -- Lambert Azimuthal Equal Area, spherical ----------------------------------------------
+
+fn laea_sphere_forward(sin0: f64, cos0: f64, lam: f64, phi: f64) -> Result<(f64, f64), String> {
+    let (sp, cp) = phi.sin_cos();
+    let d = 1.0 + sin0 * sp + cos0 * cp * lam.cos();
+    if d <= EPS {
+        return Err("laea: point opposite the origin".to_string());
+    }
+    let k = (2.0 / d).sqrt();
+    Ok((k * cp * lam.sin(), k * (cos0 * sp - sin0 * cp * lam.cos())))
+}
+
+fn laea_sphere_inverse(sin0: f64, cos0: f64, x: f64, y: f64, phi0: f64) -> (f64, f64) {
+    let rho = x.hypot(y);
+    if rho < EPS {
+        return (0.0, phi0);
+    }
+    let c = 2.0 * (rho / 2.0).clamp(-1.0, 1.0).asin();
+    let (sc, cc) = c.sin_cos();
+    let phi = (cc * sin0 + y * sc * cos0 / rho).clamp(-1.0, 1.0).asin();
+    let lam = (x * sc).atan2(rho * cos0 * cc - y * sin0 * sc);
+    (lam, phi)
 }
 
 // -- Laborde ------------------------------------------------------------------------------

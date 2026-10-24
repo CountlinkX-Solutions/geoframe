@@ -107,3 +107,62 @@ fn wkt1_text_converts_like_pyproj() {
 fn wkt2_text_converts_like_pyproj() {
     check_all("wkt2");
 }
+
+/// The CRS of the fixture that the bundled table lacks, by code: they come from the supplementary
+/// table generated from the PROJ database.
+#[test]
+fn codes_outside_the_bundled_table_resolve_like_pyproj() {
+    let data = fixture();
+    let mut checked = 0;
+    for (code, entry) in data["crs"].as_object().unwrap() {
+        let number: u32 = code.parse().unwrap();
+        if u16::try_from(number)
+            .ok()
+            .and_then(crs_definitions::from_code)
+            .is_some()
+        {
+            continue;
+        }
+        checked += 1;
+        let label = format!("EPSG:{code}");
+        check(code, entry, &label, "its code").unwrap_or_else(|e| panic!("{e}"));
+    }
+    assert!(
+        checked >= 4,
+        "the fixture should hold CRSs outside the table"
+    );
+}
+
+#[test]
+fn supplementary_codes_have_full_projjson_for_geoparquet() {
+    let json = crate::projjson::known_projjson("EPSG", 5515).expect("EPSG:5515 is supplementary");
+    assert_eq!(json["type"], "ProjectedCRS");
+    assert_eq!(json["id"]["code"], 5515);
+    assert_eq!(json["conversion"]["method"]["name"], "Krovak Modified");
+}
+
+#[test]
+fn supplementary_table_complements_the_bundled_one() {
+    let codes = crate::crs_extra::codes();
+    assert!(
+        codes.len() > 1000,
+        "{} supplementary definitions",
+        codes.len()
+    );
+    assert!(codes.windows(2).all(|w| w[0] < w[1]), "sorted, no repeats");
+    for code in codes {
+        let bundled = u16::try_from(code)
+            .ok()
+            .and_then(crs_definitions::from_code)
+            .filter(|d| !d.proj4.is_empty());
+        assert!(bundled.is_none(), "EPSG:{code} is in both tables");
+        // every definition converts (or names the method it cannot)
+        let json = crate::crs_extra::projjson(code).unwrap();
+        if let Err(e) = crate::crs_convert::from_projjson(&json) {
+            assert!(
+                e.contains("unsupported projection method"),
+                "EPSG:{code}: {e}"
+            );
+        }
+    }
+}

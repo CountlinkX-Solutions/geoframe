@@ -7,9 +7,9 @@
 //! zones `EPSG:32601`..`32660` (north) and `EPSG:32701`..`32760` (south). Every other EPSG
 //! code in the bundled `crs-definitions` table is translated from its WKT definition
 //! (`wkt1_projjson.rs`, `wkt2_projjson.rs`): geographic (2D and 3D), geocentric, projected and
-//! compound CRS. An identifier outside that table (the pure-Rust build has no PROJ database),
-//! another authority, or one of the few entries the table leaves empty keeps the
-//! name-and-identifier stub, which GeoFrame reads back but pyproj cannot interpret; a caller
+//! compound CRS, and the codes of the supplementary table (`crs_extra.rs`, generated from the PROJ
+//! database) are served as they are. An identifier outside both tables, or another authority, keeps
+//! the name-and-identifier stub, which GeoFrame reads back but pyproj cannot interpret; a caller
 //! that needs such a CRS in a GeoParquet file passes its PROJJSON as the CRS.
 
 use serde_json::{json, Value};
@@ -27,7 +27,11 @@ pub(crate) fn known_projjson(authority: &str, code: u64) -> Option<Value> {
         3857 => Some(pseudo_mercator()),
         32601..=32660 => Some(utm(code - 32600, true)),
         32701..=32760 => Some(utm(code - 32700, false)),
-        _ => from_table(code),
+        _ => from_table(code).or_else(|| {
+            u32::try_from(code)
+                .ok()
+                .and_then(crate::crs_extra::projjson)
+        }),
     }
 }
 
