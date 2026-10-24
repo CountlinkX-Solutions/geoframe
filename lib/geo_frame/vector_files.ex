@@ -28,6 +28,7 @@ defmodule GeoFrame.VectorFiles do
 
   def write_shapefile(%GeoDataFrame{} = gdf, path, opts) do
     Formats.validate_options!(opts, [:encoding])
+    Formats.single_geometry!(gdf, "write_shapefile")
     encoding = opts |> Keyword.get(:encoding) |> optional_string()
     check_single_shape_type!(gdf)
 
@@ -85,6 +86,7 @@ defmodule GeoFrame.VectorFiles do
 
   def write_gpkg(%GeoDataFrame{} = gdf, path, opts) do
     Formats.validate_options!(opts, [:layer, :mode, :spatial_index])
+    Formats.single_geometry!(gdf, "write_gpkg")
     path = to_string(path)
     layer = Keyword.get(opts, :layer, path |> Path.basename() |> Path.rootname())
     mode = Keyword.get(opts, :mode, :w)

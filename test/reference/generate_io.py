@@ -202,6 +202,34 @@ def generate_multi_geometry():
                 for c in back.columns if str(back[c].dtype) == "geometry"
             },
         }
+    # Feather and Arrow IPC streams keep every geometry column too (issue #93).
+    import pyarrow as pa
+
+    def record(file, back):
+        manifest["files"][file] = {
+            "primary": back.geometry.name,
+            "geometry_columns": [c for c in back.columns if str(back[c].dtype) == "geometry"],
+            "id": [1, 2, 3],
+            "name": ["a", "b", None],
+            "columns": {
+                c: {
+                    "crs": back[c].crs.to_string() if back[c].crs else None,
+                    "wkt": [None if g is None else shapely.to_wkt(g, rounding_precision=-1) for g in back[c]],
+                }
+                for c in back.columns if str(back[c].dtype) == "geometry"
+            },
+        }
+
+    for file, kw in [("two_wkb.feather", {}), ("two_zstd.feather", {"compression": "zstd"})]:
+        base.to_feather(os.path.join(out, file), **kw)
+        record(file, gpd.read_feather(os.path.join(out, file)))
+    for file, kw in [("two_wkb.arrows", {}), ("two_native.arrows", {"geometry_encoding": "geoarrow"})]:
+        table = pa.table(base.to_arrow(**kw))
+        with pa.OSFile(os.path.join(out, file), "wb") as sink:
+            with pa.ipc.new_stream(sink, table.schema) as writer:
+                writer.write_table(table)
+        record(file, gpd.GeoDataFrame.from_arrow(pa.ipc.open_stream(os.path.join(out, file)).read_all()))
+
     with open(os.path.join(out, "manifest.json"), "w") as handle:
         json.dump(manifest, handle, indent=1, sort_keys=True)
         handle.write("\n")

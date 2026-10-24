@@ -802,5 +802,20 @@ files =
       [Map.put(entry, "secondary", secondary.(multi)) | rest]
   end
 
+# Feather and Arrow IPC keep the secondary geometry columns too (issue #93).
+files =
+  for {name, kind, writer, extra} <- [
+        {"multi_wkb.feather", "feather", feather.([]), []},
+        {"multi_zstd.feather", "feather", feather.(compression: :zstd), []},
+        {"multi_native.feather", "feather", feather.(geometry_encoding: :geoarrow), [native: true]},
+        {"multi_wkb.arrows", "arrows", stream.([]), []},
+        {"multi_native.arrows", "arrows", stream.(geometry_encoding: :geoarrow), [native: true]}
+      ],
+      reduce: files do
+    acc ->
+      [entry | rest] = write.(acc, name, multi, writer, [kind: kind] ++ extra)
+      [Map.put(entry, "secondary", secondary.(multi)) | rest]
+  end
+
 File.write!(Path.join(dir, "expected.json"), Jason.encode!(Enum.reverse(files), pretty: true))
 IO.puts("wrote #{length(files)} files and expected.json to #{dir}")

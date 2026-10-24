@@ -49,8 +49,8 @@ mod zm_io;
 mod zm_overlay;
 
 pub use arrow_io::{
-    from_arrow_ipc, read_feather, to_arrow_ipc, write_feather, FeatherCompression,
-    GeometryEncoding, TableRead,
+    from_arrow_ipc, read_feather, to_arrow_ipc, to_arrow_ipc_multi, write_feather,
+    write_feather_multi, FeatherCompression, GeometryEncoding, TableRead,
 };
 pub use attributes::VectorRead;
 pub use column::GeoColumn;
@@ -84,6 +84,8 @@ pub use unary::{BufferOptions, Origin, UnaryOp};
 
 #[cfg(test)]
 mod affine_tests;
+#[cfg(test)]
+mod arrow_multi_tests;
 #[cfg(test)]
 mod coverage_simplify_tests;
 #[cfg(test)]

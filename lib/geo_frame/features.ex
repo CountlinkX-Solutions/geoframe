@@ -17,12 +17,14 @@ defmodule GeoFrame.Features do
   `crs` member added for a CRS other than EPSG:4326) or `:map` (string-keyed maps, no `crs`).
   `data` is the attribute frame, or `nil` for a series (empty `properties`).
   """
-  @spec build(GeoSeries.t(), DataFrame.t() | nil, keyword(), :json | :map) :: String.t() | map()
-  def build(%GeoSeries{} = geometry, data, opts, format) do
+  @spec build(GeoSeries.t(), DataFrame.t() | nil, keyword(), :json | :map, list()) ::
+          String.t() | map()
+  def build(%GeoSeries{} = geometry, data, opts, format, secondary \\ []) do
     na = Keyword.fetch!(opts, :na)
     geometry = if opts[:to_wgs84], do: GeoSeries.to_crs(geometry, @wgs84), else: geometry
     geometries = geometries(geometry, format)
     properties = properties(data, length(geometries), na, format)
+    properties = if format == :map, do: with_geometries(properties, secondary), else: properties
 
     boxes =
       if opts[:show_bbox], do: bounds(geometry), else: List.duplicate(:none, length(geometries))
@@ -78,6 +80,22 @@ defmodule GeoFrame.Features do
   end
 
   defp geometries(%GeoSeries{} = series, :map), do: GeoSeries.to_geojson(series)
+
+  @doc """
+  Adds the secondary geometry columns to the property maps of each row, as GeoJSON geometry
+  maps (GeoPandas puts the shapely object of such a column into the properties).
+  """
+  @spec with_geometries([map()], [{String.t(), GeoSeries.t()}]) :: [map()]
+  def with_geometries(properties, []), do: properties
+
+  def with_geometries(properties, secondary) do
+    names = Enum.map(secondary, &elem(&1, 0))
+    rows = secondary |> Enum.map(fn {_, series} -> GeoSeries.to_geojson(series) end) |> Enum.zip()
+
+    Enum.zip_with(properties, rows, fn row, values ->
+      names |> Enum.zip(Tuple.to_list(values)) |> Enum.into(row)
+    end)
+  end
 
   defp bounds(%GeoSeries{ref: ref}) do
     ref |> Native.bounds() |> Enum.map(&(&1 && Tuple.to_list(&1)))

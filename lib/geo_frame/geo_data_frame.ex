@@ -15,12 +15,14 @@ defmodule GeoFrame.GeoDataFrame do
   `set_geometry/3` makes another column the active one, `pull/2` returns one by name and
   `geometry_columns/1` lists them (active first). Row operations (`take/2`, `filter_with/2`,
   `sort_with/2`, `join/3`, `concat_rows/1`, `explode/2`, ...) keep every geometry column
-  aligned; `to_crs/2` and `set_crs/2` act on the active one, as in GeoPandas. GeoParquet reads
-  and writes all of them (`GeoFrame.read_parquet/2`, `GeoFrame.write_parquet/3`). `clip/3`, `overlay/3`, `sjoin/3`,
+  aligned; `to_crs/2` and `set_crs/2` act on the active one, as in GeoPandas. GeoParquet,
+  Feather and Arrow read and write all of them (`GeoFrame.read_parquet/2`,
+  `GeoFrame.write_parquet/3`, `GeoFrame.write_feather/3`, `to_arrow/2`), and the formats with
+  one geometry per feature (GeoPackage, GeoJSON, FlatGeobuf, Shapefile, PostGIS, `to_json/2`)
+  raise `ArgumentError` for such a frame, as GeoPandas `to_file` raises `ValueError`. `clip/3`, `overlay/3`, `sjoin/3`,
   `sjoin_nearest/3` and `dissolve/2` carry them like GeoPandas (other geometry columns are
   ordinary columns there): kept with their rows and CRS, suffixed on a name clash, null for
-  rows without a partner, aggregated by `dissolve/2` with `:first`, `:last` or `:count`. The other formats write the
-  active geometry only.
+  rows without a partner, aggregated by `dissolve/2` with `:first`, `:last` or `:count`.
 
   ## Row alignment
 
@@ -211,7 +213,8 @@ defmodule GeoFrame.GeoDataFrame do
 
   @doc """
   Encodes the frame as an Arrow IPC **stream** (a binary): the attribute columns followed by
-  the geometry column, whose field carries GeoArrow extension metadata with the CRS as
+  the geometry columns (the active one first, then the secondary ones, each with its own CRS),
+  whose fields carry GeoArrow extension metadata with the CRS as
   PROJJSON (and a GeoParquet-style `geo` entry in the schema metadata). GeoPandas reads it
   with `GeoDataFrame.from_arrow(pyarrow.ipc.open_stream(bytes).read_all())`.
 
@@ -995,17 +998,20 @@ defmodule GeoFrame.GeoDataFrame do
 
   Each row is a `Feature`: the geometry (see `GeoFrame.GeoSeries.to_geojson/1`, `nil` for
   null or unrepresentable rows) plus the attribute columns as string-keyed `properties`.
-  Null attributes are kept as `nil`. Property values are the Elixir values Explorer yields
+  Null attributes are kept as `nil`. A secondary geometry column becomes a property holding
+  its GeoJSON geometry map (GeoPandas keeps the shapely object there). Property values are the Elixir values Explorer yields
   (dates, decimals, ...), so they encode with `Jason` for the common column types.
   """
   @spec to_geojson(t()) :: map()
-  def to_geojson(%__MODULE__{data: data, geometry: geometry}) do
+  def to_geojson(%__MODULE__{data: data, geometry: geometry} = gdf) do
     geometries = GeoSeries.to_geojson(geometry)
 
     properties =
       if DataFrame.names(data) == [],
         do: Enum.map(geometries, fn _ -> %{} end),
         else: DataFrame.to_rows(data)
+
+    properties = GeoFrame.Features.with_geometries(properties, gdf.secondary_geometries)
 
     features =
       Enum.zip_with(geometries, properties, fn geom, props ->
@@ -1020,7 +1026,8 @@ defmodule GeoFrame.GeoDataFrame do
 
   Each row is a `Feature` with a string `id` (the row position), the attribute columns as
   `properties`, the `geometry` (`null` for null or unrepresentable rows) and, with
-  `show_bbox`, its `bbox`. Missing values (`nil`, NaN) are `null`. A CRS other than EPSG:4326
+  `show_bbox`, its `bbox`. A frame with secondary geometry columns raises `ArgumentError`, as
+  GeoPandas raises `TypeError` (a shape is not JSON serializable). Missing values (`nil`, NaN) are `null`. A CRS other than EPSG:4326
   adds the `crs` member as GeoPandas does; see `GeoFrame.GeoSeries.to_json/2`.
 
   Options: `:na` - `:null` (default) keeps missing properties as `null`, `:drop` omits them
@@ -1028,7 +1035,8 @@ defmodule GeoFrame.GeoDataFrame do
   `false`); `:drop_id` (default `false`); `:to_wgs84` (default `false`).
   """
   @spec to_json(t(), keyword()) :: String.t()
-  def to_json(%__MODULE__{data: data, geometry: geometry}, opts \\ []) do
+  def to_json(%__MODULE__{data: data, geometry: geometry} = gdf, opts \\ []) do
+    GeoFrame.Formats.single_geometry!(gdf, "to_json")
     opts = GeoFrame.Features.options!(opts, false)
     GeoFrame.Features.build(geometry, data, opts, :json)
   end
@@ -1036,12 +1044,12 @@ defmodule GeoFrame.GeoDataFrame do
   @doc """
   The `__geo_interface__` of the frame: a `FeatureCollection` map (string keys) with `id`,
   `properties`, `geometry` and `bbox` per feature, and the collection `bbox`; missing values
-  are `nil`.
+  are `nil`. Secondary geometry columns are properties holding GeoJSON geometry maps.
   """
   @spec to_geo_interface(t()) :: map()
-  def to_geo_interface(%__MODULE__{data: data, geometry: geometry}) do
+  def to_geo_interface(%__MODULE__{data: data, geometry: geometry} = gdf) do
     opts = GeoFrame.Features.options!([], true)
-    GeoFrame.Features.build(geometry, data, opts, :map)
+    GeoFrame.Features.build(geometry, data, opts, :map, gdf.secondary_geometries)
   end
 
   # -- helpers --------------------------------------------------------------------------
