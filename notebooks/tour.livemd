@@ -1,0 +1,778 @@
+# A tour of GeoFrame: Europe
+
+```elixir
+Mix.install([
+  {:geoframe, path: Path.join(__DIR__, "..")},
+  {:kino, "~> 0.19"},
+  {:req, "~> 0.5"}
+])
+```
+
+## What this notebook does
+
+A walk through GeoFrame on one story, Europe: the countries, its airports, ports, cities and
+rivers, then a second region for the coverage tools. Each step uses a different part of the
+library (I/O, reprojection, constructive operations, joins, overlay, dissolve, measures) and ends
+in a table or a deck.gl map (`GeoFrame.Kino.deck/2`). `notebooks/deck.livemd` covers the map
+widget itself and `notebooks/spike.livemd` the first GeoParquet steps, so those are not repeated.
+
+The data is [Natural Earth](https://www.naturalearthdata.com/) vector data (public domain),
+downloaded on first run into the system temp directory. Every cell is plain Elixir, and the
+cells that use the `filter`, `mutate` or `sort_by` macros start with `require`.
+
+```elixir
+base = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson"
+
+fetch = fn name ->
+  path = Path.join(System.tmp_dir!(), name)
+
+  unless File.exists?(path) do
+    Req.get!("#{base}/#{name}", into: File.stream!(path))
+    |> then(& &1.status)
+    |> then(&(200 = &1))
+  end
+
+  path
+end
+
+# Europe as a longitude/latitude box: it drops overseas territories and cuts Russia at 45 E.
+europe_box = {-25.0, 34.0, 45.0, 72.0}
+```
+
+## Europe, with the Explorer verbs
+
+`read_file!/2` picks the reader from the extension. The result is a `GeoDataFrame`: attributes in
+an `Explorer.DataFrame`, geometry in Rust. The Explorer verbs work on it and keep both aligned:
+`select`, `filter` and `mutate` (queries, so uppercase column names need `col/1`), `sort_by`, `head`.
+Then `GeoFrame.clip/3` cuts the countries to the box, a clip by rectangle. Colour the map by
+Natural Earth's sub-region.
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+europe =
+  fetch.("ne_50m_admin_0_countries.geojson")
+  |> GeoFrame.read_file!()
+  |> GeoFrame.GeoDataFrame.select([
+    "NAME",
+    "ADM0_A3",
+    "SUBREGION",
+    "CONTINENT",
+    "POP_EST",
+    "GDP_MD"
+  ])
+  |> GeoFrame.GeoDataFrame.filter(col("CONTINENT") == "Europe")
+  |> GeoFrame.clip(europe_box, keep_geom_type: true)
+  |> GeoFrame.GeoDataFrame.mutate(POP_M: round(col("POP_EST") / 1_000_000, 1))
+  |> GeoFrame.GeoDataFrame.sort_by(desc: col("POP_EST"))
+
+GeoFrame.Kino.deck(europe,
+  color: {"SUBREGION", :categorical},
+  opacity: 0.75,
+  tooltip: ["NAME", "SUBREGION", "POP_M"]
+)
+```
+
+The attributes are an ordinary dataframe (`data/1`), and `pull/2` returns a single column, or the
+geometry when given its name; `geom_type/1` then tells what the shapes are.
+
+```elixir
+europe
+|> GeoFrame.GeoDataFrame.pull("geometry")
+|> GeoFrame.GeoSeries.geom_type()
+|> Explorer.Series.frequencies()
+|> IO.inspect()
+
+europe |> GeoFrame.GeoDataFrame.head(6) |> GeoFrame.GeoDataFrame.data()
+```
+
+## Writing and reading every format
+
+The same frame goes to GeoParquet (with the covering bbox column and zstd), GeoPackage, FlatGeobuf,
+a zipped Shapefile and GeoJSON, and `write_file/3` chooses the writer from the extension. No GDAL
+is needed. The table compares the file sizes.
+
+```elixir
+airports =
+  fetch.("ne_10m_airports.geojson")
+  |> GeoFrame.read_file!()
+  |> GeoFrame.GeoDataFrame.select(["name", "iata_code", "type", "scalerank"])
+  |> GeoFrame.clip(europe_box)
+
+out = Path.join(System.tmp_dir!(), "geoframe_tour")
+File.rm_rf!(out)
+File.mkdir_p!(out)
+
+targets = [
+  {"GeoParquet", "europe.parquet", [write_covering_bbox: true, compression: :zstd]},
+  {"GeoPackage", "europe.gpkg", [layer: "countries"]},
+  {"FlatGeobuf", "europe.fgb", []},
+  {"Shapefile (zip)", "europe.zip", []},
+  {"GeoJSON", "europe.geojson", []}
+]
+
+for {_format, file, opts} <- targets do
+  :ok = GeoFrame.write_file(europe, Path.join(out, file), opts)
+end
+
+# A second layer in the same GeoPackage.
+:ok = GeoFrame.write_gpkg(airports, Path.join(out, "europe.gpkg"), layer: "airports")
+
+sizes =
+  for {format, file, _opts} <- targets do
+    {format, file, div(File.stat!(Path.join(out, file)).size, 1024)}
+  end
+
+Explorer.DataFrame.new(
+  format: Enum.map(sizes, &elem(&1, 0)),
+  file: Enum.map(sizes, &elem(&1, 1)),
+  kib: Enum.map(sizes, &elem(&1, 2))
+)
+```
+
+A GeoPackage can hold several layers, and `list_layers/2` and `read_file_info/2` describe a file
+without reading all of it. `geoparquet_metadata/1` reads only the Parquet footer.
+
+```elixir
+gpkg = Path.join(out, "europe.gpkg")
+
+layers = GeoFrame.list_layers(gpkg)
+info = GeoFrame.read_file_info(gpkg, layer: "airports")
+meta = GeoFrame.geoparquet_metadata!(Path.join(out, "europe.parquet"))
+
+IO.inspect(Map.take(info, [:driver, :layer, :crs, :geometry_type, :features, :total_bounds]),
+  label: "airports layer"
+)
+
+IO.inspect(
+  Map.take(meta["columns"]["geometry"], ["encoding", "geometry_types", "bbox", "covering"]),
+  label: "geoparquet"
+)
+
+layers
+```
+
+A `bbox:` read returns only the features that touch the box: GeoParquet uses the covering column
+and FlatGeobuf its packed R-tree. Both agree with a plain `cx` filter of the full frame.
+
+```elixir
+iberia = {-10.0, 36.0, 4.0, 44.0}
+
+from_parquet = GeoFrame.read_parquet!(Path.join(out, "europe.parquet"), bbox: iberia)
+from_fgb = GeoFrame.read_flatgeobuf!(Path.join(out, "europe.fgb"), bbox: iberia)
+from_cx = GeoFrame.GeoDataFrame.cx(europe, -10.0, 36.0, 4.0, 44.0)
+
+names = fn gdf ->
+  gdf |> GeoFrame.GeoDataFrame.pull("NAME") |> Explorer.Series.to_list() |> Enum.sort()
+end
+
+%{
+  parquet: names.(from_parquet),
+  flatgeobuf: names.(from_fgb),
+  same_as_cx: names.(from_parquet) == names.(from_cx) and names.(from_fgb) == names.(from_cx)
+}
+```
+
+## Reprojection: how much does Web Mercator lie?
+
+`to_crs/2` is pure Rust (`proj4rs`). Area is computed in the CRS units, so measuring in longitude
+and latitude is meaningless; use an equal-area CRS or `area_geodesic`. The ETRS89 / LAEA Europe
+projection (EPSG:3035) is equal-area, and Web Mercator (EPSG:3857) is not. The ratio between the two
+areas is the inflation of each country on a Web Mercator map. `estimate_utm_crs/1` suggests a UTM
+zone for local work.
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+square_km = fn gdf -> gdf |> GeoFrame.GeoDataFrame.area() |> Explorer.Series.divide(1.0e6) end
+
+laea = GeoFrame.GeoDataFrame.to_crs(europe, "EPSG:3035")
+mercator = GeoFrame.GeoDataFrame.to_crs(europe, "EPSG:3857")
+
+geodesic_km2 =
+  europe.geometry |> GeoFrame.GeoSeries.area(method: :geodesic) |> Explorer.Series.divide(1.0e6)
+
+inflation =
+  europe
+  |> GeoFrame.GeoDataFrame.put("AREA_GEODESIC", geodesic_km2)
+  |> GeoFrame.GeoDataFrame.put("AREA_LAEA", square_km.(laea))
+  |> GeoFrame.GeoDataFrame.put("AREA_MERCATOR", square_km.(mercator))
+  |> GeoFrame.GeoDataFrame.mutate(MERCATOR_X: round(col("AREA_MERCATOR") / col("AREA_LAEA"), 2))
+
+utm = fn code ->
+  inflation
+  |> GeoFrame.GeoDataFrame.filter(col("ADM0_A3") == ^code)
+  |> GeoFrame.GeoDataFrame.estimate_utm_crs()
+end
+
+IO.inspect(%{Portugal: utm.("PRT"), Poland: utm.("POL"), Greece: utm.("GRC")}, label: "UTM zones")
+
+GeoFrame.Kino.deck(inflation,
+  color: {"MERCATOR_X", :viridis},
+  opacity: 0.85,
+  tooltip: ["NAME", "AREA_LAEA", "AREA_GEODESIC", "AREA_MERCATOR", "MERCATOR_X"]
+)
+```
+
+The two honest areas agree within a fraction of a percent, while Web Mercator inflates Iceland and
+Finland several times over. The largest distortions:
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+inflation
+|> GeoFrame.GeoDataFrame.sort_by(desc: col("MERCATOR_X"))
+|> GeoFrame.GeoDataFrame.head(8)
+|> GeoFrame.GeoDataFrame.data()
+|> Explorer.DataFrame.select([
+  "NAME",
+  "AREA_LAEA",
+  "AREA_GEODESIC",
+  "AREA_MERCATOR",
+  "MERCATOR_X"
+])
+```
+
+## Buffers around airports
+
+Buffers need a metric CRS, so reproject first. The major airports of Europe get a 50 km buffer in
+EPSG:3035 (`buffer/3` takes the distance in CRS units, metres here). Then a spatial join finds
+the cities of at least 100,000 people inside each buffer, and the largest one becomes the colour of
+that airport's circle (on a log scale; circles with no such city stay at the bottom of the ramp). The
+circles are small at this zoom, so zoom in.
+
+```elixir
+# The bounding box also catches North Africa and the Near East. `dwithin/4` against the union of
+# the European countries (10 km of slack for coastal points) keeps what belongs to Europe.
+mainland = GeoFrame.GeoSeries.union_all(laea.geometry)
+
+in_europe = fn gdf ->
+  gdf = GeoFrame.GeoDataFrame.to_crs(gdf, "EPSG:3035")
+  near = GeoFrame.GeoSeries.dwithin(GeoFrame.GeoDataFrame.geometry(gdf), mainland, 10_000)
+
+  gdf
+  |> GeoFrame.GeoDataFrame.put("in_europe", near)
+  |> GeoFrame.GeoDataFrame.filter_with(& &1["in_europe"])
+  |> GeoFrame.GeoDataFrame.discard("in_europe")
+end
+
+cities =
+  fetch.("ne_10m_populated_places_simple.geojson")
+  |> GeoFrame.read_file!()
+  |> GeoFrame.GeoDataFrame.select(["name", "adm0name", "adm0cap", "pop_max"])
+  |> GeoFrame.clip(europe_box)
+  |> in_europe.()
+
+major =
+  airports
+  |> GeoFrame.GeoDataFrame.filter_with(&Explorer.Series.contains(&1["type"], "major"))
+  |> in_europe.()
+
+catchments =
+  GeoFrame.GeoDataFrame.new(
+    GeoFrame.GeoDataFrame.data(major),
+    GeoFrame.GeoSeries.buffer(GeoFrame.GeoDataFrame.geometry(major), 50_000)
+  )
+
+big_cities =
+  GeoFrame.GeoDataFrame.filter_with(cities, &Explorer.Series.greater(&1["pop_max"], 100_000))
+
+largest_nearby =
+  big_cities
+  |> GeoFrame.sjoin(GeoFrame.GeoDataFrame.select(catchments, ["iata_code"]), predicate: :within)
+  |> GeoFrame.GeoDataFrame.data()
+  |> Explorer.DataFrame.group_by("iata_code")
+  |> Explorer.DataFrame.summarise_with(&[NEARBY_POP: Explorer.Series.max(&1["pop_max"])])
+
+served =
+  catchments
+  |> GeoFrame.GeoDataFrame.join(largest_nearby, on: "iata_code", how: :left)
+  |> GeoFrame.GeoDataFrame.mutate_with(fn df ->
+    [LOG_POP: df["NEARBY_POP"] |> Explorer.Series.fill_missing(1) |> Explorer.Series.log(10)]
+  end)
+
+GeoFrame.Kino.deck(served,
+  color: {"LOG_POP", :viridis},
+  opacity: 0.6,
+  tooltip: ["name", "iata_code", "NEARBY_POP"]
+)
+```
+
+## How much of each country is within 50 km of an airport?
+
+`dissolve/2` without `:by` merges all the circles into one geometry, and `overlay/3` intersects it
+with the countries (here in EPSG:3035 so that areas are comparable). Dividing the covered area by the
+country's total area gives a share in percent. `how: :difference` returns the rest, the land farther
+than 50 km from any major airport. Most countries sit near zero and the city states near 100, so the
+map colours the logarithm of the share; hover for the percentage.
+
+```elixir
+reach = GeoFrame.dissolve(catchments)
+
+covered =
+  laea
+  |> GeoFrame.GeoDataFrame.select(["ADM0_A3"])
+  |> GeoFrame.overlay(GeoFrame.GeoDataFrame.select(reach, ["iata_code"]), how: :intersection)
+
+outside = GeoFrame.overlay(laea, reach, how: :difference)
+
+covered_km2 =
+  covered
+  |> GeoFrame.GeoDataFrame.put("COVERED_KM2", square_km.(covered))
+  |> GeoFrame.GeoDataFrame.data()
+  |> Explorer.DataFrame.select(["ADM0_A3", "COVERED_KM2"])
+
+shares =
+  inflation
+  |> GeoFrame.GeoDataFrame.join(covered_km2, on: "ADM0_A3", how: :left)
+  |> GeoFrame.GeoDataFrame.mutate_with(fn df ->
+    covered = Explorer.Series.fill_missing(df["COVERED_KM2"], 0.0)
+    share = covered |> Explorer.Series.divide(df["AREA_LAEA"]) |> Explorer.Series.multiply(100)
+
+    [
+      AIRPORT_SHARE: Explorer.Series.round(share, 1),
+      LOG_SHARE: Explorer.Series.log(Explorer.Series.add(share, 1), 10)
+    ]
+  end)
+
+IO.puts(
+  "Land farther than 50 km from a major airport: #{round(Explorer.Series.sum(square_km.(outside)))} km2"
+)
+
+GeoFrame.Kino.deck(shares,
+  color: {"LOG_SHARE", :viridis},
+  opacity: 0.85,
+  tooltip: ["NAME", "AIRPORT_SHARE", "AREA_LAEA"]
+)
+```
+
+## Nearest port, and rivers within reach
+
+`sjoin_nearest/3` attaches to each city its nearest port; `distance_col:` adds the planar distance,
+in metres since both frames are in EPSG:3035. Cities of at least 300,000 people are drawn with the
+circle area following the population and the colour following the distance to the sea on a log scale,
+so the inland giants (Madrid, Paris, Moscow) stand out.
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+ports =
+  fetch.("ne_10m_ports.geojson")
+  |> GeoFrame.read_file!()
+  |> GeoFrame.GeoDataFrame.select(["name"])
+  |> GeoFrame.GeoDataFrame.rename(name: "port")
+  |> GeoFrame.clip(europe_box)
+  |> in_europe.()
+
+to_port =
+  cities
+  |> GeoFrame.GeoDataFrame.filter(pop_max > 300_000)
+  |> GeoFrame.sjoin_nearest(ports, distance_col: "dist_m")
+  |> GeoFrame.GeoDataFrame.mutate(
+    DIST_KM: round(dist_m / 1000, 1),
+    LOG_KM: log(dist_m / 1000 + 1, 10)
+  )
+
+GeoFrame.Kino.deck(to_port,
+  color: {"LOG_KM", :viridis},
+  radius: "pop_max",
+  opacity: 0.8,
+  tooltip: ["name", "adm0name", "pop_max", "port", "DIST_KM"]
+)
+```
+
+The farthest from the coast:
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+to_port
+|> GeoFrame.GeoDataFrame.sort_by(desc: col("DIST_KM"))
+|> GeoFrame.GeoDataFrame.head(8)
+|> GeoFrame.GeoDataFrame.data()
+|> Explorer.DataFrame.select(["name", "adm0name", "pop_max", "port", "DIST_KM"])
+```
+
+Rivers are lines, and `sjoin/3` accepts the `:dwithin` predicate with a distance. Which cities lie within
+10 km of a Natural Earth river centerline? A left join keeps the cities that
+touch no river; one that touches several rivers appears once per river, so `distinct/2` keeps one row
+per city. To draw the rivers and the two kinds of city on the same map, stack the frames with
+`concat/1` after giving each a `kind` column.
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+rivers =
+  fetch.("ne_50m_rivers_lake_centerlines.geojson")
+  |> GeoFrame.read_file!()
+  |> GeoFrame.GeoDataFrame.select(["name"])
+  |> GeoFrame.GeoDataFrame.drop_nil()
+  |> GeoFrame.GeoDataFrame.to_crs("EPSG:3035")
+  |> GeoFrame.clip(mainland)
+
+towns = GeoFrame.GeoDataFrame.filter(cities, pop_max > 100_000)
+
+marked =
+  towns
+  |> GeoFrame.sjoin(GeoFrame.GeoDataFrame.rename(rivers, name: "river"),
+    how: :left,
+    predicate: :dwithin,
+    distance: 10_000
+  )
+  |> GeoFrame.GeoDataFrame.distinct(["name", "pop_max"])
+  |> GeoFrame.GeoDataFrame.mutate_with(fn df ->
+    [kind: Explorer.Series.select(Explorer.Series.is_nil(df["river"]), "city", "city on a river")]
+  end)
+
+rivers_kind =
+  rivers
+  |> GeoFrame.GeoDataFrame.put(
+    "kind",
+    List.duplicate("river", GeoFrame.GeoDataFrame.n_rows(rivers))
+  )
+
+stacked =
+  GeoFrame.concat([
+    GeoFrame.GeoDataFrame.select(rivers_kind, ["name", "kind"]),
+    GeoFrame.GeoDataFrame.select(marked, ["name", "kind"])
+  ])
+
+on_river = GeoFrame.GeoDataFrame.filter(marked, kind == "city on a river")
+
+IO.puts(
+  "#{GeoFrame.GeoDataFrame.n_rows(on_river)} of #{GeoFrame.GeoDataFrame.n_rows(towns)} cities are within 10 km of a river"
+)
+
+GeoFrame.Kino.deck(stacked,
+  color: {"kind", :categorical},
+  radius: 4,
+  width: 1.5,
+  opacity: 0.85,
+  tooltip: ["name", "kind"]
+)
+```
+
+## Simplifying and measuring the error
+
+`simplify/3` with `preserve_topology: false` is Ramer-Douglas-Peucker, where the tolerance is a
+distance in CRS units. How wrong is the result? `hausdorff_distance/3` measures, row by row, the
+largest gap between two geometries. The table shows vertex counts and the mean and worst error at
+three tolerances; the map draws the 20 km version and colours each country by the share of its vertices that
+were dropped (ragged coasts lose the most, straight borders the least).
+
+```elixir
+original = laea.geometry
+
+variant = fn tolerance ->
+  GeoFrame.GeoSeries.simplify(original, tolerance, preserve_topology: false)
+end
+
+vertices = fn series ->
+  series |> GeoFrame.GeoSeries.count_coordinates() |> Explorer.Series.sum()
+end
+
+rows =
+  for km <- [2, 5, 20] do
+    simple = variant.(km * 1000)
+    error = GeoFrame.GeoSeries.hausdorff_distance(simple, original)
+
+    %{
+      tolerance_km: km,
+      vertices: vertices.(simple),
+      mean_error_km: error |> Explorer.Series.mean() |> Kernel./(1000) |> Float.round(1),
+      worst_error_km: error |> Explorer.Series.max() |> Kernel./(1000) |> Float.round(1)
+    }
+  end
+
+IO.inspect(vertices.(original), label: "original vertices")
+
+rows
+|> Explorer.DataFrame.new()
+|> Explorer.DataFrame.select(["tolerance_km", "vertices", "mean_error_km", "worst_error_km"])
+```
+
+```elixir
+simple20 = variant.(20_000)
+
+removed =
+  Explorer.Series.subtract(
+    1,
+    Explorer.Series.divide(
+      GeoFrame.GeoSeries.count_coordinates(simple20),
+      GeoFrame.GeoSeries.count_coordinates(original)
+    )
+  )
+  |> Explorer.Series.multiply(100)
+  |> Explorer.Series.round(0)
+
+error_km =
+  simple20
+  |> GeoFrame.GeoSeries.hausdorff_distance(original)
+  |> Explorer.Series.divide(1000)
+
+drawn =
+  GeoFrame.GeoDataFrame.new(
+    laea |> GeoFrame.GeoDataFrame.data() |> Explorer.DataFrame.select(["NAME", "POP_M"]),
+    simple20
+  )
+  |> GeoFrame.GeoDataFrame.put("VERTICES_REMOVED_PCT", removed)
+  |> GeoFrame.GeoDataFrame.put("ERROR_KM", Explorer.Series.round(error_km, 1))
+
+GeoFrame.Kino.deck(drawn,
+  color: {"VERTICES_REMOVED_PCT", :viridis},
+  opacity: 0.85,
+  tooltip: ["NAME", "VERTICES_REMOVED_PCT", "ERROR_KM"]
+)
+```
+
+Lines have the discrete Fréchet distance too (`frechet_distance/3`, for `LineString` rows; the `:densify`
+fraction adds points along the segments so that it is not measured at the vertices only). The same
+check on the rivers, simplified to 5 km:
+
+```elixir
+lines =
+  rivers |> GeoFrame.GeoDataFrame.explode(ignore_index: true) |> GeoFrame.GeoDataFrame.geometry()
+
+simple_lines = GeoFrame.GeoSeries.simplify(lines, 5_000, preserve_topology: false)
+leash = GeoFrame.GeoSeries.frechet_distance(simple_lines, lines, densify: 0.02)
+
+%{
+  river_parts: GeoFrame.GeoSeries.size(lines),
+  vertices_before: vertices.(lines),
+  vertices_after: vertices.(simple_lines),
+  worst_frechet_km: leash |> Explorer.Series.max() |> Kernel./(1000) |> Float.round(1)
+}
+```
+
+## How convex is a country?
+
+`convex_hull/1` wraps each geometry in the smallest convex polygon. The area of the country divided by
+the area of its hull is its solidity: 1 for a convex shape, lower for coastlines with gulfs, islands and
+peninsulas. The centroid of such shapes can fall outside the shape, which is what `representative_point/1`
+fixes (the point is guaranteed to lie inside).
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+hull = GeoFrame.GeoSeries.convex_hull(laea.geometry)
+
+solidity =
+  Explorer.Series.divide(GeoFrame.GeoSeries.area(laea.geometry), GeoFrame.GeoSeries.area(hull))
+
+shapes =
+  laea
+  |> GeoFrame.GeoDataFrame.select(["NAME", "SUBREGION"])
+  |> GeoFrame.GeoDataFrame.put("SOLIDITY", Explorer.Series.round(solidity, 2))
+
+centre_inside =
+  GeoFrame.GeoSeries.within(GeoFrame.GeoSeries.centroid(laea.geometry), laea.geometry)
+
+outside_names =
+  shapes
+  |> GeoFrame.GeoDataFrame.put("centroid_inside", centre_inside)
+  |> GeoFrame.GeoDataFrame.filter(centroid_inside == false)
+  |> GeoFrame.GeoDataFrame.pull("NAME")
+  |> Explorer.Series.to_list()
+
+IO.inspect(outside_names, label: "centroid falls outside the country")
+
+representative_inside =
+  laea.geometry
+  |> GeoFrame.GeoSeries.representative_point()
+  |> GeoFrame.GeoSeries.within(laea.geometry)
+  |> Explorer.Series.to_list()
+  |> Enum.all?()
+
+IO.inspect(representative_inside, label: "representative point always inside")
+
+GeoFrame.Kino.deck(shapes,
+  color: {"SOLIDITY", :viridis},
+  opacity: 0.85,
+  tooltip: ["NAME", "SOLIDITY"]
+)
+```
+
+## Dissolve countries into regions
+
+`dissolve/2` merges the rows of each group into one geometry (`union_all` per group, in Rust) and
+aggregates the attributes with Explorer: here the population and the GDP are summed and the countries
+counted. Natural Earth gives GDP in millions of US dollars, so the GDP per head is a ratio of two sums.
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+regions =
+  europe
+  |> GeoFrame.dissolve(
+    by: "SUBREGION",
+    aggfunc: [POP_EST: :sum, GDP_MD: :sum, NAME: :count]
+  )
+  |> GeoFrame.GeoDataFrame.mutate(
+    GDP_PER_HEAD: round(col("GDP_MD") * 1_000_000 / col("POP_EST"), 0),
+    POP_M: round(col("POP_EST") / 1_000_000, 1)
+  )
+
+GeoFrame.Kino.deck(regions,
+  color: {"GDP_PER_HEAD", :viridis},
+  opacity: 0.8,
+  tooltip: ["SUBREGION", "NAME", "POP_M", "GDP_PER_HEAD"]
+)
+```
+
+## Explode into polygons
+
+A country is often a `MultiPolygon`: the mainland plus islands. `explode/2` makes one row per part and
+keeps the attributes (`index_parts: true` adds the `index` of the source row and the `part` number).
+Colouring the parts by the logarithm of their area separates the mainlands from the islands.
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+parts =
+  laea
+  |> GeoFrame.GeoDataFrame.select(["NAME"])
+  |> GeoFrame.GeoDataFrame.explode(index_parts: true)
+
+parts =
+  parts
+  |> GeoFrame.GeoDataFrame.put("AREA_KM2", parts |> square_km.() |> Explorer.Series.round(1))
+  |> GeoFrame.GeoDataFrame.mutate(LOG_AREA: log(col("AREA_KM2") + 1, 10))
+
+IO.puts(
+  "#{GeoFrame.GeoDataFrame.n_rows(laea)} countries, #{GeoFrame.GeoDataFrame.n_rows(parts)} polygons"
+)
+
+GeoFrame.Kino.deck(parts,
+  color: {"LOG_AREA", :viridis},
+  opacity: 0.9,
+  tooltip: ["NAME", "part", "AREA_KM2"]
+)
+```
+
+The countries made of the most pieces, using `group_by` on the attribute side:
+
+```elixir
+require Explorer.DataFrame
+
+parts
+|> GeoFrame.GeoDataFrame.data()
+|> Explorer.DataFrame.group_by("NAME")
+|> Explorer.DataFrame.summarise_with(
+  &[PARTS: Explorer.Series.count(&1["part"]), KM2: Explorer.Series.sum(&1["AREA_KM2"])]
+)
+|> Explorer.DataFrame.sort_by(desc: col("PARTS"))
+|> Explorer.DataFrame.head(8)
+```
+
+## Distances between capitals
+
+`distance/3` pairs rows of two series, or compares each row with one geometry, and `method: :geodesic`
+returns metres on the WGS 84 ellipsoid (the points are back in longitude/latitude for it). Looping over the capitals
+builds the distance matrix, one column per city.
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+wanted = ["Lisbon", "Madrid", "Paris", "Berlin", "Rome", "Warsaw", "Athens", "Stockholm"]
+
+capitals =
+  cities
+  |> GeoFrame.GeoDataFrame.to_crs("EPSG:4326")
+  |> GeoFrame.GeoDataFrame.filter(adm0cap == 1)
+  |> GeoFrame.GeoDataFrame.filter_with(&Explorer.Series.in(&1["name"], wanted))
+
+capital_names = capitals |> GeoFrame.GeoDataFrame.pull("name") |> Explorer.Series.to_list()
+
+columns =
+  for {name, row} <- Enum.with_index(capital_names) do
+    one = GeoFrame.GeoSeries.take(capitals.geometry, [row])
+
+    km =
+      capitals.geometry
+      |> GeoFrame.GeoSeries.distance(one, method: :geodesic)
+      |> Explorer.Series.divide(1000)
+      |> Explorer.Series.round(0)
+
+    {name, km}
+  end
+
+Explorer.DataFrame.new([{"from", Explorer.Series.from_list(capital_names)} | columns])
+```
+
+The matrix is symmetric with a zero diagonal. Lisbon to Athens is about 2,860 km on the ellipsoid.
+
+## Coverage tools on the states of the USA
+
+Administrative areas should tile the plane with no gaps or overlaps, and simplifying them one by one
+breaks that. `is_valid_coverage/2` checks it, `invalid_coverage_edges/2` returns the offending edges and
+`simplify_coverage/3` simplifies the shared borders once so that neighbours still fit. The 48 contiguous
+states from the admin-1 file, in the equal-area Albers CRS (EPSG:5070), are simplified with a
+25 km tolerance in both ways.
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+states =
+  fetch.("ne_50m_admin_1_states_provinces.geojson")
+  |> GeoFrame.read_file!()
+  |> GeoFrame.GeoDataFrame.select(["name", "postal", "region", "admin"])
+  |> GeoFrame.GeoDataFrame.filter(admin == "United States of America")
+  |> GeoFrame.GeoDataFrame.filter(postal != "AK" and postal != "HI")
+  |> GeoFrame.GeoDataFrame.to_crs("EPSG:5070")
+
+original = states.geometry
+alone = GeoFrame.GeoSeries.simplify(original, 25_000, preserve_topology: false)
+together = GeoFrame.GeoSeries.simplify_coverage(original, 25_000)
+
+count = fn series -> series |> GeoFrame.GeoSeries.count_coordinates() |> Explorer.Series.sum() end
+
+Explorer.DataFrame.new(
+  version: ["original", "simplify, state by state", "simplify_coverage"],
+  vertices: [count.(original), count.(alone), count.(together)],
+  valid_coverage: [
+    GeoFrame.GeoSeries.is_valid_coverage(original),
+    GeoFrame.GeoSeries.is_valid_coverage(alone),
+    GeoFrame.GeoSeries.is_valid_coverage(together)
+  ]
+)
+```
+
+Where do the independent results disagree? Each state gets the stretches of its border that overlap a
+neighbour or fail to match its vertices. Those edges are the seams that `simplify/3` opened. The map
+stacks the valid `simplify_coverage` states (blue) with the seams of the independent result (orange), told
+apart by a `kind` column.
+
+```elixir
+require GeoFrame.GeoDataFrame
+
+seams = GeoFrame.GeoSeries.invalid_coverage_edges(alone)
+
+kind = fn gdf, label ->
+  gdf
+  |> GeoFrame.GeoDataFrame.select(["name"])
+  |> GeoFrame.GeoDataFrame.put("kind", List.duplicate(label, GeoFrame.GeoDataFrame.n_rows(gdf)))
+end
+
+tidy =
+  states
+  |> GeoFrame.GeoDataFrame.data()
+  |> GeoFrame.GeoDataFrame.new(together)
+
+broken =
+  states
+  |> GeoFrame.GeoDataFrame.data()
+  |> GeoFrame.GeoDataFrame.new(seams)
+  |> GeoFrame.GeoDataFrame.put("clean", GeoFrame.GeoSeries.is_empty(seams))
+  |> GeoFrame.GeoDataFrame.filter(clean == false)
+
+GeoFrame.Kino.deck(
+  GeoFrame.concat([
+    kind.(tidy, "state, simplify_coverage"),
+    kind.(broken, "seam, state by state")
+  ]),
+  color: {"kind", :categorical},
+  width: 3,
+  opacity: 0.7,
+  tooltip: ["name", "kind"]
+)
+```
