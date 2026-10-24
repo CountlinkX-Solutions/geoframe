@@ -172,11 +172,13 @@ Shapefile and zip input/output:
 With [Kino](https://github.com/livebook-dev/kino) installed, a `GeoFrame.GeoDataFrame` renders
 in Livebook with **Map**, **Table** and **Inspect** tabs (a `GeoFrame.GeoSeries` with **Map**
 and **Inspect**). The map needs the optional `kino_maplibre` package and draws up to 50,000
-features; see `GeoFrame.Kino`. Try the walkthrough in [`notebooks/spike.livemd`](notebooks/spike.livemd).
+features and 500,000 vertices (GeometryCollections member by member); the Table tab shows at
+most 100,000 rows and 250,000 vertices, with a notice when rows are left out. All caps are
+options or `config :geoframe` keys; see `GeoFrame.Kino`. Try the walkthrough in [`notebooks/spike.livemd`](notebooks/spike.livemd).
 
 For large inputs use `GeoFrame.Kino.deck/2`: it sends binary buffers to deck.gl (no GeoJSON),
-so a million features stay interactive, with hover tooltips and colour or size by column
-(see [`notebooks/deck.livemd`](notebooks/deck.livemd)).
+so a million features stay interactive, with hover tooltips and colour or size by column;
+it is capped by `:max_features` and `:max_vertices` (see [`notebooks/deck.livemd`](notebooks/deck.livemd)).
 
 [`notebooks/tour.livemd`](notebooks/tour.livemd) is a longer tour on one story (Europe): every file format,
 reprojection, buffers, spatial joins, overlay, dissolve, simplification, distance measures and the

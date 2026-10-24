@@ -28,6 +28,9 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     * **Rows:** null and empty rows draw nothing. A multi geometry becomes one part per member.
       Every layer carries the source row of each part, which maps hover tooltips and per-row
       styles back to the table.
+    * **GeometryCollections:** decomposed into their members (nested collections included),
+      each drawn in the layer of its kind and carrying the collection's row, so a hover on any
+      member shows the collection's tooltip.
 
     ## Options
 
@@ -44,6 +47,10 @@ if Code.ensure_loaded?(Kino.JS.Live) do
         #{2_000_000} cells (rows x columns) are allowed.
       * `:max_features` - maximum number of rows, default #{1_000_000}. A larger input raises
         `ArgumentError`; filter or sample it, or raise the option.
+      * `:max_vertices` - maximum number of vertices (coordinates of all non-empty geometries),
+        default #{10_000_000} (about 160 MB of positions). The wire size follows vertices, not
+        rows, so a few huge polygons cost more than many points. A larger input raises
+        `ArgumentError` naming the count; simplify, filter or sample it, or raise the option.
       * `:basemap` - a MapLibre style URL, or `nil` for a blank background. The default is
         Carto Positron (`#{"https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"}`),
         which needs internet access in the browser.
@@ -62,6 +69,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     alias Kino.JS.Live, as: LiveKino
 
     @default_max_features 1_000_000
+    @default_max_vertices 10_000_000
     @max_tooltip_cells 2_000_000
     @max_tooltip_chars 200
     @max_tooltip_columns 10
@@ -70,7 +78,17 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     @missing_color [179, 179, 179, 255]
     @radius_range {2.0, 20.0}
     @width_range {1.0, 8.0}
-    @options [:color, :radius, :width, :opacity, :tooltip, :max_features, :basemap, :height]
+    @options [
+      :color,
+      :radius,
+      :width,
+      :opacity,
+      :tooltip,
+      :max_features,
+      :max_vertices,
+      :basemap,
+      :height
+    ]
 
     # viridis sampled at 0, 1/8, ..., 1.
     @viridis [
@@ -168,9 +186,22 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     @defaults [
       opacity: 0.8,
       max_features: @default_max_features,
+      max_vertices: @default_max_vertices,
       basemap: @default_basemap,
       height: 480
     ]
+
+    @checks [
+      opacity: ":opacity must be a number from 0 to 1",
+      max_features: ":max_features must be a positive integer",
+      max_vertices: ":max_vertices must be a positive integer",
+      height: ":height must be a positive integer (pixels)",
+      basemap: ":basemap must be a style URL or nil"
+    ]
+
+    defp valid?(:opacity, v), do: is_number(v) and v >= 0 and v <= 1
+    defp valid?(:basemap, v), do: is_nil(v) or is_binary(v)
+    defp valid?(_positive_integer, v), do: is_integer(v) and v > 0
 
     defp validate!(opts) do
       unless Keyword.keyword?(opts), do: raise(ArgumentError, "options must be a keyword list")
@@ -185,25 +216,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
       opts = Keyword.merge(@defaults, opts)
 
-      check!(
-        is_number(opts[:opacity]) and opts[:opacity] >= 0 and opts[:opacity] <= 1,
-        ":opacity must be a number from 0 to 1"
-      )
-
-      check!(
-        is_integer(opts[:max_features]) and opts[:max_features] > 0,
-        ":max_features must be a positive integer"
-      )
-
-      check!(
-        is_integer(opts[:height]) and opts[:height] > 0,
-        ":height must be a positive integer (pixels)"
-      )
-
-      check!(
-        is_nil(opts[:basemap]) or is_binary(opts[:basemap]),
-        ":basemap must be a style URL or nil"
-      )
+      Enum.each(@checks, fn {key, message} -> check!(valid?(key, opts[key]), message) end)
 
       opts
     end
@@ -221,6 +234,14 @@ if Code.ensure_loaded?(Kino.JS.Live) do
         raise ArgumentError,
               "#{size} features is above the deck.gl limit of #{opts[:max_features]}; " <>
                 "filter or sample the frame, or raise :max_features"
+      end
+
+      vertices = GeoFrame.Kino.vertex_count(geometry)
+
+      if vertices > opts[:max_vertices] do
+        raise ArgumentError,
+              "#{vertices} vertices is above the deck.gl limit of #{opts[:max_vertices]}; " <>
+                "simplify, filter or sample the frame, or raise :max_vertices"
       end
     end
 
