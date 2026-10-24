@@ -1,0 +1,967 @@
+# GeoFrame and GeoPandas side by side
+
+```elixir
+Mix.install([
+  {:geoframe, path: Path.join(__DIR__, "..")},
+  {:kino, "~> 0.19"},
+  {:req, "~> 0.5"},
+  {:pythonx, "~> 0.4.2"}
+])
+```
+
+```pyproject.toml
+[project]
+name = "project"
+version = "0.0.0"
+requires-python = "==3.12.*"
+dependencies = [
+  "geopandas==1.2.0",
+  "shapely==2.2.0",
+  "pyproj==3.8.0",
+]
+```
+
+## What this notebook is
+
+GeoFrame is meant to give the same answers as GeoPandas. Here ten realistic analyses on
+[Natural Earth](https://www.naturalearthdata.com/) data run twice: first with GeoFrame (Elixir),
+then with GeoPandas (Python cells, through [Pythonx](https://github.com/livebook-dev/pythonx)),
+and a small table compares the numbers that matter. The Python environment (GeoPandas 1.2.0)
+is installed on first run, which takes a minute.
+
+Every section has the same four steps: an explanation, the GeoFrame cell (its last line is a result
+table, and some sections add a deck.gl map), the GeoPandas cell, and a comparison table with a
+PASS/FAIL per metric. Counts and names must be identical; areas and lengths must agree within
+a relative `1e-6` (the tolerances live in `examples/geopandas/tolerances.json`, with the reason for
+every looser one). The last section summarizes everything.
+
+The Python code is the same as `examples/geopandas/compare.py`, and the GeoFrame cells are what
+`scripts/compare_geopandas.exs` runs, so `scripts/compare_geopandas.sh` repeats this comparison
+from the command line. Python and Elixir cells share one set of variables, so the GeoFrame
+variables are all prefixed with `gf_` and the GeoPandas results with `gp_`.
+
+## Setup
+
+Natural Earth is downloaded once into the system temp directory: the 50m countries, the 10m
+populated places and the 50m river centerlines. Most analyses are measured in the equal-area
+projection EPSG:6933, so areas in km² are comparable between countries.
+
+```elixir
+alias Explorer.DataFrame, as: DF
+alias Explorer.Series
+alias GeoFrame.{GeoDataFrame, GeoSeries}
+
+Code.require_file(Path.join(__DIR__, "../examples/geopandas/comparison.ex"))
+
+gf_base = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson"
+
+gf_fetch = fn name ->
+  path = Path.join(System.tmp_dir!(), name)
+
+  unless File.exists?(path) do
+    Req.get!("#{gf_base}/#{name}", into: File.stream!(path)) |> then(& &1.status) |> then(&(200 = &1))
+  end
+
+  path
+end
+
+gf_equal_area = "EPSG:6933"
+
+# South America Albers equal-area conic (ESRI:102033) as WKT, since "ESRI:" codes are not in EPSG.
+gf_south_america_albers =
+  ~S|PROJCS["South_America_Albers",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]],PROJECTION["Albers_Conic_Equal_Area"],PARAMETER["latitude_of_center",-32],PARAMETER["longitude_of_center",-60],PARAMETER["standard_parallel_1",-5],PARAMETER["standard_parallel_2",-42],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1]]|
+
+gf_countries = gf_fetch.("ne_50m_admin_0_countries.geojson") |> GeoFrame.read_file!()
+gf_cities = gf_fetch.("ne_10m_populated_places_simple.geojson") |> GeoFrame.read_file!()
+gf_rivers = gf_fetch.("ne_50m_rivers_lake_centerlines.geojson") |> GeoFrame.read_file!()
+
+gf_countries_eq = GeoDataFrame.to_crs(gf_countries, gf_equal_area)
+gf_big_cities = GeoDataFrame.filter_with(gf_cities, &Series.greater(&1["pop_max"], 1_000_000))
+
+# Replaces the geometry of a frame, keeping the attributes.
+gf_with_geometry = fn gdf, geometry -> GeoDataFrame.new(GeoDataFrame.data(gdf), geometry) end
+
+# Square kilometres.
+gf_km2 = fn series -> Series.divide(series, 1.0e6) end
+
+# Area of every country in km² in the equal-area projection, as a plain table.
+gf_country_area =
+  gf_countries_eq
+  |> GeoDataFrame.select(["ADM0_A3"])
+  |> then(&GeoDataFrame.put(&1, "area_km2", &1 |> GeoDataFrame.area() |> gf_km2.()))
+  |> GeoDataFrame.data()
+
+# Names of the rows of a frame whose boolean mask is true, sorted.
+gf_names = fn gdf, mask ->
+  gdf
+  |> GeoDataFrame.put("hit", mask)
+  |> GeoDataFrame.filter_with(& &1["hit"])
+  |> GeoDataFrame.pull("NAME")
+  |> Series.to_list()
+  |> Enum.sort()
+end
+
+{GeoDataFrame.n_rows(gf_countries), GeoDataFrame.n_rows(gf_cities), GeoDataFrame.n_rows(gf_rivers)}
+```
+
+The same data in GeoPandas.
+
+```python
+import json
+import os
+import tempfile
+import urllib.request
+
+import geopandas as gpd
+import shapely
+from pyproj import Geod
+
+BASE = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson"
+EQUAL_AREA = "EPSG:6933"
+# South America Albers equal-area conic (ESRI:102033) as WKT, since "ESRI:" codes are not in EPSG.
+SOUTH_AMERICA_ALBERS = (
+    'PROJCS["South_America_Albers",GEOGCS["WGS 84",DATUM["WGS_1984",'
+    'SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],'
+    'UNIT["Degree",0.0174532925199433]],PROJECTION["Albers_Conic_Equal_Area"],'
+    'PARAMETER["latitude_of_center",-32],PARAMETER["longitude_of_center",-60],'
+    'PARAMETER["standard_parallel_1",-5],PARAMETER["standard_parallel_2",-42],'
+    'PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1]]'
+)
+
+
+def fetch(name):
+    path = os.path.join(tempfile.gettempdir(), name)
+    if not os.path.exists(path):
+        urllib.request.urlretrieve(f"{BASE}/{name}", path)
+    return path
+
+
+countries = gpd.read_file(fetch("ne_50m_admin_0_countries.geojson"))
+cities = gpd.read_file(fetch("ne_10m_populated_places_simple.geojson"))
+rivers = gpd.read_file(fetch("ne_50m_rivers_lake_centerlines.geojson"))
+countries_eq = countries.to_crs(EQUAL_AREA)
+big_cities = cities[cities["pop_max"] > 1_000_000]
+```
+
+
+## 1. Buffer and dissolve: land within 100 km of a big city
+
+Take every city with more than a million people, project to the equal-area CRS, buffer each by
+100 km, and dissolve the buffers per country, so that overlapping buffers of one country count
+once. The result is the area of each country that lies within reach of a big city. Dissolving
+runs a union per group, the heaviest geometry operation of the notebook.
+
+```elixir
+gf_buffers =
+  gf_big_cities
+  |> GeoDataFrame.select(["adm0name"])
+  |> GeoDataFrame.to_crs(gf_equal_area)
+  |> then(&gf_with_geometry.(&1, GeoSeries.buffer(GeoDataFrame.geometry(&1), 100_000)))
+
+gf_covered =
+  gf_buffers
+  |> GeoFrame.dissolve(by: "adm0name")
+  |> then(&GeoDataFrame.put(&1, "area_km2", &1 |> GeoDataFrame.area() |> gf_km2.()))
+
+gf_covered_table =
+  gf_covered
+  |> GeoDataFrame.data()
+  |> DF.sort_with(&[desc: &1["area_km2"], asc: &1["adm0name"]])
+
+gf_top = DF.head(gf_covered_table, 10)
+
+gf_buffer_dissolve = %{
+  "n_countries" => DF.n_rows(gf_covered_table),
+  "total_area_km2" => Series.sum(gf_covered_table["area_km2"]),
+  "top10_countries" => Series.to_list(gf_top["adm0name"]),
+  "top10_area_km2" => Series.to_list(gf_top["area_km2"])
+}
+
+gf_top
+```
+
+```elixir
+# notebook-only
+GeoFrame.Kino.deck(gf_covered, color: {"area_km2", :viridis}, opacity: 0.7, tooltip: ["adm0name", "area_km2"])
+```
+
+GeoPandas:
+
+```python
+def buffer_dissolve():
+    buffers = big_cities.to_crs(EQUAL_AREA)[["adm0name", "geometry"]]
+    buffers = buffers.set_geometry(buffers.buffer(100_000))
+    covered = buffers.dissolve(by="adm0name").reset_index()
+    covered["area_km2"] = covered.area / 1e6
+    top = covered.sort_values(["area_km2", "adm0name"], ascending=[False, True]).head(10)
+    return {
+        "n_countries": len(covered),
+        "total_area_km2": covered["area_km2"].sum(),
+        "top10_countries": top["adm0name"].tolist(),
+        "top10_area_km2": top["area_km2"].tolist(),
+    }
+
+
+gp_buffer_dissolve = buffer_dissolve()
+```
+
+```elixir
+# notebook-only
+GeoPandasCompare.rows(%{"buffer_dissolve" => gf_buffer_dissolve}, %{"buffer_dissolve" => Pythonx.decode(gp_buffer_dissolve)})
+|> GeoPandasCompare.dataframe()
+```
+
+
+## 2. Overlay: how much of each country lies near a major river
+
+Keep the rivers with a Natural Earth `scalerank` of 4 or less (the major ones), buffer them by 50 km
+and merge the buffers into a single corridor. Then intersect the countries with the corridor
+(`overlay`, `how: :intersection`) and relate the area inside the corridor to the area of the
+country.
+
+```elixir
+gf_major = gf_rivers |> GeoDataFrame.filter_with(&Series.less_equal(&1["scalerank"], 4)) |> GeoDataFrame.to_crs(gf_equal_area)
+
+gf_corridor =
+  GeoDataFrame.new(
+    DF.new(corridor: ["major rivers"]),
+    gf_major |> GeoDataFrame.geometry() |> GeoSeries.buffer(50_000) |> GeoSeries.union_all()
+  )
+
+gf_pieces =
+  gf_countries_eq
+  |> GeoDataFrame.select(["ADM0_A3"])
+  |> GeoFrame.overlay(gf_corridor, how: :intersection, keep_geom_type: true)
+
+gf_inside =
+  gf_pieces
+  |> then(&GeoDataFrame.put(&1, "inside_km2", &1 |> GeoDataFrame.area() |> gf_km2.()))
+  |> GeoDataFrame.data()
+  |> DF.join(gf_country_area, on: "ADM0_A3")
+  |> DF.mutate_with(&[share_pct: Series.multiply(Series.divide(&1["inside_km2"], &1["area_km2"]), 100)])
+  |> DF.sort_with(&[desc: &1["inside_km2"], asc: &1["ADM0_A3"]])
+
+gf_top = DF.head(gf_inside, 5)
+
+gf_river_corridor = %{
+  "n_countries" => DF.n_rows(gf_inside),
+  "total_inside_km2" => Series.sum(gf_inside["inside_km2"]),
+  "top5_countries" => Series.to_list(gf_top["ADM0_A3"]),
+  "top5_inside_km2" => Series.to_list(gf_top["inside_km2"]),
+  "top5_share_pct" => Series.to_list(gf_top["share_pct"])
+}
+
+gf_top
+```
+
+```elixir
+# notebook-only
+GeoFrame.Kino.deck(gf_pieces, color: {"ADM0_A3", :categorical}, opacity: 0.6, tooltip: ["ADM0_A3"])
+```
+
+GeoPandas:
+
+```python
+def river_corridor():
+    major = rivers[rivers["scalerank"] <= 4].to_crs(EQUAL_AREA)
+    corridor = gpd.GeoDataFrame(geometry=[major.buffer(50_000).union_all()], crs=EQUAL_AREA)
+    pieces = gpd.overlay(
+        countries_eq[["ADM0_A3", "geometry"]], corridor, how="intersection", keep_geom_type=True
+    )
+    pieces["inside_km2"] = pieces.area / 1e6
+    pieces = pieces.merge(
+        countries_eq.assign(area_km2=countries_eq.area / 1e6)[["ADM0_A3", "area_km2"]],
+        on="ADM0_A3",
+    )
+    pieces["share_pct"] = 100 * pieces["inside_km2"] / pieces["area_km2"]
+    top = pieces.sort_values(["inside_km2", "ADM0_A3"], ascending=[False, True]).head(5)
+    return {
+        "n_countries": len(pieces),
+        "total_inside_km2": pieces["inside_km2"].sum(),
+        "top5_countries": top["ADM0_A3"].tolist(),
+        "top5_inside_km2": top["inside_km2"].tolist(),
+        "top5_share_pct": top["share_pct"].tolist(),
+    }
+
+
+gp_river_corridor = river_corridor()
+```
+
+```elixir
+# notebook-only
+GeoPandasCompare.rows(%{"river_corridor" => gf_river_corridor}, %{"river_corridor" => Pythonx.decode(gp_river_corridor)})
+|> GeoPandasCompare.dataframe()
+```
+
+
+## 3. Spatial join and group by: cities per country and density
+
+A spatial join with the `within` predicate gives every populated place its country. Group by
+country for the number of places, the total and largest population, and divide the total by the
+country's area in km² (EPSG:6933) for a density of city dwellers. Places that fall outside every
+50m polygon (small islands, coastal points) drop out of the inner join, in both libraries.
+
+```elixir
+gf_joined =
+  GeoFrame.sjoin(
+    GeoDataFrame.select(gf_cities, ["name", "pop_max"]),
+    GeoDataFrame.select(gf_countries, ["ADM0_A3"]),
+    how: :inner,
+    predicate: :within
+  )
+
+gf_stats =
+  gf_joined
+  |> GeoDataFrame.data()
+  |> DF.group_by("ADM0_A3")
+  |> DF.summarise_with(
+    &[n_cities: Series.count(&1["name"]), pop: Series.sum(&1["pop_max"]), max_pop: Series.max(&1["pop_max"])]
+  )
+  |> DF.join(gf_country_area, on: "ADM0_A3")
+  |> DF.mutate_with(&[density_per_km2: Series.divide(&1["pop"], &1["area_km2"])])
+
+gf_by_count = gf_stats |> DF.sort_with(&[desc: &1["n_cities"], asc: &1["ADM0_A3"]]) |> DF.head(10)
+gf_by_density = gf_stats |> DF.sort_with(&[desc: &1["density_per_km2"], asc: &1["ADM0_A3"]]) |> DF.head(5)
+
+gf_cities_per_country = %{
+  "n_joined" => GeoDataFrame.n_rows(gf_joined),
+  "n_countries" => DF.n_rows(gf_stats),
+  "total_pop" => Series.sum(gf_stats["pop"]),
+  "top10_by_cities" => Series.to_list(gf_by_count["ADM0_A3"]),
+  "top10_city_counts" => Series.to_list(gf_by_count["n_cities"]),
+  "top10_max_pop" => Series.to_list(gf_by_count["max_pop"]),
+  "top5_by_density" => Series.to_list(gf_by_density["ADM0_A3"]),
+  "top5_density_per_km2" => Series.to_list(gf_by_density["density_per_km2"])
+}
+
+gf_by_count
+```
+
+GeoPandas:
+
+```python
+def cities_per_country():
+    joined = gpd.sjoin(
+        cities[["name", "pop_max", "geometry"]],
+        countries[["ADM0_A3", "geometry"]],
+        how="inner",
+        predicate="within",
+    )
+    stats = (
+        joined.groupby("ADM0_A3")
+        .agg(n_cities=("name", "size"), pop=("pop_max", "sum"), max_pop=("pop_max", "max"))
+        .reset_index()
+    )
+    area = (countries_eq.area / 1e6).rename("area_km2")
+    stats = stats.merge(
+        countries_eq[["ADM0_A3"]].join(area), on="ADM0_A3"
+    )
+    stats["density_per_km2"] = stats["pop"] / stats["area_km2"]
+    by_count = stats.sort_values(["n_cities", "ADM0_A3"], ascending=[False, True]).head(10)
+    by_density = stats.sort_values(["density_per_km2", "ADM0_A3"], ascending=[False, True]).head(5)
+    return {
+        "n_joined": len(joined),
+        "n_countries": len(stats),
+        "total_pop": int(stats["pop"].sum()),
+        "top10_by_cities": by_count["ADM0_A3"].tolist(),
+        "top10_city_counts": by_count["n_cities"].tolist(),
+        "top10_max_pop": by_count["max_pop"].tolist(),
+        "top5_by_density": by_density["ADM0_A3"].tolist(),
+        "top5_density_per_km2": by_density["density_per_km2"].tolist(),
+    }
+
+
+gp_cities_per_country = cities_per_country()
+```
+
+```elixir
+# notebook-only
+GeoPandasCompare.rows(%{"cities_per_country" => gf_cities_per_country}, %{"cities_per_country" => Pythonx.decode(gp_cities_per_country)})
+|> GeoPandasCompare.dataframe()
+```
+
+
+## 4. Nearest join: how far is each big city from a river?
+
+`sjoin_nearest` pairs every city of more than a million people with the closest river line and
+adds the distance. Distances are planar in EPSG:6933, the same in both libraries. A city that is
+equally near two rivers matches both; the first match is kept.
+
+```elixir
+gf_city_points =
+  gf_big_cities
+  |> GeoDataFrame.select(["name", "adm0name"])
+  |> GeoDataFrame.to_crs(gf_equal_area)
+  |> then(&GeoDataFrame.put(&1, "row", Enum.to_list(0..(GeoDataFrame.n_rows(&1) - 1))))
+
+gf_streams =
+  gf_rivers
+  |> GeoDataFrame.select(["name"])
+  |> GeoDataFrame.rename(name: "river")
+  |> GeoDataFrame.to_crs(gf_equal_area)
+
+gf_nearest =
+  gf_city_points
+  |> GeoFrame.sjoin_nearest(gf_streams, how: :left, distance_col: "dist_m")
+  |> GeoDataFrame.data()
+  |> DF.distinct(["row"], keep_all: true)
+  |> DF.mutate_with(
+    &[km: Series.divide(&1["dist_m"], 1000), city: Series.format([&1["name"], ", ", &1["adm0name"]])]
+  )
+
+gf_far = gf_nearest |> DF.sort_with(&[desc: &1["km"], asc: &1["city"]]) |> DF.head(5)
+
+gf_nearest_river = %{
+  "n_cities" => DF.n_rows(gf_nearest),
+  "median_km" => Series.median(gf_nearest["km"]),
+  "mean_km" => Series.mean(gf_nearest["km"]),
+  "max_km" => Series.max(gf_nearest["km"]),
+  "farthest5_cities" => Series.to_list(gf_far["city"]),
+  "farthest5_km" => Series.to_list(gf_far["km"])
+}
+
+DF.select(gf_far, ["city", "river", "km"])
+```
+
+GeoPandas:
+
+```python
+def nearest_river():
+    cities_eq = big_cities.to_crs(EQUAL_AREA)[["name", "adm0name", "geometry"]]
+    streams = rivers[["name", "geometry"]].rename(columns={"name": "river"}).to_crs(EQUAL_AREA)
+    near = gpd.sjoin_nearest(cities_eq, streams, how="left", distance_col="dist_m")
+    near["km"] = near["dist_m"] / 1000
+    # A city equally close to two rivers matches both: keep the first, as the distance is equal.
+    near = near[~near.index.duplicated()].copy()
+    near["city"] = near["name"] + ", " + near["adm0name"]
+    far = near.sort_values(["km", "city"], ascending=[False, True]).head(5)
+    return {
+        "n_cities": len(near),
+        "median_km": near["km"].median(),
+        "mean_km": near["km"].mean(),
+        "max_km": near["km"].max(),
+        "farthest5_cities": far["city"].tolist(),
+        "farthest5_km": far["km"].tolist(),
+    }
+
+
+gp_nearest_river = nearest_river()
+```
+
+```elixir
+# notebook-only
+GeoPandasCompare.rows(%{"nearest_river" => gf_nearest_river}, %{"nearest_river" => Pythonx.decode(gp_nearest_river)})
+|> GeoPandasCompare.dataframe()
+```
+
+
+## 5. Cutting lines with polygons: river length per country in South America
+
+`overlay` with `how: :intersection` cuts the river lines at the country borders, one piece per
+river and country. Lengths are measured in a South America Albers equal-area conic projection,
+given as WKT (an `ESRI:102033` definition; GeoFrame reads CRS definitions as WKT or PROJJSON
+too). The rivers are first narrowed to the continent's bounding box with `cx`.
+
+```elixir
+gf_south_america =
+  gf_countries
+  |> GeoDataFrame.filter_with(&Series.equal(&1["CONTINENT"], "South America"))
+  |> GeoDataFrame.select(["ADM0_A3"])
+  |> GeoDataFrame.to_crs(gf_south_america_albers)
+
+gf_river_pieces =
+  gf_rivers
+  |> GeoDataFrame.cx(-95.0, -60.0, -30.0, 15.0)
+  |> GeoDataFrame.select(["name"])
+  |> GeoDataFrame.to_crs(gf_south_america_albers)
+  |> GeoFrame.overlay(gf_south_america, how: :intersection, keep_geom_type: true)
+
+gf_per_country =
+  gf_river_pieces
+  |> then(&GeoDataFrame.put(&1, "km", Series.divide(GeoDataFrame.length(&1), 1000)))
+  |> GeoDataFrame.data()
+  |> DF.group_by("ADM0_A3")
+  |> DF.summarise_with(&[km: Series.sum(&1["km"])])
+  |> DF.sort_with(&[desc: &1["km"], asc: &1["ADM0_A3"]])
+
+gf_top = DF.head(gf_per_country, 5)
+
+gf_river_length_south_america = %{
+  "n_countries" => DF.n_rows(gf_per_country),
+  "total_km" => Series.sum(gf_per_country["km"]),
+  "top5_countries" => Series.to_list(gf_top["ADM0_A3"]),
+  "top5_km" => Series.to_list(gf_top["km"])
+}
+
+gf_top
+```
+
+```elixir
+# notebook-only
+GeoFrame.Kino.deck(gf_river_pieces, color: {"ADM0_A3", :categorical}, width: 2, tooltip: ["name", "ADM0_A3"])
+```
+
+GeoPandas:
+
+```python
+def river_length_south_america():
+    south_america = countries[countries["CONTINENT"] == "South America"]
+    south_america = south_america[["ADM0_A3", "geometry"]].to_crs(SOUTH_AMERICA_ALBERS)
+    streams = rivers.cx[-95:-30, -60:15][["geometry"]].to_crs(SOUTH_AMERICA_ALBERS)
+    pieces = gpd.overlay(streams, south_america, how="intersection", keep_geom_type=True)
+    pieces["km"] = pieces.length / 1000
+    per_country = pieces.groupby("ADM0_A3")["km"].sum().reset_index()
+    top = per_country.sort_values(["km", "ADM0_A3"], ascending=[False, True]).head(5)
+    return {
+        "n_countries": len(per_country),
+        "total_km": per_country["km"].sum(),
+        "top5_countries": top["ADM0_A3"].tolist(),
+        "top5_km": top["km"].tolist(),
+    }
+
+
+gp_river_length_south_america = river_length_south_america()
+```
+
+```elixir
+# notebook-only
+GeoPandasCompare.rows(%{"river_length_south_america" => gf_river_length_south_america}, %{"river_length_south_america" => Pythonx.decode(gp_river_length_south_america)})
+|> GeoPandasCompare.dataframe()
+```
+
+
+## 6. Dissolve by continent: area, centroid, convex hull and simplification
+
+One `dissolve` merges all countries of a continent. For each merged shape: the area, the
+centroid, the area of the convex hull, and the number of vertices of the dissolved shape. Separately, the
+vertices of the countries before and after a 50 km Douglas-Peucker simplification
+(`preserve_topology: false`, which is GEOS's algorithm; GeoFrame's default mode is a different
+one, see the parity matrix), summed per continent, so that this check does not depend on the
+union. Centroids are in the equal-area projection's metres, reported in km.
+
+```elixir
+gf_merged =
+  gf_countries_eq
+  |> GeoDataFrame.select(["CONTINENT"])
+  |> GeoFrame.dissolve(by: "CONTINENT")
+
+gf_shapes = GeoDataFrame.geometry(gf_merged)
+gf_centre = GeoSeries.centroid(gf_shapes)
+
+# Vertex counts of the countries, before and after simplification, summed per continent.
+gf_vertices =
+  gf_countries_eq
+  |> GeoDataFrame.select(["CONTINENT"])
+  |> then(fn gdf ->
+    geometry = GeoDataFrame.geometry(gdf)
+    simplified = GeoSeries.simplify(geometry, 50_000, preserve_topology: false)
+
+    gdf
+    |> GeoDataFrame.data()
+    |> DF.put("vertices", GeoSeries.count_coordinates(geometry))
+    |> DF.put("simplified", GeoSeries.count_coordinates(simplified))
+  end)
+  |> DF.group_by("CONTINENT")
+  |> DF.summarise_with(&[vertices: Series.sum(&1["vertices"]), simplified: Series.sum(&1["simplified"])])
+  |> DF.sort_with(&[asc: &1["CONTINENT"]])
+
+gf_continent_table =
+  gf_merged
+  |> GeoDataFrame.data()
+  |> DF.put("area_km2", gf_shapes |> GeoSeries.area() |> gf_km2.())
+  |> DF.put("hull_area_km2", gf_shapes |> GeoSeries.convex_hull() |> GeoSeries.area() |> gf_km2.())
+  |> DF.put("dissolved_vertices", GeoSeries.count_coordinates(gf_shapes))
+  |> DF.put("country_vertices", gf_vertices["vertices"])
+  |> DF.put("simplified_vertices", gf_vertices["simplified"])
+
+gf_continents = %{
+  "continents" => Series.to_list(gf_continent_table["CONTINENT"]),
+  "area_km2" => Series.to_list(gf_continent_table["area_km2"]),
+  "centroid_x_km" => gf_centre |> GeoSeries.x() |> Series.divide(1000) |> Series.to_list(),
+  "centroid_y_km" => gf_centre |> GeoSeries.y() |> Series.divide(1000) |> Series.to_list(),
+  "hull_area_km2" => Series.to_list(gf_continent_table["hull_area_km2"]),
+  "dissolved_vertices" => Series.to_list(gf_continent_table["dissolved_vertices"]),
+  "country_vertices" => Series.to_list(gf_vertices["vertices"]),
+  "country_vertices_simplified_50km" => Series.to_list(gf_vertices["simplified"])
+}
+
+gf_continent_table
+```
+
+```elixir
+# notebook-only
+GeoFrame.Kino.deck(gf_merged, color: {"CONTINENT", :categorical}, opacity: 0.8, tooltip: ["CONTINENT"])
+```
+
+GeoPandas:
+
+```python
+def continents():
+    merged = countries_eq[["CONTINENT", "geometry"]].dissolve(by="CONTINENT").sort_index()
+    centre = merged.centroid
+    # Simplification is measured on the countries, so that it does not depend on the union.
+    parts = countries_eq[["CONTINENT"]].assign(
+        vertices=countries_eq.geometry.apply(shapely.get_num_coordinates),
+        simplified=countries_eq.simplify(50_000, preserve_topology=False).apply(
+            shapely.get_num_coordinates
+        ),
+    )
+    totals = parts.groupby("CONTINENT")[["vertices", "simplified"]].sum().sort_index()
+    return {
+        "continents": merged.index.tolist(),
+        "area_km2": (merged.area / 1e6).tolist(),
+        "centroid_x_km": (centre.x / 1000).tolist(),
+        "centroid_y_km": (centre.y / 1000).tolist(),
+        "hull_area_km2": (merged.convex_hull.area / 1e6).tolist(),
+        "dissolved_vertices": merged.geometry.apply(shapely.get_num_coordinates).tolist(),
+        "country_vertices": totals["vertices"].tolist(),
+        "country_vertices_simplified_50km": totals["simplified"].tolist(),
+    }
+
+
+gp_continents = continents()
+```
+
+```elixir
+# notebook-only
+GeoPandasCompare.rows(%{"continents" => gf_continents}, %{"continents" => Pythonx.decode(gp_continents)})
+|> GeoPandasCompare.dataframe()
+```
+
+
+## 7. Geodesic distances between capitals
+
+Distances on the WGS 84 ellipsoid between seven capitals, every pair once. GeoFrame's
+`distance(method: :geodesic)` implements Karney's algorithm; GeoPandas has no geodesic
+`distance`, so the Python side asks pyproj's `Geod.inv`, which is the reference implementation.
+
+```elixir
+gf_wanted = ["Ottawa", "London", "Cairo", "Tokyo", "Brasília", "Canberra", "Moscow", "Nairobi"]
+
+gf_capitals =
+  gf_cities
+  |> GeoDataFrame.filter_with(&Series.equal(&1["adm0cap"], 1))
+  |> GeoDataFrame.filter_with(&Series.in(&1["name"], gf_wanted))
+  |> GeoDataFrame.sort_with(&[asc: &1["name"]])
+
+gf_capital_names = gf_capitals |> GeoDataFrame.pull("name") |> Series.to_list()
+gf_capital_points = GeoDataFrame.geometry(gf_capitals)
+gf_last = length(gf_capital_names) - 1
+
+gf_pairs =
+  for i <- 0..(gf_last - 1)//1, j <- (i + 1)..gf_last do
+    km =
+      gf_capital_points
+      |> GeoSeries.take([i])
+      |> GeoSeries.distance(GeoSeries.take(gf_capital_points, [j]), method: :geodesic)
+      |> Series.to_list()
+      |> hd()
+      |> Kernel./(1000)
+
+    {"#{Enum.at(gf_capital_names, i)} - #{Enum.at(gf_capital_names, j)}", km}
+  end
+
+{gf_longest_pair, _} = Enum.max_by(gf_pairs, &elem(&1, 1))
+
+gf_capitals_geodesic = %{
+  "capitals" => gf_capital_names,
+  "pair_km" => Enum.map(gf_pairs, &elem(&1, 1)),
+  "total_km" => gf_pairs |> Enum.map(&elem(&1, 1)) |> Enum.sum(),
+  "longest_pair" => gf_longest_pair
+}
+
+gf_pairs
+|> then(&DF.new(pair: Enum.map(&1, fn {pair, _} -> pair end), km: Enum.map(&1, fn {_, km} -> km end)))
+|> DF.sort_with(&[desc: &1["km"]])
+|> DF.head(5)
+```
+
+GeoPandas:
+
+```python
+def capitals_geodesic():
+    wanted = ["Ottawa", "London", "Cairo", "Tokyo", "Brasília", "Canberra", "Moscow", "Nairobi"]
+    capitals = cities[(cities["adm0cap"] == 1) & cities["name"].isin(wanted)]
+    capitals = capitals.sort_values("name").reset_index(drop=True)
+    geod = Geod(ellps="WGS84")
+    km, pairs = [], []
+    for i in range(len(capitals)):
+        for j in range(i + 1, len(capitals)):
+            a, b = capitals.geometry[i], capitals.geometry[j]
+            km.append(geod.inv(a.x, a.y, b.x, b.y)[2] / 1000)
+            pairs.append(f"{capitals['name'][i]} - {capitals['name'][j]}")
+    longest = max(range(len(km)), key=lambda k: km[k])
+    return {
+        "capitals": capitals["name"].tolist(),
+        "pair_km": km,
+        "total_km": sum(km),
+        "longest_pair": pairs[longest],
+    }
+
+
+gp_capitals_geodesic = capitals_geodesic()
+```
+
+```elixir
+# notebook-only
+GeoPandasCompare.rows(%{"capitals_geodesic" => gf_capitals_geodesic}, %{"capitals_geodesic" => Pythonx.decode(gp_capitals_geodesic)})
+|> GeoPandasCompare.dataframe()
+```
+
+
+## 8. Predicates: neighbours and the equator
+
+`touches` selects the countries that share a border with Germany and with Brazil (the border
+of French Guiana counts for Brazil); `intersects` against a line along the equator selects the
+countries it crosses. A single geometry is compared against the whole column.
+
+```elixir
+gf_countries_geometry = GeoDataFrame.geometry(gf_countries)
+
+gf_touching = fn code ->
+  target = gf_countries |> GeoDataFrame.filter_with(&Series.equal(&1["ADM0_A3"], code)) |> GeoDataFrame.geometry()
+  gf_names.(gf_countries, GeoSeries.touches(gf_countries_geometry, target))
+end
+
+gf_equator = GeoSeries.from_wkt!(["LINESTRING (-180 0, 180 0)"], crs: "EPSG:4326")
+
+gf_neighbours = %{
+  "germany_neighbours" => gf_touching.("DEU"),
+  "brazil_neighbours" => gf_touching.("BRA"),
+  "equator_countries" => gf_names.(gf_countries, GeoSeries.intersects(gf_countries_geometry, gf_equator))
+}
+
+DF.new(
+  analysis: Map.keys(gf_neighbours),
+  countries: Enum.map(gf_neighbours, fn {_, names} -> Enum.join(names, ", ") end)
+)
+```
+
+GeoPandas:
+
+```python
+def neighbours():
+    def touching(code):
+        target = countries.loc[countries["ADM0_A3"] == code, "geometry"].iloc[0]
+        hits = countries[countries.touches(target)]
+        return sorted(hits["NAME"])
+
+    equator = shapely.LineString([(-180, 0), (180, 0)])
+    crossed = countries[countries.intersects(equator)]
+    return {
+        "germany_neighbours": touching("DEU"),
+        "brazil_neighbours": touching("BRA"),
+        "equator_countries": sorted(crossed["NAME"]),
+    }
+
+
+gp_neighbours = neighbours()
+```
+
+```elixir
+# notebook-only
+GeoPandasCompare.rows(%{"neighbours" => gf_neighbours}, %{"neighbours" => Pythonx.decode(gp_neighbours)})
+|> GeoPandasCompare.dataframe()
+```
+
+
+## 9. Join predicates, representative points and validity
+
+The same cities against the same countries with `intersects`, `within` and `touches`: points
+on a border make the predicates differ, and one that matches two countries adds a row. A left
+join with `within` counts the cities that are in no 50m polygon. A representative point must
+always fall inside its polygon (unlike the centroid), and the Natural Earth polygons should all be
+valid.
+
+```elixir
+gf_points = GeoDataFrame.select(gf_cities, ["name"])
+gf_polygons = GeoDataFrame.select(gf_countries, ["ADM0_A3"])
+
+gf_rows = fn predicate ->
+  gf_points |> GeoFrame.sjoin(gf_polygons, how: :inner, predicate: predicate) |> GeoDataFrame.n_rows()
+end
+
+gf_unmatched =
+  gf_points
+  |> GeoFrame.sjoin(gf_polygons, how: :left, predicate: :within)
+  |> GeoDataFrame.pull("ADM0_A3")
+  |> Series.nil_count()
+
+gf_rep_inside =
+  gf_countries_geometry
+  |> GeoSeries.representative_point()
+  |> GeoSeries.within(gf_countries_geometry)
+  |> Series.to_list()
+  |> Enum.count(& &1)
+
+gf_predicates = %{
+  "intersects_rows" => gf_rows.(:intersects),
+  "within_rows" => gf_rows.(:within),
+  "touches_rows" => gf_rows.(:touches),
+  "cities_in_no_country" => gf_unmatched,
+  "invalid_countries" => gf_countries_geometry |> GeoSeries.is_valid() |> Series.to_list() |> Enum.count(&(&1 == false)),
+  "representative_points_inside" => gf_rep_inside
+}
+
+DF.new(metric: Map.keys(gf_predicates), value: Map.values(gf_predicates))
+```
+
+GeoPandas:
+
+```python
+def predicates():
+    points = cities[["name", "geometry"]]
+    polygons = countries[["ADM0_A3", "geometry"]]
+    rows = {
+        p: len(gpd.sjoin(points, polygons, how="inner", predicate=p))
+        for p in ["intersects", "within", "touches"]
+    }
+    unmatched = gpd.sjoin(points, polygons, how="left", predicate="within")["ADM0_A3"].isna()
+    inside = countries.representative_point().within(countries.geometry)
+    return {
+        "intersects_rows": rows["intersects"],
+        "within_rows": rows["within"],
+        "touches_rows": rows["touches"],
+        "cities_in_no_country": int(unmatched.sum()),
+        "invalid_countries": int((~countries.is_valid).sum()),
+        "representative_points_inside": int(inside.sum()),
+    }
+
+
+gp_predicates = predicates()
+```
+
+```elixir
+# notebook-only
+GeoPandasCompare.rows(%{"predicates" => gf_predicates}, %{"predicates" => Pythonx.decode(gp_predicates)})
+|> GeoPandasCompare.dataframe()
+```
+
+
+## 10. Voronoi cells of the South American capitals
+
+A Voronoi diagram of the capitals partitions the plane into the area closest to each one. The
+cells are extended to the bounding box of the continent, matched to their capital with a
+spatial join (`contains`), and clipped to the land (the union of the South American countries)
+to compare the part of the continent nearest to each capital.
+
+```elixir
+gf_sa_eq = GeoDataFrame.filter_with(gf_countries_eq, &Series.equal(&1["CONTINENT"], "South America"))
+gf_land = gf_sa_eq |> GeoDataFrame.geometry() |> GeoSeries.union_all()
+gf_sa_codes = gf_sa_eq |> GeoDataFrame.pull("ADM0_A3") |> Series.to_list()
+
+gf_sa_capitals =
+  gf_cities
+  |> GeoDataFrame.filter_with(&Series.equal(&1["adm0cap"], 1))
+  |> GeoDataFrame.filter_with(&Series.in(&1["adm0_a3"], gf_sa_codes))
+  |> GeoDataFrame.select(["name"])
+  |> GeoDataFrame.to_crs(gf_equal_area)
+  |> GeoDataFrame.sort_with(&[asc: &1["name"]])
+
+[gf_x0, gf_y0, gf_x1, gf_y1] = gf_land |> GeoSeries.total_bounds() |> Tuple.to_list()
+
+gf_cells =
+  gf_sa_capitals
+  |> GeoDataFrame.geometry()
+  |> GeoSeries.voronoi_polygons(
+    extend_to: GeoSeries.from_wkt!(["POLYGON ((#{gf_x0} #{gf_y0}, #{gf_x1} #{gf_y0}, #{gf_x1} #{gf_y1}, #{gf_x0} #{gf_y1}, #{gf_x0} #{gf_y0}))"])
+  )
+  |> then(&GeoDataFrame.new(DF.new(cell: Enum.to_list(0..(GeoSeries.size(&1) - 1))), &1))
+
+gf_owned =
+  gf_cells
+  |> GeoFrame.sjoin(gf_sa_capitals, predicate: :contains)
+  |> then(fn gdf ->
+    clipped = gdf |> GeoDataFrame.geometry() |> GeoSeries.intersection(gf_land)
+    gf_with_geometry.(gdf, clipped)
+  end)
+  |> then(&GeoDataFrame.put(&1, "area_km2", &1 |> GeoDataFrame.area() |> gf_km2.()))
+
+gf_owned_table = gf_owned |> GeoDataFrame.data() |> DF.sort_with(&[asc: &1["name"]])
+
+gf_voronoi = %{
+  "capitals" => Series.to_list(gf_owned_table["name"]),
+  "cell_area_km2" => Series.to_list(gf_owned_table["area_km2"]),
+  "total_area_km2" => Series.sum(gf_owned_table["area_km2"])
+}
+
+DF.select(gf_owned_table, ["name", "area_km2"])
+```
+
+```elixir
+# notebook-only
+GeoFrame.Kino.deck(gf_owned, color: {"area_km2", :viridis}, opacity: 0.7, tooltip: ["name", "area_km2"])
+```
+
+GeoPandas:
+
+```python
+def voronoi():
+    south_america = countries_eq[countries_eq["CONTINENT"] == "South America"]
+    land = south_america.union_all()
+    capitals = cities[(cities["adm0cap"] == 1) & (cities["adm0_a3"].isin(south_america["ADM0_A3"]))]
+    capitals = capitals.to_crs(EQUAL_AREA).sort_values("name").reset_index(drop=True)
+    diagram = capitals.geometry.voronoi_polygons(extend_to=shapely.box(*land.bounds))
+    cells = gpd.GeoDataFrame(geometry=diagram.reset_index(drop=True), crs=EQUAL_AREA)
+    owned = gpd.sjoin(cells, capitals[["name", "geometry"]], predicate="contains")
+    owned["area_km2"] = owned.geometry.intersection(land).area / 1e6
+    owned = owned.sort_values("name")
+    return {
+        "capitals": owned["name"].tolist(),
+        "cell_area_km2": owned["area_km2"].tolist(),
+        "total_area_km2": owned["area_km2"].sum(),
+    }
+
+
+gp_voronoi = voronoi()
+```
+
+```elixir
+# notebook-only
+GeoPandasCompare.rows(%{"voronoi" => gf_voronoi}, %{"voronoi" => Pythonx.decode(gp_voronoi)})
+|> GeoPandasCompare.dataframe()
+```
+
+
+## Summary
+
+Every metric of every analysis, GeoFrame against GeoPandas. `rel_diff` is the relative
+difference (0 for equal counts and names) and the status applies the tolerance of
+`examples/geopandas/tolerances.json`.
+
+```elixir
+# notebook-only
+gf_all = %{
+  "buffer_dissolve" => gf_buffer_dissolve,
+  "river_corridor" => gf_river_corridor,
+  "cities_per_country" => gf_cities_per_country,
+  "nearest_river" => gf_nearest_river,
+  "river_length_south_america" => gf_river_length_south_america,
+  "continents" => gf_continents,
+  "capitals_geodesic" => gf_capitals_geodesic,
+  "neighbours" => gf_neighbours,
+  "predicates" => gf_predicates,
+  "voronoi" => gf_voronoi
+}
+
+gp_all = %{
+  "buffer_dissolve" => Pythonx.decode(gp_buffer_dissolve),
+  "river_corridor" => Pythonx.decode(gp_river_corridor),
+  "cities_per_country" => Pythonx.decode(gp_cities_per_country),
+  "nearest_river" => Pythonx.decode(gp_nearest_river),
+  "river_length_south_america" => Pythonx.decode(gp_river_length_south_america),
+  "continents" => Pythonx.decode(gp_continents),
+  "capitals_geodesic" => Pythonx.decode(gp_capitals_geodesic),
+  "neighbours" => Pythonx.decode(gp_neighbours),
+  "predicates" => Pythonx.decode(gp_predicates),
+  "voronoi" => Pythonx.decode(gp_voronoi)
+}
+
+gf_summary = GeoPandasCompare.rows(gf_all, gp_all)
+
+%{
+  passed: Enum.count(gf_summary, &(&1.status == "PASS")),
+  failed: Enum.count(gf_summary, &(&1.status == "FAIL")),
+  table: GeoPandasCompare.dataframe(gf_summary)
+}
+```
