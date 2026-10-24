@@ -11,6 +11,7 @@ defmodule GeoFrame.PostGIS do
   alias Explorer.Series
   alias GeoFrame.GeoDataFrame
   alias GeoFrame.GeoSeries
+  alias GeoFrame.PostGIS.Values
 
   @compile {:no_warn_undefined, [Postgrex, Decimal]}
 
@@ -18,6 +19,8 @@ defmodule GeoFrame.PostGIS do
   @max_params 65_535
   @if_exists [:fail, :replace, :append]
   @identifier_limit 63
+  # PostgreSQL rejects tables with more columns than this (MaxHeapAttributeNumber).
+  @max_columns 1600
 
   # -- read -----------------------------------------------------------------------------
 
@@ -28,15 +31,16 @@ defmodule GeoFrame.PostGIS do
     ensure_postgrex!()
     geom_col = to_string(opts[:geom_col])
 
-    with {:ok, %{columns: columns, rows: rows}} <- query(conn, sql, opts[:params]),
-         :ok <- check_geometry_column(columns, geom_col) do
-      build(columns, rows, geom_col, opts[:crs])
+    with {:ok, %{columns: columns, rows: rows}, oids} <- query(conn, sql, opts[:params]),
+         :ok <- check_geometry_column(columns, geom_col),
+         :ok <- check_unique_columns(columns) do
+      build(columns, rows, oids, geom_col, opts[:crs])
     end
   end
 
   defp query(conn, sql, params) do
-    case Postgrex.query(conn, sql, params) do
-      {:ok, result} -> {:ok, result}
+    case Postgrex.prepare_execute(conn, "", sql, params) do
+      {:ok, query, result} -> {:ok, result, query.result_oids || []}
       {:error, error} -> {:error, error_message(error)}
     end
   rescue
@@ -52,18 +56,44 @@ defmodule GeoFrame.PostGIS do
            "(columns: #{inspect(columns)}); pass :geom_col"}
   end
 
-  defp build(columns, rows, geom_col, crs) do
+  # DataFrames cannot hold two columns of one name, and silently keeping one would lose data.
+  defp check_unique_columns(columns) do
+    case columns -- Enum.uniq(columns) do
+      [] ->
+        :ok
+
+      duplicates ->
+        {:error,
+         "duplicate column names in the result: #{duplicates |> Enum.uniq() |> Enum.map_join(", ", &inspect/1)}; " <>
+           "give each selected column a unique alias (SELECT a AS a1, b AS a2)"}
+    end
+  end
+
+  defp build(columns, rows, oids, geom_col, crs) do
+    oids = oids ++ List.duplicate(nil, max(length(columns) - length(oids), 0))
     by_column = columns |> Enum.zip(transpose(rows, length(columns))) |> Map.new()
 
     with {:ok, ewkb} <- ewkb_rows(Map.fetch!(by_column, geom_col)),
-         {:ok, geometry} <- GeoSeries.from_wkb(ewkb, crs: crs) do
-      attributes =
-        for name <- columns, name != geom_col do
-          {name, name |> then(&Map.fetch!(by_column, &1)) |> to_series()}
-        end
-
+         {:ok, geometry} <- GeoSeries.from_wkb(ewkb, crs: crs),
+         {:ok, attributes} <- attribute_series(columns, oids, by_column, geom_col) do
       data = if attributes == [], do: DataFrame.new([]), else: DataFrame.new(attributes)
       {:ok, GeoDataFrame.new(data, geometry, geometry_column: geom_col)}
+    end
+  end
+
+  defp attribute_series(columns, oids, by_column, geom_col) do
+    columns
+    |> Enum.zip(oids)
+    |> Enum.reject(fn {name, _oid} -> name == geom_col end)
+    |> Enum.reduce_while({:ok, []}, fn {name, oid}, {:ok, acc} ->
+      case Values.to_series(name, oid, Map.fetch!(by_column, name)) do
+        {:ok, series} -> {:cont, {:ok, [{name, series} | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      error -> error
     end
   end
 
@@ -96,51 +126,6 @@ defmodule GeoFrame.PostGIS do
     end
   end
 
-  defp to_series(values) do
-    values = Enum.map(values, &convert/1)
-    dtype = infer_dtype(values)
-    values = if dtype == {:f, 64}, do: Enum.map(values, &to_float/1), else: values
-    Series.from_list(values, dtype: dtype)
-  end
-
-  defp convert(%{__struct__: Decimal} = decimal), do: Decimal.to_float(decimal)
-  defp convert(:NaN), do: :nan
-  defp convert(:inf), do: :infinity
-  defp convert(:"-inf"), do: :neg_infinity
-  defp convert(value) when is_map(value) and not is_struct(value), do: Jason.encode!(value)
-  defp convert(value) when is_list(value), do: Jason.encode!(value)
-  defp convert(value), do: value
-
-  defp to_float(value) when is_integer(value), do: value * 1.0
-  defp to_float(value), do: value
-
-  defp infer_dtype(values) do
-    case Enum.find(values, &(not is_nil(&1))) do
-      nil -> :string
-      value when is_integer(value) or is_float(value) -> numeric_dtype(values)
-      value when is_atom(value) and value not in [true, false] -> {:f, 64}
-      value -> scalar_dtype(value, values)
-    end
-  end
-
-  defp numeric_dtype(values) do
-    if Enum.any?(values, &(is_float(&1) or (is_atom(&1) and not is_nil(&1)))),
-      do: {:f, 64},
-      else: {:s, 64}
-  end
-
-  defp scalar_dtype(value, _values) when is_boolean(value), do: :boolean
-  defp scalar_dtype(%Date{}, _), do: :date
-  defp scalar_dtype(%Time{}, _), do: :time
-  defp scalar_dtype(%NaiveDateTime{}, _), do: {:naive_datetime, :microsecond}
-  defp scalar_dtype(%DateTime{}, _), do: {:datetime, :microsecond, "Etc/UTC"}
-
-  defp scalar_dtype(value, values) when is_binary(value) do
-    if Enum.all?(values, &(is_nil(&1) or String.valid?(&1))), do: :string, else: :binary
-  end
-
-  defp scalar_dtype(_other, _values), do: :string
-
   # -- write ----------------------------------------------------------------------------
 
   @doc false
@@ -157,6 +142,7 @@ defmodule GeoFrame.PostGIS do
       )
 
     validate_opts!(opts)
+    validate_width!(gdf)
     ensure_postgrex!()
 
     plan = plan(gdf, table, opts)
@@ -184,6 +170,17 @@ defmodule GeoFrame.PostGIS do
 
     unless is_map(opts[:dtype]) or Keyword.keyword?(opts[:dtype]),
       do: raise(ArgumentError, ":dtype must be a map of column name to SQL type")
+  end
+
+  defp validate_width!(gdf) do
+    width = length(DataFrame.names(gdf.data)) + 1
+
+    if width > @max_columns,
+      do:
+        raise(
+          ArgumentError,
+          "#{width} columns exceed the PostgreSQL limit of #{@max_columns} columns per table"
+        )
   end
 
   defp plan(gdf, table, opts) do
@@ -338,9 +335,23 @@ defmodule GeoFrame.PostGIS do
   defp sql_type!(name, dtype),
     do: raise(ArgumentError, "column #{inspect(name)} has unsupported dtype #{inspect(dtype)}")
 
-  # `dtype:` overrides are spliced into DDL, so only plain type names are accepted.
+  # `dtype:` overrides are spliced into DDL, so only a bare type name is accepted: a name
+  # (optionally schema-qualified), a few multi-word SQL types, an optional `(n)` / `(n, m)`
+  # modifier and `[]` suffixes. Constraints and clauses (`PRIMARY KEY`, `DEFAULT ...`) are not.
+  @type_name ~S"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?"
+  @modifier ~S"\(\s*\d+(?:\s*,\s*\d+)?\s*\)"
+  @sql_type Regex.compile!(
+              "\\A(?:" <>
+                "(?:timestamp|time)(?:\\s*#{@modifier})?(?:\\s+with(?:out)?\\s+time\\s+zone)?" <>
+                "|double\\s+precision" <>
+                "|(?:character|char|national\\s+character|bit)(?:\\s+varying)?(?:\\s*#{@modifier})?" <>
+                "|#{@type_name}(?:\\s*#{@modifier})?" <>
+                ")(?:\\s*\\[\\s*\\d*\\s*\\])*\\z",
+              "i"
+            )
+
   defp validate_sql_type!(type) when is_binary(type) do
-    if Regex.match?(~r/\A[A-Za-z_][A-Za-z0-9_ ]*(\(\s*\d+(\s*,\s*\d+)?\s*\))?(\[\])*\z/, type),
+    if Regex.match?(@sql_type, type),
       do: type,
       else: raise(ArgumentError, "invalid SQL type in :dtype: #{inspect(type)}")
   end
