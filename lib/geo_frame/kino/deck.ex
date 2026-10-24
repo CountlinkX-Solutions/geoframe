@@ -55,6 +55,17 @@ if Code.ensure_loaded?(Kino.JS.Live) do
         Carto Positron (`#{"https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"}`),
         which needs internet access in the browser.
       * `:height` - widget height in pixels, default `480`.
+      * `:legend` - `true` (default) or `false`. With a column color (`{column, :viridis}` or
+        `{column, :categorical}`) a card in the bottom-right corner explains the colors, like
+        GeoPandas `explore(legend=True)`: a gradient bar of the same ramp with the column name
+        and five ticks for a numeric column; swatches in the exact colors and order the widget
+        assigns for a categorical one, capped at #{10} entries followed by "N more". A gray entry
+        marks missing values when there are any. A fixed color draws no legend. The legend data
+        is computed in Elixir next to the colors and travels in the payload; JavaScript only
+        draws it.
+      * `:scale` - `true` (default) or `false`. Draws metric and imperial scale bars in the
+        bottom-left corner (MapLibre `ScaleControl`), like the `control_scale=True` of GeoPandas
+        `explore`.
 
     deck.gl and MapLibre GL load in the browser from pinned jsDelivr URLs, so the widget needs
     internet access there.
@@ -87,8 +98,12 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       :max_features,
       :max_vertices,
       :basemap,
-      :height
+      :height,
+      :legend,
+      :scale
     ]
+    @legend_max_items 10
+    @legend_ticks 5
 
     # viridis sampled at 0, 1/8, ..., 1.
     @viridis [
@@ -146,7 +161,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
           {minx, miny, maxx, maxy} -> [minx, miny, maxx, maxy]
         end
 
-      {color_config, colors} = color_style(frame, opts[:color])
+      {color_config, colors, legend} = color_style(frame, opts[:color])
 
       {radius_config, radius_sizes} =
         size_style(frame, opts[:radius], 4, @radius_range, :radius, :area)
@@ -168,13 +183,15 @@ if Code.ensure_loaded?(Kino.JS.Live) do
         skipped: skipped,
         bounds: bounds,
         tooltip: tooltip,
+        legend: if(opts[:legend], do: legend),
         config: %{
           color: color_config,
           radius: radius_config,
           width: width_config,
           opacity: opts[:opacity],
           basemap: opts[:basemap],
-          height: opts[:height]
+          height: opts[:height],
+          scale: opts[:scale]
         }
       }
 
@@ -188,7 +205,9 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       max_features: @default_max_features,
       max_vertices: @default_max_vertices,
       basemap: @default_basemap,
-      height: 480
+      height: 480,
+      legend: true,
+      scale: true
     ]
 
     @checks [
@@ -196,11 +215,14 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       max_features: ":max_features must be a positive integer",
       max_vertices: ":max_vertices must be a positive integer",
       height: ":height must be a positive integer (pixels)",
-      basemap: ":basemap must be a style URL or nil"
+      basemap: ":basemap must be a style URL or nil",
+      legend: ":legend must be true or false",
+      scale: ":scale must be true or false"
     ]
 
     defp valid?(:opacity, v), do: is_number(v) and v >= 0 and v <= 1
     defp valid?(:basemap, v), do: is_nil(v) or is_binary(v)
+    defp valid?(key, v) when key in [:legend, :scale], do: is_boolean(v)
     defp valid?(_positive_integer, v), do: is_integer(v) and v > 0
 
     defp validate!(opts) do
@@ -251,24 +273,24 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
     # -- styling ---------------------------------------------------------------------------
 
-    defp color_style(_frame, nil), do: {@default_color, <<>>}
+    defp color_style(_frame, nil), do: {@default_color, <<>>, nil}
 
     defp color_style(_frame, color) when is_tuple(color) and tuple_size(color) in [3, 4] do
-      {fixed_color!(Tuple.to_list(color)), <<>>}
+      {fixed_color!(Tuple.to_list(color)), <<>>, nil}
     end
 
-    defp color_style(_frame, color) when is_list(color), do: {fixed_color!(color), <<>>}
+    defp color_style(_frame, color) when is_list(color), do: {fixed_color!(color), <<>>, nil}
 
     defp color_style(frame, {column, ramp}) when ramp in [:viridis, :categorical] do
       values = column_values(frame, column)
 
-      colors =
+      {colors, legend} =
         case ramp do
-          :viridis -> viridis_colors(values, column)
-          :categorical -> categorical_colors(values)
+          :viridis -> {viridis_colors(values, column), gradient_legend(values, column)}
+          :categorical -> {categorical_colors(values), categorical_legend(values, column)}
         end
 
-      {nil, IO.iodata_to_binary(colors)}
+      {nil, IO.iodata_to_binary(colors), legend}
     end
 
     defp color_style(_frame, other) do
@@ -313,6 +335,93 @@ if Code.ensure_loaded?(Kino.JS.Live) do
           v -> @palette |> Enum.at(rem(Map.fetch!(index, v), length(@palette))) |> rgba()
         end
       end
+    end
+
+    # -- legend ----------------------------------------------------------------------------
+
+    # Legend data comes from the same value lists and ramp functions that color the features.
+    defp gradient_legend(values, column) do
+      numbers = numeric!(values, column)
+
+      if Enum.all?(numbers, &is_nil/1) do
+        nil
+      else
+        {min, max} = numbers |> extent() |> then(fn {lo, hi} -> {lo / 1, hi / 1} end)
+
+        %{
+          kind: "gradient",
+          title: to_string(column),
+          min: min,
+          max: max,
+          stops: for(i <- 0..8, do: (i / 8) |> viridis() |> Enum.take(3)),
+          ticks: ticks(min, max),
+          missing: Enum.any?(numbers, &is_nil/1),
+          missing_color: Enum.take(@missing_color, 3)
+        }
+      end
+    end
+
+    defp ticks(same, same), do: [%{position: 0.5, label: format_tick(same)}]
+
+    defp ticks(min, max) do
+      for i <- 0..(@legend_ticks - 1) do
+        position = i / (@legend_ticks - 1)
+        %{position: position, label: format_tick(min + position * (max - min))}
+      end
+    end
+
+    defp categorical_legend(values, column) do
+      categories = values |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+      if categories == [] do
+        nil
+      else
+        items =
+          categories
+          |> Enum.with_index()
+          |> Enum.take(@legend_max_items)
+          |> Enum.map(fn {value, i} ->
+            {r, g, b} = Enum.at(@palette, rem(i, length(@palette)))
+            %{label: category_label(value), color: [r, g, b]}
+          end)
+
+        %{
+          kind: "categorical",
+          title: to_string(column),
+          items: items,
+          more: max(length(categories) - @legend_max_items, 0),
+          missing: Enum.any?(values, &is_nil/1),
+          missing_color: Enum.take(@missing_color, 3)
+        }
+      end
+    end
+
+    defp category_label(value) when is_binary(value), do: printable(value)
+    defp category_label(value), do: text(value)
+
+    # 1500000 -> "1.5M", 2.5 -> "2.5", 10.0 -> "10", 0.00042 -> "0.00042".
+    defp format_tick(value) do
+      {divisor, suffix} =
+        cond do
+          abs(value) >= 1.0e9 -> {1.0e9, "B"}
+          abs(value) >= 1.0e6 -> {1.0e6, "M"}
+          abs(value) >= 1.0e4 -> {1.0e3, "k"}
+          true -> {1.0, ""}
+        end
+
+      trim_number(value / divisor) <> suffix
+    end
+
+    defp trim_number(number) when number == 0, do: "0"
+
+    defp trim_number(number) do
+      digits = if abs(number) >= 1, do: 2, else: min(2 - floor(:math.log10(abs(number))), 12)
+
+      number
+      |> Float.round(digits)
+      |> :erlang.float_to_binary(decimals: digits)
+      |> String.trim_trailing("0")
+      |> String.trim_trailing(".")
     end
 
     defp viridis(t) do

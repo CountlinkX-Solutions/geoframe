@@ -174,6 +174,127 @@ defmodule GeoFrame.Kino.DeckTest do
     end
   end
 
+  describe "payload/2 legend" do
+    defp legend({:binary, info, _}), do: info.legend
+
+    defp numeric_frame(values) do
+      wkts = for i <- 0..(length(values) - 1), do: "POINT (#{i} #{i})"
+      gdf(wkts, v: values)
+    end
+
+    test "a numeric column gets a gradient legend with the viridis stops and ticks" do
+      legend = legend(Deck.payload(numeric_frame([0.0, 5.0, 10.0]), color: {:v, :viridis}))
+
+      assert legend.kind == "gradient"
+      assert legend.title == "v"
+      assert legend.min == 0.0
+      assert legend.max == 10.0
+      assert hd(legend.stops) == [68, 1, 84]
+      assert List.last(legend.stops) == [253, 231, 37]
+      assert length(legend.stops) == 9
+      assert Enum.map(legend.ticks, & &1.label) == ["0", "2.5", "5", "7.5", "10"]
+      assert Enum.map(legend.ticks, & &1.position) == [0.0, 0.25, 0.5, 0.75, 1.0]
+      assert legend.missing == false
+    end
+
+    test "large and small tick values are formatted compactly" do
+      legend =
+        legend(Deck.payload(numeric_frame([0, 1_500_000, 3_000_000]), color: {:v, :viridis}))
+
+      assert Enum.map(legend.ticks, & &1.label) == ["0", "750k", "1.5M", "2.25M", "3M"]
+    end
+
+    test "a numeric legend flags missing values" do
+      legend = legend(Deck.payload(numeric_frame([1.0, nil, 3.0]), color: {:v, :viridis}))
+      assert legend.missing == true
+      assert legend.missing_color == [179, 179, 179]
+    end
+
+    test "a constant numeric column has a single tick" do
+      legend = legend(Deck.payload(numeric_frame([4.0, 4.0]), color: {:v, :viridis}))
+      assert [%{label: "4", position: 0.5}] = legend.ticks
+    end
+
+    test "a categorical column lists swatches in assignment order with the assigned colors" do
+      frame = gdf(["POINT (0 0)", "POINT (1 1)", "POINT (2 2)"], kind: ["b", "a", "b"])
+      {:binary, info, _} = payload = Deck.payload(frame, color: {:kind, :categorical})
+
+      assert info.legend.kind == "categorical"
+      assert info.legend.title == "kind"
+      assert [%{label: "b", color: c1}, %{label: "a", color: c2}] = info.legend.items
+      assert info.legend.more == 0
+      assert info.legend.missing == false
+
+      [row0, row1, _] = payload |> buffer("points.colors") |> bytes4()
+      assert c1 ++ [255] == row0
+      assert c2 ++ [255] == row1
+    end
+
+    test "a categorical legend with many categories is capped and counts the rest" do
+      wkts = for i <- 1..14, do: "POINT (#{i} #{i})"
+      frame = gdf(wkts, kind: for(i <- 1..14, do: "c#{i}"))
+      legend = legend(Deck.payload(frame, color: {:kind, :categorical}))
+
+      assert length(legend.items) == 10
+      assert legend.more == 4
+      assert hd(legend.items).label == "c1"
+    end
+
+    test "categorical nils are flagged, not listed" do
+      frame = gdf(["POINT (0 0)", "POINT (1 1)"], kind: ["a", nil])
+      legend = legend(Deck.payload(frame, color: {:kind, :categorical}))
+
+      assert [%{label: "a"}] = legend.items
+      assert legend.missing == true
+    end
+
+    test "non-string categories are shown as text" do
+      frame = gdf(["POINT (0 0)", "POINT (1 1)"], kind: [3, 7])
+      legend = legend(Deck.payload(frame, color: {:kind, :categorical}))
+      assert Enum.map(legend.items, & &1.label) == ["3", "7"]
+    end
+
+    test "a column with nothing but nils has no legend" do
+      frame = gdf(["POINT (0 0)"], v: [nil])
+      assert legend(Deck.payload(frame, color: {:v, :viridis})) == nil
+    end
+
+    test "a fixed or default color has no legend" do
+      assert legend(Deck.payload(points(), [])) == nil
+      assert legend(Deck.payload(points(), color: {255, 0, 0})) == nil
+    end
+
+    test "legend: false turns it off, legend: true is the default" do
+      frame = numeric_frame([1.0, 2.0])
+      assert legend(Deck.payload(frame, color: {:v, :viridis}, legend: false)) == nil
+      refute legend(Deck.payload(frame, color: {:v, :viridis}, legend: true)) == nil
+    end
+
+    test "legend must be a boolean" do
+      assert_raise ArgumentError, ~r/:legend must be true or false/, fn ->
+        Deck.payload(points(), legend: "yes")
+      end
+    end
+  end
+
+  describe "payload/2 scale bar" do
+    test "scale is on by default and travels in the config" do
+      {:binary, info, _} = Deck.payload(points(), [])
+      assert info.config.scale == true
+    end
+
+    test "scale: false turns it off" do
+      {:binary, info, _} = Deck.payload(points(), scale: false)
+      assert info.config.scale == false
+    end
+
+    test "scale must be a boolean" do
+      assert_raise ArgumentError, ~r/:scale must be true or false/, fn ->
+        Deck.payload(points(), scale: 1)
+      end
+    end
+  end
+
   describe "payload/2 tooltip" do
     test "sends JSON-able column values aligned with rows" do
       frame = gdf(["POINT (0 0)", "POINT (1 1)"], name: ["a", nil], n: [1.5, :nan])
