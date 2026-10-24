@@ -484,3 +484,21 @@ fn accessor_is_empty_and_count_coordinates() {
         vec![Some(0), Some(0), Some(1), Some(4), Some(2), None]
     );
 }
+
+#[test]
+fn boundary_of_many_lines_follows_the_mod_2_rule_with_signed_zero() {
+    // (0 0) is an end of three lines (odd: kept), (1 0) of two (even: dropped), -0.0 and 0.0
+    // are the same vertex, and the far ends are each used once.
+    let col = GeoColumn::from_wkt(
+        &[Some(
+            "MULTILINESTRING ((0 0, 1 0), (-0 0, 5 5), (0 0, 9 9), (1 0, 7 7), (3 3, 4 4, 3 3))",
+        )],
+        None,
+    )
+    .unwrap();
+    let out = col.unary(UnaryOp::Boundary).unwrap().to_wkt().unwrap();
+    assert_eq!(
+        out,
+        vec![Some("MULTIPOINT((0 0),(5 5),(9 9),(7 7))".to_string())]
+    );
+}

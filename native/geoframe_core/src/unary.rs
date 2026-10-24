@@ -8,6 +8,8 @@
 //! Where Shapely returns an empty geometry we return an empty geometry too (`boundary` of a
 //! closed line is `MULTIPOINT EMPTY`); where it raises we return null.
 
+use std::collections::HashMap;
+
 use geo::algorithm::buffer::{BufferStyle, LineCap, LineJoin};
 use geo::{
     AffineTransform, BoundingRect, Buffer, Centroid, ConvexHull, Coord, CoordsIter, Geometry,
@@ -540,13 +542,21 @@ fn polygon_boundary(polygons: &[Polygon<f64>]) -> Geometry<f64> {
 /// Mod-2 boundary rule: an endpoint belongs to the boundary when an odd number of lines
 /// end there; closed lines contribute nothing.
 fn line_boundary(lines: &[LineString<f64>]) -> Geometry<f64> {
+    // End counts by coordinate in first-seen order (a hash index replaces the linear search
+    // that made many lines quadratic). NaN never equals itself, so each NaN end counts alone.
     let mut ends: Vec<(Coord<f64>, usize)> = Vec::new();
+    let mut seen: HashMap<(u64, u64), usize> = HashMap::new();
     for line in lines.iter().filter(|l| !l.is_closed() && !l.0.is_empty()) {
         for end in [line.0[0], line.0[line.0.len() - 1]] {
-            match ends.iter_mut().find(|(c, _)| *c == end) {
-                Some((_, n)) => *n += 1,
-                None => ends.push((end, 1)),
+            if end.x.is_nan() || end.y.is_nan() {
+                ends.push((end, 1));
+                continue;
             }
+            let slot = *seen.entry(crate::noding::key(end)).or_insert_with(|| {
+                ends.push((end, 0));
+                ends.len() - 1
+            });
+            ends[slot].1 += 1;
         }
     }
     let points = ends

@@ -53,11 +53,7 @@ impl Parts {
     /// higher-dimensional one, so the parts of a collected result do not repeat each other.
     pub fn absorb(self) -> Parts {
         let area = MultiPolygon::new(self.polygons);
-        let mut merged: Vec<LineString<f64>> = Vec::new();
-        for l in &self.lines {
-            merged = lines_union(&merged, std::slice::from_ref(l));
-        }
-        let linework = MultiLineString::new(merged);
+        let linework = MultiLineString::new(lines_union_all(&self.lines));
         let lines = if area.0.is_empty() {
             linework.0.clone()
         } else {
@@ -252,12 +248,9 @@ pub(crate) fn polygon_line_union(p: &MultiPolygon<f64>, l: &MultiLineString<f64>
     .into_geometry(Empty::Polygon)
 }
 
-/// The noded union of two sets of lines (overlaps appear once).
-pub(crate) fn lines_union(a: &[LineString<f64>], b: &[LineString<f64>]) -> Vec<LineString<f64>> {
-    let noded = node(a, b);
-    let mut out: Vec<LineString<f64>> = noded.a.iter().map(line).collect();
-    out.extend(noded.b.iter().filter(|p| !p.shared).map(line));
-    out
+/// The noded union of any number of lines in one pass (overlaps appear once).
+pub(crate) fn lines_union_all(lines: &[LineString<f64>]) -> Vec<LineString<f64>> {
+    crate::noding::node_union(lines).iter().map(line).collect()
 }
 
 /// Line x line operations.

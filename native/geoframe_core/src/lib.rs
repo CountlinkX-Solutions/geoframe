@@ -117,6 +117,8 @@ mod parquet_multi_tests;
 #[cfg(test)]
 mod parquet_tests;
 #[cfg(test)]
+mod perf_bench_tests;
+#[cfg(test)]
 mod polygonize_tests;
 #[cfg(test)]
 mod predicates_tests;

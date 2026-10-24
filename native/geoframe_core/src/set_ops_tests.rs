@@ -249,3 +249,88 @@ fn union_groups_validates_inputs() {
     assert!(c.union_groups(&[], 0).is_err());
     assert_eq!(col(&[]).union_groups(&[], 0).unwrap().len(), 0);
 }
+
+// -- union_all of linework: one global noding pass (issue #57) ------------------------------
+
+fn union_all_wkt(rows: &[&str]) -> String {
+    let rows: Vec<Option<&str>> = rows.iter().map(|r| Some(*r)).collect();
+    col(&rows)
+        .union_all()
+        .unwrap()
+        .to_wkt()
+        .unwrap()
+        .remove(0)
+        .expect("a geometry")
+}
+
+/// Sorted, direction-free segments of a noded result, to compare with GEOS irrespective of
+/// piece order and orientation.
+fn segments_of(wkt: &str) -> Vec<String> {
+    let geom: geo::Geometry<f64> = wkt::TryFromWkt::try_from_wkt_str(wkt).expect("wkt");
+    let lines: Vec<geo::LineString<f64>> = match geom {
+        geo::Geometry::LineString(l) => vec![l],
+        geo::Geometry::MultiLineString(m) => m.0,
+        other => panic!("unexpected {other:?}"),
+    };
+    let mut out: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            let mut pts: Vec<String> = l.0.iter().map(|c| format!("{} {}", c.x, c.y)).collect();
+            if pts.first() > pts.last() {
+                pts.reverse();
+            }
+            pts.join(",")
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn union_all_nodes_a_line_that_crosses_itself_like_geos() {
+    // shapely.union_all([LINESTRING (0 0, 2 2, 2 0, 0 2)]) cuts the bow tie at (1 1):
+    // MULTILINESTRING ((0 0, 1 1), (1 1, 2 2, 2 0, 1 1), (1 1, 0 2)).
+    let out = union_all_wkt(&["LINESTRING (0 0, 2 2, 2 0, 0 2)"]);
+    let geom: geo::Geometry<f64> = wkt::TryFromWkt::try_from_wkt_str(&out).expect("wkt");
+    let geo::Geometry::MultiLineString(parts) = geom else {
+        panic!("expected a MultiLineString, got {out}");
+    };
+    assert_eq!(parts.0.len(), 3, "{out}");
+    let mut lens: Vec<usize> = parts.0.iter().map(|l| l.0.len()).collect();
+    lens.sort_unstable();
+    assert_eq!(lens, vec![2, 2, 4], "{out}");
+    assert!(parts.0.iter().any(|l| l.is_closed()), "{out}");
+}
+
+#[test]
+fn union_all_of_crossing_and_overlapping_lines_matches_geos() {
+    // shapely.union_all gives (0 0, 1 0) (1 0, 2 0) (2 0, 3 0) (3 0, 4 0) (2 -1, 2 0) (2 0, 2 1).
+    let out = union_all_wkt(&[
+        "LINESTRING (0 0, 4 0)",
+        "LINESTRING (1 0, 3 0)",
+        "LINESTRING (2 -1, 2 1)",
+    ]);
+    assert_eq!(
+        segments_of(&out),
+        vec!["0 0,1 0", "1 0,2 0", "2 -1,2 0", "2 0,2 1", "2 0,3 0", "3 0,4 0"]
+    );
+}
+
+#[test]
+fn union_all_keeps_a_closed_ring_whole() {
+    let out = union_all_wkt(&["LINESTRING (0 0, 1 0, 1 1, 0 1, 0 0)"]);
+    assert_eq!(out, "LINESTRING(0 0,1 0,1 1,0 1,0 0)");
+}
+
+#[test]
+fn union_all_of_many_lines_in_a_chain_is_complete() {
+    // 300 unit segments laid end to end, each also given as an overlapping duplicate: the
+    // result is the 300 segments once, in order, not cut at any plain vertex of a line.
+    let mut rows: Vec<String> = (0..300)
+        .map(|i| format!("LINESTRING ({i} 0, {} 0)", i + 1))
+        .collect();
+    rows.extend((0..300).map(|i| format!("LINESTRING ({i} 0, {} 0)", i + 1)));
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let out = union_all_wkt(&refs);
+    assert_eq!(segments_of(&out).len(), 300);
+}

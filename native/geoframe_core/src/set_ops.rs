@@ -327,7 +327,7 @@ fn union_all_rows(rows: Vec<Geometry<f64>>) -> Option<Geometry<f64>> {
     for family in families {
         match family {
             Family::Polygonal(m) => polys.push(m.orient(Direction::Default)),
-            Family::Linear(m) => lns = mixed_ops::lines_union(&lns, &m.0),
+            Family::Linear(m) => lns.extend(m.0),
             Family::Points(p) => pts.extend(p),
         }
     }
@@ -337,7 +337,7 @@ fn union_all_rows(rows: Vec<Geometry<f64>>) -> Option<Geometry<f64>> {
         unary_union(&polys)
     };
     // Lower dimensions inside a higher one are absorbed, as in GEOS.
-    let linework = MultiLineString::new(lns);
+    let linework = MultiLineString::new(mixed_ops::lines_union_all(&lns));
     let lns = if area.0.is_empty() {
         linework.0.clone()
     } else {
