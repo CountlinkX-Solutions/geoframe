@@ -267,7 +267,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `union_all` | no | ✅ | ✅ | |
+| `union_all` | no | ✅ | ✅ | the result can have a few vertices fewer than GEOS: collinear and near-duplicate vertices are dropped (Natural Earth 50m continents: Antarctica 4 660 vs 4 923, Asia 12 257 vs 12 259, the rest equal), areas agree to 3e-8 (`notebooks/compare.livemd`) |
 | `intersection_all` | no | `intersection_all/1` | ✅ | see §5 |
 | `GeoDataFrame.dissolve` | no | `dissolve/2` (`GeoFrame.Dissolve`) | 🟡 | `by`, `aggfunc` (first,last,sum,mean,min,max,count), `dropna`, `sort`, a column-to-function map; secondary geometry columns aggregate with `first`/`last` (first/last non-null geometry, CRS kept) or `count` (integer column), other functions raise `ArgumentError` (pandas raises `TypeError`); dissolving by a geometry column raises (pandas groups by the shapes); missing: `as_index`, `level`, `observed`. The geometry is the union of the group (Z as `union_all`); see [Z and M](#z-and-m) |
 | `unary_union` (deprecated) | — | — | ⛔ | deprecated |

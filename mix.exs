@@ -30,6 +30,7 @@ defmodule GeoFrame.MixProject do
         "docs/parity.md": [title: "GeoPandas parity"],
         "notebooks/tour.livemd": [title: "Notebook: tour"],
         "notebooks/deck.livemd": [title: "Notebook: deck.gl widget"],
+        "notebooks/compare.livemd": [title: "Notebook: GeoFrame vs GeoPandas"],
         "notebooks/spike.livemd": [title: "Notebook: spike"],
         LICENSE: [title: "License"],
         NOTICE: [title: "Notice"]

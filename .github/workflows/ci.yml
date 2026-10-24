@@ -85,7 +85,8 @@ jobs:
       # Runs the code cells of every notebook against this checkout (Mix.install with a path
       # dependency, so the NIF is built once more in Mix.install's own directory, debug mode).
       # Guards against regressions that only show in a fresh install, such as the optional
-      # postgrex compile break (#95). The notebooks download Natural Earth data over the network.
+      # postgrex compile break (#95). The notebooks download Natural Earth data over the network;
+      # compare.livemd also installs GeoPandas through Pythonx (uv) and checks GeoFrame against it.
       - name: Notebooks
         if: matrix.elixir == '1.19'
         timeout-minutes: 30
@@ -101,7 +102,7 @@ jobs:
           mkdir -p "$cache"
           curl -fsSL --retry 5 -o "$cache/$nif" \
             "https://github.com/elixir-nx/explorer/releases/download/v${version}/${nif}"
-          for notebook in deck tour spike; do
+          for notebook in deck tour spike compare; do
             elixir scripts/run_livemd.exs "notebooks/${notebook}.livemd"
           done
 
