@@ -120,11 +120,13 @@ defmodule GeoFrame.PostGIS.Values do
   defp convert(%Time{} = value, _oid), do: value
   defp convert(%NaiveDateTime{} = value, _oid), do: value
   defp convert(%DateTime{} = value, _oid), do: value
-  defp convert(%Postgrex.Interval{} = value, _oid), do: format_interval(value)
-  defp convert(%Postgrex.INET{} = value, _oid), do: format_inet(value)
-  defp convert(%Postgrex.MACADDR{address: address}, _oid), do: format_mac(address)
-  defp convert(%Postgrex.Range{} = value, _oid), do: format_range(value)
-  defp convert(%Postgrex.Point{x: x, y: y}, _oid), do: "(#{x},#{y})"
+  # Postgrex is optional, so its structs are matched by name: `%Postgrex.Interval{}` would not
+  # compile in a project (or a notebook) that does not depend on it.
+  defp convert(%{__struct__: Postgrex.Interval} = value, _oid), do: format_interval(value)
+  defp convert(%{__struct__: Postgrex.INET} = value, _oid), do: format_inet(value)
+  defp convert(%{__struct__: Postgrex.MACADDR, address: address}, _oid), do: format_mac(address)
+  defp convert(%{__struct__: Postgrex.Range} = value, _oid), do: format_range(value)
+  defp convert(%{__struct__: Postgrex.Point, x: x, y: y}, _oid), do: "(#{x},#{y})"
   defp convert(value, _oid) when is_struct(value), do: inspect(value)
   defp convert(value, _oid) when is_tuple(value), do: inspect(value)
   defp convert(value, _oid), do: value
