@@ -33,8 +33,15 @@
 //! # Gaps
 //!
 //! The whole file is read into memory (no batched or streaming reads), column order is not
-//! preserved relative to the geometry (it becomes the last column) and only the primary
-//! geometry column is decoded.
+//! preserved relative to the geometry (it becomes the last column).
+//!
+//! # Several geometry columns
+//!
+//! The `geo` metadata may declare more than one geometry column. The `primary_column` becomes
+//! [`GeoParquetRead::geometry`]; every other declared column is decoded into
+//! [`GeoParquetRead::secondary_geometries`] with its own CRS, and written back with its own
+//! metadata entry by [`write_geoparquet_multi`]. A secondary column follows the `columns`
+//! selection like an attribute does.
 //!
 //! # Bounding box reads
 //!
@@ -69,7 +76,7 @@ use parquet::file::properties::WriterProperties;
 use serde_json::Value;
 
 use crate::arrow_io::{
-    attributes_to_ipc, covering_columns, crs_to_string, encode_table, select_attributes,
+    attributes_to_ipc, covering_columns, crs_to_string, encode_table_multi, select_attributes,
     EncodeOptions, CRS84,
 };
 use crate::{GeoColumn, GeometryEncoding};
@@ -82,6 +89,9 @@ pub struct GeoParquetRead {
     pub geometry: GeoColumn,
     /// Name of the primary geometry column in the file.
     pub geometry_column: String,
+    /// The other (selected) geometry columns declared by the `geo` metadata, in file order, each
+    /// with its own CRS. Empty for a file with one geometry column.
+    pub secondary_geometries: Vec<(String, GeoColumn)>,
     /// All other (selected) columns as an Arrow IPC stream; an empty-schema stream when none.
     pub attributes_ipc: Vec<u8>,
 }
@@ -218,7 +228,7 @@ fn read_filtered(
     let primary = geo_meta.primary_column.clone();
     let raw = raw_geo_metadata(&builder)?;
     let crs = file_crs(&raw, &primary)?;
-    let hidden = covering_columns(Some(&raw));
+    let mut hidden = covering_columns(Some(&raw));
 
     let target_schema = builder
         .geoarrow_schema(&geo_meta, false, CoordType::default())
@@ -226,6 +236,14 @@ fn read_filtered(
     let geometry_index = target_schema.index_of(&primary).map_err(|_| {
         format!("primary geometry column {primary:?} is missing from the schema of {path}")
     })?;
+    // Secondary geometry columns are decoded below, not shipped as attributes.
+    let secondary_names: Vec<String> = target_schema
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .filter(|name| *name != primary && geo_meta.columns.contains_key(name))
+        .collect();
+    hidden.extend(secondary_names.iter().cloned());
     let attribute_indices = select_attributes(&target_schema, geometry_index, columns, &hidden)?;
 
     // A covering column (or a native encoding) lets the crate prune row groups from the
@@ -251,21 +269,13 @@ fn read_filtered(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot read {path}: {e}"))?;
 
-    let field = target_schema.field(geometry_index);
-    let mut wkb_arrays = Vec::with_capacity(batches.len());
-    for batch in &batches {
-        let array = from_arrow_array(batch.column(geometry_index), field)
-            .map_err(|e| format!("invalid geometry column in {path}: {e}"))?;
-        wkb_arrays.push(
-            to_wkb::<i32>(array.as_ref())
-                .map_err(|e| format!("cannot decode geometry column in {path}: {e}"))?,
-        );
-    }
-    let rows: Vec<Option<&[u8]>> = wkb_arrays
-        .iter()
-        .flat_map(|wkb| wkb.inner().iter())
-        .collect();
-    let mut geometry = GeoColumn::from_wkb(&rows, crs.as_deref())?;
+    let mut geometry = decode_geometry(
+        path,
+        &target_schema,
+        &batches,
+        geometry_index,
+        crs.as_deref(),
+    )?;
 
     if let (Some(query), false) = (bbox, pushed_down) {
         let keep: Vec<bool> = geometry
@@ -289,12 +299,51 @@ fn read_filtered(
         }
     }
 
+    let mut secondary_geometries = Vec::new();
+    for name in secondary_names
+        .into_iter()
+        .filter(|name| columns.is_none_or(|wanted| wanted.contains(name)))
+    {
+        let index = target_schema.index_of(&name).map_err(|_| {
+            format!("geometry column {name:?} is missing from the schema of {path}")
+        })?;
+        let column_crs = file_crs(&raw, &name)?;
+        let column = decode_geometry(path, &target_schema, &batches, index, column_crs.as_deref())?;
+        secondary_geometries.push((name, column));
+    }
+
     let attributes_ipc = attributes_to_ipc(&target_schema, &batches, &attribute_indices)?;
     Ok(GeoParquetRead {
         geometry,
         geometry_column: primary,
+        secondary_geometries,
         attributes_ipc,
     })
+}
+
+/// Decodes the geometry column at `index` of every batch into one [`GeoColumn`].
+fn decode_geometry(
+    path: &str,
+    schema: &Schema,
+    batches: &[RecordBatch],
+    index: usize,
+    crs: Option<&str>,
+) -> Result<GeoColumn, String> {
+    let field = schema.field(index);
+    let mut wkb_arrays = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let array = from_arrow_array(batch.column(index), field)
+            .map_err(|e| format!("invalid geometry column in {path}: {e}"))?;
+        wkb_arrays.push(
+            to_wkb::<i32>(array.as_ref())
+                .map_err(|e| format!("cannot decode geometry column in {path}: {e}"))?,
+        );
+    }
+    let rows: Vec<Option<&[u8]>> = wkb_arrays
+        .iter()
+        .flat_map(|wkb| wkb.inner().iter())
+        .collect();
+    GeoColumn::from_wkb(&rows, crs)
 }
 
 /// GeoPandas lists `["Polygon", "MultiPolygon"]` for a `multipolygon` column (the spec asks
@@ -401,13 +450,30 @@ pub fn write_geoparquet_with(
     attributes_ipc: &[u8],
     options: &ParquetOptions,
 ) -> Result<(), String> {
+    write_geoparquet_multi(
+        path,
+        &[(geometry_column, geometry)],
+        attributes_ipc,
+        options,
+    )
+}
+
+/// Like [`write_geoparquet_with`] for several geometry columns. The first of `geometries` is the
+/// primary column; each one gets its own `geo` metadata entry (encoding, CRS, bounds). The
+/// geometry columns follow the attributes in the given order.
+pub fn write_geoparquet_multi(
+    path: &str,
+    geometries: &[(&str, &GeoColumn)],
+    attributes_ipc: &[u8],
+    options: &ParquetOptions,
+) -> Result<(), String> {
     let props = options.writer_properties()?;
     let encode = EncodeOptions {
         encoding: options.geometry_encoding,
         covering_bbox: options.covering_bbox,
         version: options.schema_version.clone(),
     };
-    let encoded = encode_table(geometry, geometry_column, attributes_ipc, &encode)?;
+    let encoded = encode_table_multi(geometries, attributes_ipc, &encode)?;
     crate::atomic::write_atomic(path, |file| {
         write_batch(path, file, &encoded.batch, &encoded.geo, props)
     })

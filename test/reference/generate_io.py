@@ -160,6 +160,51 @@ def main():
 
     generate_vector()
     generate_zm()
+    generate_multi_geometry()
+
+
+def generate_multi_geometry():
+    """GeoParquet files with several geometry columns (issue #61), written by GeoPandas 1.2.
+
+    Own directory and manifest so regenerating them leaves the other fixtures alone. Run only
+    this with: python -I -c "import runpy; runpy.run_path('test/reference/generate_io.py',
+    run_name='gen')['generate_multi_geometry']()"
+    """
+    out = os.path.join(OUT, "multi")
+    shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(out)
+    base = gpd.GeoDataFrame(
+        {"id": pd.array([1, 2, 3], dtype="Int64"), "name": ["a", "b", None]},
+        geometry=gpd.GeoSeries.from_wkt(["POINT (0 0)", "POINT (1 1)", None], crs=4326),
+    )
+    base["footprint"] = gpd.GeoSeries.from_wkt(
+        ["POLYGON ((0 0, 1 0, 1 1, 0 0))", None, "POLYGON ((5 5, 6 5, 6 6, 5 5))"], crs=3857
+    )
+    base["centroid"] = gpd.GeoSeries.from_wkt(
+        ["POINT (5 5)", "POINT (6 6)", "POINT (7 7)"], crs=None
+    )
+    manifest = {"geopandas": gpd.__version__, "files": {}}
+    # The native encoding needs one geometry kind per column, which these columns have.
+    for file, kw in [("two_wkb.parquet", {}), ("two_native.parquet", {"geometry_encoding": "geoarrow"}),
+                     ("two_covering.parquet", {"write_covering_bbox": True})]:
+        base.to_parquet(os.path.join(out, file), **kw)
+        back = gpd.read_parquet(os.path.join(out, file))
+        manifest["files"][file] = {
+            "primary": "geometry",
+            "geometry_columns": [c for c in back.columns if str(back[c].dtype) == "geometry"],
+            "id": [1, 2, 3],
+            "name": ["a", "b", None],
+            "columns": {
+                c: {
+                    "crs": back[c].crs.to_string() if back[c].crs else None,
+                    "wkt": [None if g is None else shapely.to_wkt(g, rounding_precision=-1) for g in back[c]],
+                }
+                for c in back.columns if str(back[c].dtype) == "geometry"
+            },
+        }
+    with open(os.path.join(out, "manifest.json"), "w") as handle:
+        json.dump(manifest, handle, indent=1, sort_keys=True)
+        handle.write("\n")
 
 
 def plain(value):

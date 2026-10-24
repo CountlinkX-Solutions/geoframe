@@ -154,6 +154,21 @@ pub(crate) fn encode_table(
     attributes_ipc: &[u8],
     options: &EncodeOptions,
 ) -> Result<Encoded, String> {
+    encode_table_multi(&[(name, geometry)], attributes_ipc, options)
+}
+
+/// Like [`encode_table`] for several geometry columns: the first of `geometries` is the primary
+/// column, the others are secondary geometry columns that get their own `geo` metadata entry
+/// (encoding, CRS, bounds); `covering_bbox` adds a `bbox` covering column for the primary column
+/// only.
+pub(crate) fn encode_table_multi(
+    geometries: &[(&str, &GeoColumn)],
+    attributes_ipc: &[u8],
+    options: &EncodeOptions,
+) -> Result<Encoded, String> {
+    let (name, geometry) = *geometries
+        .first()
+        .ok_or("a table needs at least one geometry column")?;
     if options.version != "1.0.0" && options.version != "1.1.0" {
         return Err(format!(
             "schema_version must be \"1.0.0\" or \"1.1.0\", got {:?}",
@@ -175,22 +190,41 @@ pub(crate) fn encode_table(
     } else {
         decode_attributes(attributes_ipc, geometry.len())?
     };
-    if fields.iter().any(|f| f.name() == name) {
-        return Err(format!("attributes already have a column named {name:?}"));
+    for (index, (other, column)) in geometries.iter().enumerate() {
+        if fields.iter().any(|f| f.name() == other) {
+            return Err(format!("attributes already have a column named {other:?}"));
+        }
+        if geometries[..index].iter().any(|(n, _)| n == other) {
+            return Err(format!("two geometry columns are named {other:?}"));
+        }
+        if column.len() != geometry.len() {
+            return Err(format!(
+                "geometry column {other:?} has {} rows but {name:?} has {}",
+                column.len(),
+                geometry.len()
+            ));
+        }
     }
-    if options.covering_bbox && fields.iter().any(|f| f.name() == "bbox") {
+    // Only the primary column gets a covering column: readers filter by the primary's bounds,
+    // and GeoPandas shows a secondary column's covering column as an attribute.
+    if options.covering_bbox
+        && (fields.iter().any(|f| f.name() == "bbox")
+            || geometries.iter().any(|(n, _)| *n == "bbox"))
+    {
         return Err(
-            "write_covering_bbox adds a column named \"bbox\" but the attributes already have one"
+            "write_covering_bbox adds a column named \"bbox\" but the table already has one"
                 .to_string(),
         );
     }
 
-    let array: Arc<dyn GeoArrowArray> = match options.encoding {
-        GeometryEncoding::Wkb => Arc::new(geometry.geometry_array().clone()),
-        GeometryEncoding::GeoArrow => native_array(geometry)?,
-    };
-    fields.push(array.data_type().to_field(name, true));
-    columns.push(array.to_array_ref());
+    for (column, geometry) in geometries {
+        let array: Arc<dyn GeoArrowArray> = match options.encoding {
+            GeometryEncoding::Wkb => Arc::new(geometry.geometry_array().clone()),
+            GeometryEncoding::GeoArrow => native_array(geometry)?,
+        };
+        fields.push(array.data_type().to_field(*column, true));
+        columns.push(array.to_array_ref());
+    }
     let batch =
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).map_err(|e| e.to_string())?;
 
@@ -214,67 +248,71 @@ pub(crate) fn encode_table(
     let mut geo = serde_json::to_value(encoder.into_geoparquet_metadata())
         .map_err(|e| format!("cannot serialise GeoParquet metadata: {e}"))?;
     geo["version"] = Value::from(options.version.clone());
-    let column = geo
-        .get_mut("columns")
-        .and_then(|c| c.get_mut(name))
-        .and_then(Value::as_object_mut)
-        .ok_or("GeoParquet metadata lost the geometry column")?;
-    // The encoder knows no CRS database and drops it; set it explicitly.
-    column.remove("crs");
-    // An all-null or empty column has no bounds: NaN serialises as null, which no reader
-    // accepts. The key is optional, so leave it out.
-    if column
-        .get("bbox")
-        .and_then(Value::as_array)
-        .is_some_and(|bbox| bbox.iter().any(|v| !v.is_number()))
-    {
-        column.remove("bbox");
-    }
-    // The crate lists Z (and M) ranges in `bbox` for Z geometries; GeoPandas writes the 2D box
-    // and so do we (the covering column is 2D as well).
-    if column
-        .get("bbox")
-        .and_then(Value::as_array)
-        .is_some_and(|bbox| bbox.len() != 4)
-    {
-        match geometry.total_bounds() {
-            Some(bounds) => column.insert("bbox".to_string(), json!(bounds)),
-            None => column.remove("bbox"),
-        };
-    }
-    let crs = crs_for_file(geometry.crs().as_deref())?;
-    let extension_metadata = match &crs {
-        CrsOut::Omit => json!({ "crs": CRS84, "crs_type": "authority_code" }),
-        CrsOut::Null => json!({}),
-        CrsOut::Projjson(value) => json!({ "crs": value }),
-    };
-    match crs {
-        CrsOut::Omit => {}
-        CrsOut::Null => {
-            column.insert("crs".to_string(), Value::Null);
+    let mut extension_metadata: HashMap<&str, Value> = HashMap::new();
+    for (name, geometry) in geometries {
+        let column = geo
+            .get_mut("columns")
+            .and_then(|c| c.get_mut(*name))
+            .and_then(Value::as_object_mut)
+            .ok_or("GeoParquet metadata lost a geometry column")?;
+        // The encoder knows no CRS database and drops it; set it explicitly.
+        column.remove("crs");
+        // An all-null or empty column has no bounds: NaN serialises as null, which no reader
+        // accepts. The key is optional, so leave it out.
+        if column
+            .get("bbox")
+            .and_then(Value::as_array)
+            .is_some_and(|bbox| bbox.iter().any(|v| !v.is_number()))
+        {
+            column.remove("bbox");
         }
-        CrsOut::Projjson(value) => {
-            column.insert("crs".to_string(), value);
+        // The crate lists Z (and M) ranges in `bbox` for Z geometries; GeoPandas writes the 2D
+        // box and so do we (the covering column is 2D as well).
+        if column
+            .get("bbox")
+            .and_then(Value::as_array)
+            .is_some_and(|bbox| bbox.len() != 4)
+        {
+            match geometry.total_bounds() {
+                Some(bounds) => column.insert("bbox".to_string(), json!(bounds)),
+                None => column.remove("bbox"),
+            };
+        }
+        let crs = crs_for_file(geometry.crs().as_deref())?;
+        extension_metadata.insert(
+            name,
+            match &crs {
+                CrsOut::Omit => json!({ "crs": CRS84, "crs_type": "authority_code" }),
+                CrsOut::Null => json!({}),
+                CrsOut::Projjson(value) => json!({ "crs": value }),
+            },
+        );
+        match crs {
+            CrsOut::Omit => {}
+            CrsOut::Null => {
+                column.insert("crs".to_string(), Value::Null);
+            }
+            CrsOut::Projjson(value) => {
+                column.insert("crs".to_string(), value);
+            }
         }
     }
 
-    // The extension metadata of the geometry field carries PROJJSON, like GeoPandas.
+    // The extension metadata of each geometry field carries PROJJSON, like GeoPandas.
     let fields: Vec<Field> = encoded
         .schema()
         .fields()
         .iter()
-        .map(|field| {
-            if field.name() == name {
-                let mut metadata = field.metadata().clone();
-                metadata.insert(
-                    EXTENSION_METADATA.to_string(),
-                    extension_metadata.to_string(),
-                );
-                field.as_ref().clone().with_metadata(metadata)
-            } else {
-                field.as_ref().clone()
-            }
-        })
+        .map(
+            |field| match extension_metadata.get(field.name().as_str()) {
+                Some(extension) => {
+                    let mut metadata = field.metadata().clone();
+                    metadata.insert(EXTENSION_METADATA.to_string(), extension.to_string());
+                    field.as_ref().clone().with_metadata(metadata)
+                }
+                None => field.as_ref().clone(),
+            },
+        )
         .collect();
     let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), encoded.columns().to_vec())
         .map_err(|e| e.to_string())?;

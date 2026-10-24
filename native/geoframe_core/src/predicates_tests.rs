@@ -285,3 +285,17 @@ fn distance_to_an_empty_geometry_is_null() {
     assert!(d[3].is_some());
     assert_eq!(left.dwithin(&right, 2.0).unwrap()[..3], [None, None, None]);
 }
+
+#[test]
+fn distance_too_large_for_a_double_is_infinite_not_f64_max() {
+    // geo seeds its minimum with f64::MAX; GEOS and Shapely give inf (issue #60).
+    let a = one("POINT (0 0)");
+    let b = one("POINT (1.7e308 1.7e308)");
+    assert_eq!(a.distance(&b).unwrap(), vec![Some(f64::INFINITY)]);
+    let line = one("LINESTRING (0 0, 1 0)");
+    let far = one("LINESTRING (1.7e308 1.7e308, 1.7e308 0)");
+    assert_eq!(
+        line.hausdorff_distance(&far, None).unwrap(),
+        vec![Some(f64::INFINITY)]
+    );
+}

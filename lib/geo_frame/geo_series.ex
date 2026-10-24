@@ -27,7 +27,8 @@ defmodule GeoFrame.GeoSeries do
   defstruct [:ref, precision: 0.0]
 
   @type t :: %__MODULE__{ref: reference(), precision: float()}
-  @type bounds :: {float(), float(), float(), float()}
+  @typedoc "Four ordinates; a non-finite one is `:nan`, `:infinity` or `:neg_infinity`."
+  @type bounds :: {number() | atom(), number() | atom(), number() | atom(), number() | atom()}
   @typedoc "The right-hand side of a binary operation: a series, or a WKT string that broadcasts."
   @type other :: t() | String.t()
 

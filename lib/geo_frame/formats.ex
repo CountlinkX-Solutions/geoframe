@@ -37,8 +37,10 @@ defmodule GeoFrame.Formats do
     columns = opts |> Keyword.get(:columns) |> normalize_columns()
     bbox = opts |> Keyword.get(:bbox) |> normalize_bbox!() |> check_bbox_order!()
 
-    with {:ok, {ref, name, ipc}} <- Native.read_parquet(to_string(path), columns, bbox) do
-      assemble_named(ref, name, ipc)
+    with {:ok, {ref, name, ipc, secondary}} <-
+           Native.read_parquet(to_string(path), columns, bbox),
+         {:ok, gdf} <- assemble_named(ref, name, ipc) do
+      {:ok, put_secondary(gdf, secondary)}
     end
   end
 
@@ -67,7 +69,8 @@ defmodule GeoFrame.Formats do
              ipc,
              to_string(path),
              {Atom.to_string(compression), level, row_group_size, Atom.to_string(encoding),
-              covering, version}
+              covering, version},
+             Enum.map(gdf.secondary_geometries, fn {name, %GeoSeries{ref: ref}} -> {name, ref} end)
            ) do
       :ok
     end
@@ -269,6 +272,12 @@ defmodule GeoFrame.Formats do
   end
 
   # -- helpers --------------------------------------------------------------------------
+
+  defp put_secondary(gdf, secondary) do
+    Enum.reduce(secondary, gdf, fn {name, ref}, acc ->
+      GeoDataFrame.put_geometry(acc, name, %GeoSeries{ref: ref})
+    end)
+  end
 
   defp assemble_named(ref, name, ipc) do
     with {:ok, data} <- Attributes.load(ipc) do

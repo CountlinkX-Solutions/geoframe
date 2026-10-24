@@ -64,7 +64,7 @@ defmodule GeoFrame.Dissolve do
       {gids, n_groups} = group_ids(gdf, by, Keyword.get(opts, :sort, true))
       geometry = GeoSeries.union_groups(gdf.geometry, gids, n_groups)
       data = aggregate(gdf.data, by, aggs, gids)
-      %{gdf | data: data, geometry: geometry}
+      %{gdf | data: data, geometry: geometry, secondary_geometries: []}
     end
   end
 

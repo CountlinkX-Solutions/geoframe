@@ -39,6 +39,10 @@ defmodule GeoFrame do
 
   ## GeoParquet
 
+  A file with several geometry columns reads as a frame with one active geometry (the
+  `primary_column`) and secondary `GeoFrame.GeoSeries` columns (`GeoDataFrame.geometry_columns/1`,
+  `GeoDataFrame.set_geometry/3`); `write_parquet/3` writes all of them with their own CRS.
+
   `read_parquet/2` and `write_parquet/3` split a file in two halves. The geometry column
   lives in Rust memory (a `GeoFrame.GeoSeries`); every other column crosses the NIF
   boundary as an Arrow IPC stream and is loaded into (or dumped from) an
@@ -255,7 +259,8 @@ defmodule GeoFrame do
       single geometry kind like GeoPandas (a type and its multi variant may mix and are
       written as the multi type) and is `{:error, _}` for mixed geometries or collections.
     * `:write_covering_bbox` - `true` adds a `bbox` struct column (`xmin`, `ymin`, `xmax`,
-      `ymax`) and the `covering` metadata, which makes `bbox:` reads prune row groups.
+      `ymax`) and the `covering` metadata, which makes `bbox:` reads prune row groups (for the
+      active geometry only).
       Default `false`.
     * `:schema_version` - `"1.1.0"` (default) or `"1.0.0"`. Version 1.0.0 allows only WKB
       geometry and no covering column.

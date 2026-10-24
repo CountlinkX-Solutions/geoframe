@@ -165,6 +165,16 @@ pub(crate) fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
     catch_unwind(AssertUnwindSafe(f)).ok()
 }
 
+/// `geo` seeds its distance minimum with `f64::MAX`, so a distance too large for a double comes
+/// back as exactly that (GEOS and Shapely give `inf`). No real distance equals it.
+pub(crate) fn saturate_distance(d: f64) -> f64 {
+    if d >= f64::MAX {
+        f64::INFINITY
+    } else {
+        d
+    }
+}
+
 /// One pair evaluated as `a.predicate(b)`; `None` when `geo` panics on degenerate input.
 pub(crate) fn pair_predicate(
     a: &Geometry<f64>,
@@ -297,12 +307,13 @@ impl GeoColumn {
         self.zip_pairs(
             other,
             |a, b| {
-                (has_coords(a) && has_coords(b)).then(|| guarded(|| Euclidean.distance(a, b)))?
+                (has_coords(a) && has_coords(b))
+                    .then(|| guarded(|| saturate_distance(Euclidean.distance(a, b))))?
             },
             |scalar| scalar.clone(),
             |scalar, row| {
                 (has_coords(row) && has_coords(scalar))
-                    .then(|| guarded(|| Euclidean.distance(row, scalar)))?
+                    .then(|| guarded(|| saturate_distance(Euclidean.distance(row, scalar))))?
             },
         )
     }

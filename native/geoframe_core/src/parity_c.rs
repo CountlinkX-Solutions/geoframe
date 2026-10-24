@@ -26,7 +26,7 @@ use geo::{
     MultiPoint, MultiPolygon, Point, Polygon, RemoveRepeatedPoints,
 };
 
-use crate::predicates::guarded;
+use crate::predicates::{guarded, saturate_distance};
 use crate::zm_overlay::z_and_m;
 use crate::GeoColumn;
 
@@ -368,6 +368,7 @@ fn directed_hausdorff(
     sample_coords(from, pieces)
         .into_iter()
         .filter_map(|c| distance_to_linework(c, to))
+        .map(saturate_distance)
         .reduce(f64::max)
 }
 
