@@ -51,6 +51,35 @@ struct Cuts {
     spans: Vec<(f64, f64)>,
 }
 
+/// Collinear-overlap spans of one segment, ready for "is this interval covered" queries.
+struct Covered {
+    /// `(lo, highest hi among the spans up to and including this one)`, sorted by `lo`.
+    by_lo: Vec<(f64, f64)>,
+}
+
+impl Covered {
+    fn new(spans: &[(f64, f64)]) -> Self {
+        let mut sorted = spans.to_vec();
+        sorted.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut reach = f64::NEG_INFINITY;
+        let by_lo = sorted
+            .into_iter()
+            .map(|(lo, hi)| {
+                reach = reach.max(hi);
+                (lo, reach)
+            })
+            .collect();
+        Self { by_lo }
+    }
+
+    /// Some span has `lo <= t0 && t1 <= hi`: among the spans starting at or before `t0`, the
+    /// furthest-reaching one decides, so a binary search replaces the scan over every span.
+    fn contains(&self, t0: f64, t1: f64) -> bool {
+        let upto = self.by_lo.partition_point(|&(lo, _)| lo <= t0);
+        upto > 0 && t1 <= self.by_lo[upto - 1].1
+    }
+}
+
 /// Lines without repeated consecutive vertices; lines left with fewer than two are dropped.
 fn clean(lines: &[LineString<f64>]) -> Vec<Vec<Coord<f64>>> {
     lines
@@ -100,12 +129,13 @@ fn split(line: &Line<f64>, cuts: &Cuts) -> Vec<(Coord<f64>, Coord<f64>, bool)> {
     let mut all = vec![(0.0, line.start)];
     all.extend(breaks);
     all.push((1.0, line.end));
+    let covered = Covered::new(&cuts.spans);
     all.windows(2)
         .filter(|w| w[0].1 != w[1].1)
         .map(|w| {
             let (t0, from) = w[0];
             let (t1, to) = w[1];
-            let shared = cuts.spans.iter().any(|&(lo, hi)| lo <= t0 && t1 <= hi);
+            let shared = covered.contains(t0, t1);
             (from, to, shared)
         })
         .collect()
@@ -184,6 +214,62 @@ pub(crate) fn node(a: &[LineString<f64>], b: &[LineString<f64>]) -> Noded {
     }
 }
 
+/// Nodes a set of lines against itself in one pass and returns the union linework: every
+/// line is cut where any other segment crosses, touches or overlaps it, and a stretch covered
+/// by several lines appears once (in the first line that has it). Pieces come in input order.
+///
+/// This replaces folding [`node`] over the lines one at a time, which re-noded the whole
+/// accumulated linework per line (quadratic) and cut pieces by sub-segments of earlier cuts.
+/// One R-tree over all segments finds every candidate pair once, and each crossing is computed
+/// from the original segments.
+pub(crate) fn node_union(lines: &[LineString<f64>]) -> Vec<Piece> {
+    let segs = segments(&clean(lines));
+    let mut cuts: Vec<Cuts> = segs.iter().map(|_| Cuts::default()).collect();
+    let mut node_list: Vec<Coord<f64>> = Vec::new();
+    let tree = RTree::bulk_load(
+        segs.iter()
+            .enumerate()
+            .map(|(i, s)| GeomWithData::new(rect(&s.line), i))
+            .collect(),
+    );
+    for (i, si) in segs.iter().enumerate() {
+        let query = envelope(&si.line);
+        for hit in tree.locate_in_envelope_intersecting(&query) {
+            let j = hit.data;
+            if j <= i {
+                continue;
+            }
+            // Consecutive segments of one line meet at a plain vertex, not at a node.
+            let consecutive = si.owner == segs[j].owner && j == i + 1;
+            match line_intersection(si.line, segs[j].line) {
+                None => {}
+                Some(LineIntersection::SinglePoint { intersection, .. }) => {
+                    if !consecutive {
+                        cuts[i].points.push(intersection);
+                        cuts[j].points.push(intersection);
+                        node_list.push(intersection);
+                    }
+                }
+                Some(LineIntersection::Collinear { intersection }) => {
+                    for c in [intersection.start, intersection.end] {
+                        cuts[i].points.push(c);
+                        cuts[j].points.push(c);
+                        node_list.push(c);
+                    }
+                    // Only the later segment is "covered": the first one keeps the stretch.
+                    cuts[j].spans.push(span(&segs[j].line, &intersection));
+                }
+            }
+        }
+    }
+    let mut seen = HashSet::new();
+    node_list.retain(|c| seen.insert(key(*c)));
+    assemble(&segs, &cuts, &seen)
+        .into_iter()
+        .filter(|p| !p.shared)
+        .collect()
+}
+
 fn span(line: &Line<f64>, overlap: &Line<f64>) -> (f64, f64) {
     let (t0, t1) = (param(line, overlap.start), param(line, overlap.end));
     (t0.min(t1), t0.max(t1))
@@ -209,5 +295,58 @@ pub(crate) fn probe(piece: &Piece) -> Coord<f64> {
     Coord {
         x: (p.x + q.x) / 2.0,
         y: (p.y + q.y) / 2.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn covered_matches_the_scan_over_every_span() {
+        let spans = vec![
+            (0.1, 0.3),
+            (0.25, 0.6),
+            (0.7, 0.8),
+            (0.0, 0.05),
+            (0.75, 0.9),
+        ];
+        let covered = Covered::new(&spans);
+        let grid: Vec<f64> = (0..=40).map(|i| f64::from(i) / 40.0).collect();
+        for &t0 in &grid {
+            for &t1 in grid.iter().filter(|&&t| t > t0) {
+                let scan = spans.iter().any(|&(lo, hi)| lo <= t0 && t1 <= hi);
+                assert_eq!(covered.contains(t0, t1), scan, "[{t0}, {t1}]");
+            }
+        }
+        assert!(!Covered::new(&[]).contains(0.0, 1.0));
+    }
+
+    #[test]
+    fn node_union_keeps_input_order_and_drops_repeated_stretches() {
+        let line = |pts: &[(f64, f64)]| {
+            LineString::new(pts.iter().map(|&(x, y)| Coord { x, y }).collect())
+        };
+        let pieces = node_union(&[
+            line(&[(0.0, 0.0), (4.0, 0.0)]),
+            line(&[(1.0, 0.0), (3.0, 0.0)]),
+            line(&[(2.0, -1.0), (2.0, 1.0)]),
+        ]);
+        let ends: Vec<_> = pieces
+            .iter()
+            .map(|p| (p.coords[0], *p.coords.last().unwrap()))
+            .collect();
+        let at = |x: f64, y: f64| Coord { x, y };
+        assert_eq!(
+            ends,
+            vec![
+                (at(0.0, 0.0), at(1.0, 0.0)),
+                (at(1.0, 0.0), at(2.0, 0.0)),
+                (at(2.0, 0.0), at(3.0, 0.0)),
+                (at(3.0, 0.0), at(4.0, 0.0)),
+                (at(2.0, -1.0), at(2.0, 0.0)),
+                (at(2.0, 0.0), at(2.0, 1.0)),
+            ]
+        );
     }
 }

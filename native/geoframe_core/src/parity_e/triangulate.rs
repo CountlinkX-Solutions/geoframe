@@ -29,12 +29,47 @@ pub(super) fn sites(geom: &Geometry<f64>, tolerance: f64) -> Vec<Coord<f64>> {
         return unique;
     }
     unique.sort_by(lex);
+    snap_sorted(unique, tolerance)
+}
+
+/// Largest `|coordinate| / cell` the hashed snap handles; beyond it the quotient loses the
+/// resolution a cell index needs, and the plain scan is used instead.
+const MAX_CELLS: f64 = 1e15;
+
+/// Keeps each point (visited in the given order) unless a kept one is closer than
+/// `tolerance`. A hash grid with cells of `2 * tolerance` limits every test to the nine
+/// cells around the point, so the pass is linear for spread-out points where scanning the
+/// kept list was quadratic. The distance test is the same as the scan's, so the result is
+/// identical.
+fn snap_sorted(points: Vec<Coord<f64>>, tolerance: f64) -> Vec<Coord<f64>> {
+    let close = |k: &Coord<f64>, c: &Coord<f64>| (k.x - c.x).hypot(k.y - c.y) < tolerance;
+    let cell = 2.0 * tolerance;
+    let extent = points
+        .iter()
+        .map(|c| c.x.abs().max(c.y.abs()))
+        .fold(0.0, f64::max);
+    if !cell.is_finite() || extent / cell > MAX_CELLS {
+        let mut kept: Vec<Coord<f64>> = Vec::new();
+        for c in points {
+            if !kept.iter().any(|k| close(k, &c)) {
+                kept.push(c);
+            }
+        }
+        return kept;
+    }
+    let index = |c: &Coord<f64>| ((c.x / cell).floor() as i64, (c.y / cell).floor() as i64);
     let mut kept: Vec<Coord<f64>> = Vec::new();
-    for c in unique {
-        if !kept
-            .iter()
-            .any(|k| (k.x - c.x).hypot(k.y - c.y) < tolerance)
-        {
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for c in points {
+        let (cx, cy) = index(&c);
+        let taken = (cx - 1..=cx + 1).any(|gx| {
+            (cy - 1..=cy + 1).any(|gy| {
+                grid.get(&(gx, gy))
+                    .is_some_and(|ids| ids.iter().any(|&i| close(&kept[i], &c)))
+            })
+        });
+        if !taken {
+            grid.entry((cx, cy)).or_default().push(kept.len());
             kept.push(c);
         }
     }
@@ -324,4 +359,97 @@ pub(super) fn voronoi_parts(
         }
     }
     Some(edges)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The scan the hashed snap replaced: test every kept point.
+    fn snap_scan(points: Vec<Coord<f64>>, tolerance: f64) -> Vec<Coord<f64>> {
+        let mut kept: Vec<Coord<f64>> = Vec::new();
+        for c in points {
+            if !kept
+                .iter()
+                .any(|k| (k.x - c.x).hypot(k.y - c.y) < tolerance)
+            {
+                kept.push(c);
+            }
+        }
+        kept
+    }
+
+    fn cloud(n: usize, spread: f64, seed: u64) -> Vec<Coord<f64>> {
+        let mut state = seed;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut points: Vec<Coord<f64>> = (0..n)
+            .map(|_| Coord {
+                x: next() * spread,
+                y: next() * spread,
+            })
+            .collect();
+        points.sort_by(lex);
+        points
+    }
+
+    #[test]
+    fn hashed_snap_keeps_exactly_the_points_the_scan_keeps() {
+        // Dense clouds (many snaps), sparse ones, negative coordinates, and a tolerance larger
+        // than the whole cloud.
+        for (n, spread, tolerance) in [
+            (3000, 10.0, 0.05),
+            (3000, 1000.0, 0.05),
+            (2000, 10.0, 0.5),
+            (500, 1.0, 5.0),
+            (2000, 1e-3, 1e-5),
+        ] {
+            for shift in [0.0, -500.0, 1e6] {
+                let points: Vec<Coord<f64>> = cloud(n, spread, 99)
+                    .into_iter()
+                    .map(|c| Coord {
+                        x: c.x + shift,
+                        y: c.y - shift,
+                    })
+                    .collect();
+                assert_eq!(
+                    snap_sorted(points.clone(), tolerance),
+                    snap_scan(points, tolerance),
+                    "n={n} spread={spread} tolerance={tolerance} shift={shift}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hashed_snap_matches_the_scan_at_the_tolerance_boundary() {
+        // Points exactly `tolerance` apart are both kept (the test is strict), across cell edges.
+        let points: Vec<Coord<f64>> = (0..50)
+            .map(|i| Coord {
+                x: i as f64 * 0.25,
+                y: 0.0,
+            })
+            .collect();
+        for tolerance in [0.25, 0.2500001, 0.24999, 0.5, 1.0] {
+            assert_eq!(
+                snap_sorted(points.clone(), tolerance),
+                snap_scan(points.clone(), tolerance),
+                "tolerance={tolerance}"
+            );
+        }
+    }
+
+    #[test]
+    fn extreme_ratios_fall_back_to_the_scan() {
+        let points = vec![
+            Coord { x: 1e300, y: 0.0 },
+            Coord { x: 1e300, y: 1.0 },
+            Coord { x: 2e300, y: 0.0 },
+        ];
+        assert_eq!(snap_sorted(points.clone(), 0.5), snap_scan(points, 0.5));
+    }
 }

@@ -12,7 +12,7 @@ defmodule GeoFrame.GeoDataFrameTest do
   defp sample(n \\ 5, opts \\ []) do
     data = DataFrame.new(id: Enum.to_list(0..(n - 1)), name: Enum.map(0..(n - 1), &"n#{&1}"))
     geometry = GeoSeries.from_wkt!(Enum.map(0..(n - 1), &"POINT (#{&1} #{&1 * 2})"), opts)
-    GeoDataFrame.new(data, geometry, opts)
+    GeoDataFrame.new(data, geometry, Keyword.take(opts, [:geometry_column]))
   end
 
   defp ids(gdf), do: gdf |> GeoDataFrame.data() |> DataFrame.pull("id") |> Series.to_list()

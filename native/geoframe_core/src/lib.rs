@@ -71,7 +71,7 @@ pub use predicates::Predicate;
 pub use reproject::{crs_equivalent, crs_is_geographic, normalize_crs};
 pub use set_ops::SetOp;
 pub use shapefile_io::{read_shapefile, shapefile_info, write_shapefile};
-pub use sindex::{NearestPairs, QueryPredicate};
+pub use sindex::{join_rows, JoinHow, JoinRows, NearestPairs, QueryPredicate, NO_ROW};
 pub use unary::{BufferOptions, Origin, UnaryOp};
 
 #[cfg(test)]
@@ -116,6 +116,8 @@ mod parity_j_tests;
 mod parquet_multi_tests;
 #[cfg(test)]
 mod parquet_tests;
+#[cfg(test)]
+mod perf_bench_tests;
 #[cfg(test)]
 mod polygonize_tests;
 #[cfg(test)]

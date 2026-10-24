@@ -93,6 +93,124 @@ fn envelope(geometry: &Geometry<f64>, pad: f64) -> Option<AABB<[f64; 2]>> {
     ))
 }
 
+/// Marks the missing partner of an unmatched row in [`join_rows`] output.
+pub const NO_ROW: u32 = u32::MAX;
+
+/// Which side of a spatial join keeps its unmatched rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinHow {
+    Inner,
+    Left,
+    Right,
+}
+
+impl JoinHow {
+    /// Parses the join name used by the NIF layer.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "inner" => Self::Inner,
+            "left" => Self::Left,
+            "right" => Self::Right,
+            _ => return None,
+        })
+    }
+}
+
+/// The rows of a spatial join result, as parallel vectors. [`NO_ROW`] marks the missing
+/// partner of an unmatched row; its distance is NaN. `distances` is empty without input
+/// distances.
+#[derive(Debug, Default, PartialEq)]
+pub struct JoinRows {
+    pub left: Vec<u32>,
+    pub right: Vec<u32>,
+    pub distances: Vec<f64>,
+}
+
+/// Orders matched pairs the way `sjoin` lays out its rows and adds the unmatched rows of the
+/// preserved side: `Inner` keeps the pairs, `Left` gives left row then right row with every
+/// unmatched left row once, `Right` gives right row then left row with every unmatched right
+/// row once. `left`/`right` (and the optional `distances`) are the parallel output of
+/// [`GeoColumn::query_pairs`] or [`GeoColumn::nearest_pairs`], ordered by left row (`Left`
+/// requires it; `Right` and `Inner` keep the input order inside a right row, which is the
+/// order of the pairs, so a nearest search run from the right side works too).
+///
+/// Linear time: a merge for `Left`, a stable counting sort for `Right`. Out-of-range rows,
+/// unsorted input and mismatched lengths are errors.
+pub fn join_rows(
+    left: &[u32],
+    right: &[u32],
+    distances: Option<&[f64]>,
+    how: JoinHow,
+    n_left: usize,
+    n_right: usize,
+) -> Result<JoinRows, String> {
+    if left.len() != right.len() || distances.is_some_and(|d| d.len() != left.len()) {
+        return Err("left, right and distances must have the same length".to_string());
+    }
+    if left.iter().any(|&i| i as usize >= n_left) || right.iter().any(|&j| j as usize >= n_right) {
+        return Err("pair row out of range for the frame".to_string());
+    }
+    if how == JoinHow::Left && left.windows(2).any(|w| w[0] > w[1]) {
+        return Err("pairs must be ordered by left row".to_string());
+    }
+    let distance = |k: usize| distances.map_or(f64::NAN, |d| d[k]);
+    let mut out = JoinRows::default();
+    let mut push = |l: u32, r: u32, d: f64| {
+        out.left.push(l);
+        out.right.push(r);
+        if distances.is_some() {
+            out.distances.push(d);
+        }
+    };
+    match how {
+        JoinHow::Inner => {
+            for k in 0..left.len() {
+                push(left[k], right[k], distance(k));
+            }
+        }
+        JoinHow::Left => {
+            let mut k = 0;
+            for row in 0..n_left as u32 {
+                if k < left.len() && left[k] == row {
+                    while k < left.len() && left[k] == row {
+                        push(row, right[k], distance(k));
+                        k += 1;
+                    }
+                } else {
+                    push(row, NO_ROW, f64::NAN);
+                }
+            }
+        }
+        JoinHow::Right => {
+            // Stable counting sort by right row; input order (left ascending) is kept inside
+            // a right row.
+            let mut start = vec![0usize; n_right + 1];
+            for &j in right {
+                start[j as usize + 1] += 1;
+            }
+            for j in 0..n_right {
+                start[j + 1] += start[j];
+            }
+            let mut order = vec![0usize; right.len()];
+            let mut fill = start.clone();
+            for (k, &j) in right.iter().enumerate() {
+                order[fill[j as usize]] = k;
+                fill[j as usize] += 1;
+            }
+            for j in 0..n_right {
+                let block = &order[start[j]..start[j + 1]];
+                if block.is_empty() {
+                    push(NO_ROW, j as u32, f64::NAN);
+                }
+                for &k in block {
+                    push(left[k], j as u32, distance(k));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 impl GeoColumn {
     /// All `(left, right)` row pairs satisfying `left.predicate(right)`, as parallel index
     /// vectors ordered by left then right row.

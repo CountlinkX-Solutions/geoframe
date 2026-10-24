@@ -3,8 +3,10 @@ defmodule GeoFrame.SpatialJoin do
   Spatial joins (`sjoin/3`, `sjoin_nearest/3`) between two `GeoFrame.GeoDataFrame`s with GeoPandas semantics.
 
   The matching pairs come from `GeoFrame.GeoSeries.sindex_query/4` (R-tree probe, exact
-  refinement, computed in Rust). Attributes are then aligned with the row indices on the
-  Elixir side, so geometry never leaves Rust memory.
+  refinement, computed in Rust). Rust also lays out the result rows (join order, unmatched
+  rows) and hands the row indices over as native-endian `u32` binaries that Explorer reads
+  with `Series.from_binary/3`, so a join of millions of pairs never builds a list of indices
+  on the BEAM heap, and geometry never leaves Rust memory.
 
   ## Result
 
@@ -36,8 +38,14 @@ defmodule GeoFrame.SpatialJoin do
   alias Explorer.Series
   alias GeoFrame.GeoDataFrame
   alias GeoFrame.GeoSeries
+  alias GeoFrame.Native
+  alias GeoFrame.Options
 
   @hows [:inner, :left, :right]
+  # `u32::MAX` marks a row without a partner in the pair vectors Rust returns.
+  @no_row 4_294_967_295
+  @sjoin_options [:how, :predicate, :distance, :lsuffix, :rsuffix]
+  @nearest_options [:how, :max_distance, :distance_col, :exclusive, :lsuffix, :rsuffix]
 
   @doc """
   Joins `left` and `right` on a spatial relation.
@@ -50,16 +58,19 @@ defmodule GeoFrame.SpatialJoin do
     * `:distance` - required for `:dwithin`.
     * `:lsuffix` / `:rsuffix` - suffixes for colliding attribute names (`"left"` / `"right"`).
 
-  Raises `ArgumentError` for bad options, a CRS mismatch, or when the result would contain
+  Raises `ArgumentError` for bad or unknown options, a CRS mismatch, or when the result would contain
   two columns with the same name (including an existing `index_right` / `index_left`).
   """
   @spec sjoin(GeoDataFrame.t(), GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
   def sjoin(%GeoDataFrame{} = left, %GeoDataFrame{} = right, opts \\ []) do
+    Options.validate!(opts, @sjoin_options)
     how = fetch_how!(opts)
     predicate = Keyword.get(opts, :predicate, :intersects)
 
     query_opts = Keyword.take(opts, [:distance])
-    {li, ri} = GeoSeries.sindex_query(left.geometry, right.geometry, predicate, query_opts)
+
+    {li, ri} =
+      GeoSeries.sindex_query_binaries(left.geometry, right.geometry, predicate, query_opts)
 
     assemble(left, right, how, {li, ri, nil}, opts)
   end
@@ -83,20 +94,23 @@ defmodule GeoFrame.SpatialJoin do
     * `:lsuffix` / `:rsuffix` - suffixes for colliding attribute names (`"left"` / `"right"`).
 
   Column order and nulls follow `sjoin/3`; the distance column comes after the right
-  attributes. Null and empty geometries never match. Raises `ArgumentError` for bad options,
+  attributes. Null and empty geometries never match. Raises `ArgumentError` for bad or unknown options,
   a CRS mismatch or duplicate result column names.
   """
   @spec sjoin_nearest(GeoDataFrame.t(), GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
   def sjoin_nearest(%GeoDataFrame{} = left, %GeoDataFrame{} = right, opts \\ []) do
+    Options.validate!(opts, @nearest_options)
     how = fetch_how!(opts)
     nearest_opts = Keyword.take(opts, [:max_distance, :exclusive])
 
     {li, ri, ds} =
       if how == :right do
-        {ri, li, ds} = GeoSeries.sindex_nearest(right.geometry, left.geometry, nearest_opts)
+        {ri, li, ds} =
+          GeoSeries.sindex_nearest_binaries(right.geometry, left.geometry, nearest_opts)
+
         {li, ri, ds}
       else
-        GeoSeries.sindex_nearest(left.geometry, right.geometry, nearest_opts)
+        GeoSeries.sindex_nearest_binaries(left.geometry, right.geometry, nearest_opts)
       end
 
     assemble(left, right, how, {li, ri, ds}, opts)
@@ -112,24 +126,38 @@ defmodule GeoFrame.SpatialJoin do
     how
   end
 
-  # Builds the joined frame from matched row pairs (`ds` are the optional distances).
+  # Builds the joined frame from matched row pairs: native-endian binaries of u32 rows (and
+  # f64 distances, `ds`, for the nearest join). Rust lays out the result rows (sort order and
+  # unmatched rows, `@no_row` marking a missing partner); the row vectors reach Explorer as
+  # series through `from_binary`, so no list of pair indices is ever built on the BEAM heap.
   defp assemble(left, right, how, {li, ri, ds}, opts) do
     lsuffix = opts |> Keyword.get(:lsuffix, "left") |> to_string()
     rsuffix = opts |> Keyword.get(:rsuffix, "right") |> to_string()
     distance_col = opts |> Keyword.get(:distance_col) |> then(&(&1 && to_string(&1)))
 
-    {left_rows, right_rows, distances} =
-      rows(how, li, ri, ds, GeoDataFrame.n_rows(left), GeoDataFrame.n_rows(right))
+    {left_bin, right_bin, distance_bin} =
+      li
+      |> Native.join_rows(
+        ri,
+        ds,
+        Atom.to_string(how),
+        GeoDataFrame.n_rows(left),
+        GeoDataFrame.n_rows(right)
+      )
+      |> unwrap!()
+
+    left_rows = Series.from_binary(left_bin, {:u, 32})
+    right_rows = Series.from_binary(right_bin, {:u, 32})
 
     {geometry, geometry_column} =
       case how do
-        :right -> {GeoSeries.take(right.geometry, right_rows), right.geometry_column}
-        _ -> {GeoSeries.take(left.geometry, left_rows), left.geometry_column}
+        :right -> {GeoSeries.take(right.geometry, right_bin), right.geometry_column}
+        _ -> {GeoSeries.take(left.geometry, left_bin), left.geometry_column}
       end
 
     index_name = if how == :right, do: "index_left", else: "index_right"
     index_values = if how == :right, do: left_rows, else: right_rows
-    index = {index_name, Series.from_list(index_values, dtype: {:s, 64})}
+    index = {index_name, nullable_index(index_values)}
 
     left_part = gather(left.data, left_rows)
     right_part = gather(right.data, right_rows)
@@ -141,59 +169,37 @@ defmodule GeoFrame.SpatialJoin do
       if(how == :right,
         do: [index] ++ columns(left_part, left_names) ++ columns(right_part, right_names),
         else: columns(left_part, left_names) ++ [index] ++ columns(right_part, right_names)
-      ) ++ distance_column(distance_col, distances)
+      ) ++ distance_column(distance_col, distance_bin, index_values)
 
     check_unique!(Enum.map(columns, &elem(&1, 0)), geometry_column, index_name)
     GeoDataFrame.new(DataFrame.new(columns), geometry, geometry_column: geometry_column)
   end
 
-  defp distance_column(nil, _distances), do: []
+  defp unwrap!({:ok, value}), do: value
+  defp unwrap!({:error, message}), do: raise(ArgumentError, message)
 
-  defp distance_column(name, distances),
-    do: [{name, Series.from_list(distances, dtype: {:f, 64})}]
-
-  # Row positions of both sides (and distances) for the result; `nil` marks the unmatched
-  # side. `ds` is `nil` for predicate joins.
-  defp rows(how, li, ri, ds, n_left, n_right) do
-    ds = ds || List.duplicate(nil, length(li))
-    triples = Enum.zip_with([li, ri, ds], &List.to_tuple/1)
-
-    triples =
-      case how do
-        :inner -> triples
-        :left -> sort_with_unmatched(triples, li, n_left, 0)
-        :right -> sort_with_unmatched(triples, ri, n_right, 1)
-      end
-
-    {l, r, d} = unzip3(triples)
-    {l, r, d}
+  # A u32 row series as the nullable s64 `index_*` column: the missing-partner marker is null.
+  defp nullable_index(rows) do
+    Series.select(
+      missing(rows),
+      Series.from_list([nil], dtype: {:s, 64}),
+      Series.cast(rows, {:s, 64})
+    )
   end
 
-  # `side` is the tuple position of the preserved side; its unmatched rows get `nil` partners.
-  defp sort_with_unmatched(triples, matched, n, side) do
-    extra =
-      for i <- unmatched(matched, n), do: if(side == 0, do: {i, nil, nil}, else: {nil, i, nil})
+  defp missing(rows), do: Series.equal(rows, @no_row)
 
-    Enum.sort_by(triples ++ extra, fn {l, r, _} ->
-      if side == 0, do: {l, r}, else: {r, l}
-    end)
+  # Distances come with NaN for unmatched rows; those are null in the column. `partner` is the
+  # row series of the side that may be missing.
+  defp distance_column(nil, _distances, _partner), do: []
+
+  defp distance_column(name, distances, partner) do
+    series = Series.from_binary(distances, {:f, 64})
+    [{name, Series.select(missing(partner), Series.from_list([nil], dtype: {:f, 64}), series)}]
   end
 
-  defp unzip3(triples) do
-    {l, r, d} =
-      Enum.reduce(triples, {[], [], []}, fn {l, r, d}, {ls, rs, ds} ->
-        {[l | ls], [r | rs], [d | ds]}
-      end)
-
-    {Enum.reverse(l), Enum.reverse(r), Enum.reverse(d)}
-  end
-
-  defp unmatched(matched, n) do
-    seen = MapSet.new(matched)
-    for i <- 0..(n - 1)//1, i not in seen, do: i
-  end
-
-  # Selects `rows` from the attribute frame; `nil` rows become all-null rows.
+  # Selects `rows` from the attribute frame. `rows` is a list (`nil` marks a row to fill with
+  # nulls) or a u32 series (`@no_row` marks it); a missing row becomes an all-null row.
   @doc false
   def gather(%DataFrame{} = data, rows) do
     names = DataFrame.names(data)
@@ -202,15 +208,28 @@ defmodule GeoFrame.SpatialJoin do
       names == [] ->
         data
 
-      nil in rows ->
+      is_list(rows) and nil in rows ->
         sentinel = DataFrame.n_rows(data)
-        nulls = for name <- names, do: {name, null_series(data, name)}
-        padded = DataFrame.concat_rows([data, DataFrame.new(nulls)])
-        DataFrame.slice(padded, Enum.map(rows, &(&1 || sentinel)))
+        DataFrame.slice(with_null_row(data, names), Enum.map(rows, &(&1 || sentinel)))
+
+      is_list(rows) ->
+        DataFrame.slice(data, rows)
+
+      Series.any?(missing(rows)) ->
+        sentinel = DataFrame.n_rows(data)
+        indices = Series.select(missing(rows), sentinel, rows)
+        DataFrame.slice(with_null_row(data, names), indices)
 
       true ->
         DataFrame.slice(data, rows)
     end
+  end
+
+  # The frame with one all-null row appended (index `n_rows`), so missing partners can be
+  # gathered with an ordinary slice.
+  defp with_null_row(data, names) do
+    nulls = for name <- names, do: {name, null_series(data, name)}
+    DataFrame.concat_rows([data, DataFrame.new(nulls)])
   end
 
   defp null_series(data, name) do

@@ -11,7 +11,7 @@ defmodule GeoFrame.JoinTest do
   defp left(opts \\ []) do
     data = DataFrame.new(k: [1, 2, 2, 3], a: ["w", "x", "y", "z"])
     geometry = GeoSeries.from_wkt!(Enum.map(0..3, &"POINT (#{&1} #{&1})"), opts)
-    GeoDataFrame.new(data, geometry, opts)
+    GeoDataFrame.new(data, geometry, Keyword.take(opts, [:geometry_column]))
   end
 
   defp right, do: DataFrame.new(k: [2, 3, 4, 2], b: ["p", "q", "r", "s"])
