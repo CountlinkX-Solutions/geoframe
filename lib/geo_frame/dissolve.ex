@@ -29,6 +29,7 @@ defmodule GeoFrame.Dissolve do
   require DataFrame
 
   @aggfuncs [:first, :last, :sum, :mean, :min, :max, :count]
+  @geometry_aggfuncs [:first, :last, :count]
   @group_col "__geoframe_group__"
 
   @doc """
@@ -41,7 +42,11 @@ defmodule GeoFrame.Dissolve do
     * `:aggfunc` - `:first` (default), `:last`, `:sum`, `:mean`, `:min`, `:max` or `:count`,
       applied to every non-key attribute (numeric functions raise on
       non-numeric columns, so list the columns explicitly for mixed frames); or a keyword list / map of column to function, in
-      which case only the listed columns are kept (after the keys).
+      which case only the listed columns are kept (after the keys). Secondary geometry columns
+      are aggregated like the other columns, but only `:first`, `:last` (the first / last
+      non-null geometry of the group, keeping the column's CRS) and `:count` (an integer
+      attribute) apply to geometry: any other function raises `ArgumentError`, as GeoPandas
+      raises `TypeError`. Dissolving by a geometry column raises `ArgumentError`.
     * `:dropna` - `true` (default) drops rows with a null key; `false` keeps them as a group.
     * `:sort` - `true` (default) orders groups by key, `false` by first appearance.
 
@@ -54,8 +59,10 @@ defmodule GeoFrame.Dissolve do
     GeoFrame.Options.validate!(opts, [:by, :aggfunc, :dropna, :sort])
     by = opts |> Keyword.get(:by) |> List.wrap() |> Enum.map(&to_string/1)
     names = DataFrame.names(gdf.data)
-    check_by!(by, names, gdf.geometry_column)
-    aggs = aggregations(Keyword.get(opts, :aggfunc, :first), by, names)
+    secondary_names = Enum.map(gdf.secondary_geometries, &elem(&1, 0))
+    check_by!(by, names, GeoDataFrame.geometry_columns(gdf))
+    all_aggs = aggregations(Keyword.get(opts, :aggfunc, :first), by, names, secondary_names)
+    {geo_aggs, aggs} = Enum.split_with(all_aggs, fn {name, _} -> name in secondary_names end)
 
     gdf = if Keyword.get(opts, :dropna, true), do: drop_null_keys(gdf, by), else: gdf
 
@@ -65,14 +72,15 @@ defmodule GeoFrame.Dissolve do
       {gids, n_groups} = group_ids(gdf, by, Keyword.get(opts, :sort, true))
       geometry = GeoSeries.union_groups(gdf.geometry, gids, n_groups)
       data = aggregate(gdf.data, by, aggs, gids)
-      %{gdf | data: data, geometry: geometry, secondary_geometries: []}
+      {data, secondary} = aggregate_geometries(gdf, geo_aggs, data, gids, n_groups)
+      %{gdf | data: data, geometry: geometry, secondary_geometries: secondary}
     end
   end
 
-  defp check_by!(by, names, geometry_column) do
+  defp check_by!(by, names, geometry_columns) do
     Enum.each(by, fn name ->
       cond do
-        name == geometry_column ->
+        name in geometry_columns ->
           raise ArgumentError, "cannot dissolve by the geometry column #{inspect(name)}"
 
         name not in names ->
@@ -85,22 +93,37 @@ defmodule GeoFrame.Dissolve do
   end
 
   # Normalised to a list of {column, function}, keys excluded when `aggfunc` is a single atom.
-  defp aggregations(func, by, names) when is_atom(func) do
+  # Secondary geometry columns are columns like the others, but only `:first`, `:last` and
+  # `:count` apply to a geometry (GeoPandas raises a TypeError for the numeric functions).
+  defp aggregations(func, by, names, secondary) when is_atom(func) do
     check_func!(func)
-    for name <- names, name not in by, do: {name, func}
+
+    for name <- names ++ secondary,
+        name not in by,
+        do: check_geometry_func!({name, func}, secondary)
   end
 
-  defp aggregations(spec, by, names) when is_list(spec) or is_map(spec) do
+  defp aggregations(spec, by, names, secondary) when is_list(spec) or is_map(spec) do
     for {name, func} <- spec do
       name = to_string(name)
       check_func!(func)
 
       cond do
         name in by -> raise ArgumentError, "aggfunc column #{inspect(name)} is a grouping key"
-        name not in names -> raise ArgumentError, "aggfunc column #{inspect(name)} not found"
-        true -> {name, func}
+        name in names or name in secondary -> check_geometry_func!({name, func}, secondary)
+        true -> raise ArgumentError, "aggfunc column #{inspect(name)} not found"
       end
     end
+  end
+
+  defp check_geometry_func!({name, func} = pair, secondary) do
+    if name in secondary and func not in @geometry_aggfuncs do
+      raise ArgumentError,
+            "aggfunc #{inspect(func)} cannot aggregate the geometry column #{inspect(name)}; " <>
+              "use one of #{inspect(@geometry_aggfuncs)} or leave the column out"
+    end
+
+    pair
   end
 
   defp check_func!(func) when func in @aggfuncs, do: :ok
@@ -108,6 +131,52 @@ defmodule GeoFrame.Dissolve do
   defp check_func!(func) do
     raise ArgumentError,
           "aggfunc must be one of #{inspect(@aggfuncs)} (or a map of them), got #{inspect(func)}"
+  end
+
+  # Secondary geometry columns per group: `:first` / `:last` keep the first / last non-null
+  # geometry of the group (null for an all-null group, like pandas), `:count` becomes an
+  # integer attribute counting the non-null geometries. Result columns follow `aggs`.
+  defp aggregate_geometries(_gdf, [], data, _gids, _n), do: {data, []}
+
+  defp aggregate_geometries(gdf, aggs, data, gids, n_groups) do
+    Enum.reduce(aggs, {data, []}, fn {name, func}, {data, secondary} ->
+      {^name, series} = List.keyfind(gdf.secondary_geometries, name, 0)
+      nulls = series |> GeoSeries.isna() |> Series.to_list()
+
+      case func do
+        :count ->
+          counts =
+            gids
+            |> Enum.zip(nulls)
+            |> Enum.reject(&elem(&1, 1))
+            |> Enum.frequencies_by(&elem(&1, 0))
+
+          column = Series.from_list(Enum.map(0..(n_groups - 1), &Map.get(counts, &1, 0)))
+          {put_column(data, name, column), secondary}
+
+        pick ->
+          rows = picked_rows(gids, nulls, pick)
+          positions = Enum.map(0..(n_groups - 1), &Map.get(rows, &1))
+          {data, secondary ++ [{name, GeoSeries.take_nullable(series, positions)}]}
+      end
+    end)
+  end
+
+  defp picked_rows(gids, nulls, pick) do
+    gids
+    |> Enum.zip(nulls)
+    |> Enum.with_index()
+    |> Enum.reduce(%{}, fn
+      {{_gid, true}, _row}, acc -> acc
+      {{gid, false}, row}, acc when pick == :first -> Map.put_new(acc, gid, row)
+      {{gid, false}, row}, acc -> Map.put(acc, gid, row)
+    end)
+  end
+
+  defp put_column(data, name, series) do
+    if DataFrame.names(data) == [],
+      do: DataFrame.new([{name, series}]),
+      else: DataFrame.put(data, name, series)
   end
 
   defp key_rows(gdf, []), do: List.duplicate([], GeoDataFrame.n_rows(gdf))

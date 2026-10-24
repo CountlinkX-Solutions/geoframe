@@ -64,7 +64,9 @@ defmodule GeoFrame.Testing do
 
   @doc """
   Asserts two `GeoFrame.GeoDataFrame` are equal: same attribute and geometry column names in
-  order, equal attributes, equal geometries. See the module documentation for options.
+  order, equal attributes, equal geometries. Secondary geometry columns
+  (`GeoFrame.GeoDataFrame.put_geometry/3`) are compared like the active one, each with its own
+  CRS. See the module documentation for options.
 
   ## Examples
 
@@ -192,7 +194,19 @@ defmodule GeoFrame.Testing do
       true ->
         dtype_problems(left, right, opts) ++
           attribute_problems(left, right, opts) ++
-          series_problems(left.geometry, right.geometry, opts)
+          series_problems(left.geometry, right.geometry, opts) ++
+          secondary_problems(left, right, opts)
+    end
+  end
+
+  # Every secondary geometry column, matched by name (the names and their order were compared
+  # with the column names): same rows, CRS and geometries, as GeoPandas does for each
+  # geometry-dtype column.
+  defp secondary_problems(left, right, opts) do
+    for {name, series} <- left.secondary_geometries,
+        {^name, other} = List.keyfind(right.secondary_geometries, name, 0),
+        problem <- series_problems(series, other, opts) do
+      "geometry column #{inspect(name)}: #{problem}"
     end
   end
 

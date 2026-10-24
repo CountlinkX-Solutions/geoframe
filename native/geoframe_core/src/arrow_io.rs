@@ -68,6 +68,10 @@ pub struct TableRead {
     pub geometry: GeoColumn,
     /// Name of the geometry column in the table.
     pub geometry_column: String,
+    /// The other (selected) geometry columns, in table order, each with its own CRS. A column
+    /// counts as a geometry column when the `geo` metadata declares it or its field carries a
+    /// `geoarrow.*` extension name. Empty for a table with one geometry column.
+    pub secondary_geometries: Vec<(String, GeoColumn)>,
     /// All other (selected) columns as an Arrow IPC stream; an empty-schema stream when none.
     pub attributes_ipc: Vec<u8>,
 }
@@ -146,18 +150,8 @@ pub(crate) struct Encoded {
     pub geo: Value,
 }
 
-/// Builds the table batch for `geometry` (named `name`) next to `attributes_ipc` (empty bytes
-/// mean no attributes).
-pub(crate) fn encode_table(
-    geometry: &GeoColumn,
-    name: &str,
-    attributes_ipc: &[u8],
-    options: &EncodeOptions,
-) -> Result<Encoded, String> {
-    encode_table_multi(&[(name, geometry)], attributes_ipc, options)
-}
-
-/// Like [`encode_table`] for several geometry columns: the first of `geometries` is the primary
+/// Builds the table batch for the geometry columns (`geometries`, `(name, column)` pairs) next to
+/// `attributes_ipc` (empty bytes mean no attributes): the first one is the primary
 /// column, the others are secondary geometry columns that get their own `geo` metadata entry
 /// (encoding, CRS, bounds); `covering_bbox` adds a `bbox` covering column for the primary column
 /// only.
@@ -480,11 +474,56 @@ pub(crate) fn decode_table(
     let field = schema.field(index);
     let name = field.name().clone();
 
+    let geometry = decode_column(field, batches, index, geo_meta.as_ref())?;
+
+    // Every other geometry column is decoded with its own CRS and hidden from the attributes.
+    let secondary_indices: Vec<usize> = (0..schema.fields().len())
+        .filter(|&i| i != index && is_geometry_field(schema.field(i), geo_meta.as_ref()))
+        .collect();
+    let mut secondary_geometries = Vec::new();
+    for &i in &secondary_indices {
+        let field = schema.field(i);
+        if columns.is_none_or(|wanted| wanted.contains(field.name())) {
+            let column = decode_column(field, batches, i, geo_meta.as_ref())?;
+            secondary_geometries.push((field.name().clone(), column));
+        }
+    }
+
+    let mut hidden = covering_columns(geo_meta.as_ref());
+    hidden.extend(
+        secondary_indices
+            .iter()
+            .map(|&i| schema.field(i).name().clone()),
+    );
+    let attribute_indices = select_attributes(schema, index, columns, &hidden)?;
+    let attributes_ipc = attributes_to_ipc(schema, batches, &attribute_indices)?;
+    Ok(TableRead {
+        geometry,
+        geometry_column: name,
+        secondary_geometries,
+        attributes_ipc,
+    })
+}
+
+/// Whether `field` is a geometry column: declared by the `geo` metadata, or a GeoArrow
+/// extension column.
+fn is_geometry_field(field: &Field, geo_meta: Option<&Value>) -> bool {
+    geo_meta
+        .and_then(|meta| meta.get("columns")?.get(field.name()))
+        .is_some()
+        || extension_name(field).is_some_and(|n| n.starts_with("geoarrow."))
+}
+
+/// Decodes the geometry column at `index` with the CRS of its `geo` entry, else of its extension
+/// metadata.
+fn decode_column(
+    field: &Field,
+    batches: &[RecordBatch],
+    index: usize,
+    geo_meta: Option<&Value>,
+) -> Result<GeoColumn, String> {
     let (rows, extension_crs) = geometry_rows(field, batches, index)?;
-    let crs = match geo_meta
-        .as_ref()
-        .and_then(|meta| meta.get("columns")?.get(&name))
-    {
+    let crs = match geo_meta.and_then(|meta| meta.get("columns")?.get(field.name())) {
         Some(column) => match column.get("crs") {
             None => Some(CRS84.to_string()),
             Some(Value::Null) => None,
@@ -492,22 +531,13 @@ pub(crate) fn decode_table(
         },
         None => extension_crs,
     };
-    let geometry = match rows {
+    match rows {
         Rows::Wkb(rows) => {
             let refs: Vec<Option<&[u8]>> = rows.iter().map(|r| r.as_deref()).collect();
-            GeoColumn::from_wkb(&refs, crs.as_deref())?
+            GeoColumn::from_wkb(&refs, crs.as_deref())
         }
-        Rows::Wkt(rows) => GeoColumn::from_wkt(&rows, crs.as_deref())?,
-    };
-
-    let hidden = covering_columns(geo_meta.as_ref());
-    let indices = select_attributes(schema, index, columns, &hidden)?;
-    let attributes_ipc = attributes_to_ipc(schema, batches, &indices)?;
-    Ok(TableRead {
-        geometry,
-        geometry_column: name,
-        attributes_ipc,
-    })
+        Rows::Wkt(rows) => GeoColumn::from_wkt(&rows, crs.as_deref()),
+    }
 }
 
 enum Rows {
@@ -734,11 +764,30 @@ pub fn write_feather(
     encoding: GeometryEncoding,
     compression: FeatherCompression,
 ) -> Result<(), String> {
+    write_feather_multi(
+        path,
+        &[(geometry_column, geometry)],
+        attributes_ipc,
+        encoding,
+        compression,
+    )
+}
+
+/// Like [`write_feather`] for several geometry columns: the first of `geometries` is the primary
+/// column and every column gets its own `geo` metadata entry and CRS, as GeoPandas `to_feather`
+/// writes them.
+pub fn write_feather_multi(
+    path: &str,
+    geometries: &[(&str, &GeoColumn)],
+    attributes_ipc: &[u8],
+    encoding: GeometryEncoding,
+    compression: FeatherCompression,
+) -> Result<(), String> {
     let options = EncodeOptions {
         encoding,
         ..EncodeOptions::default()
     };
-    let encoded = encode_table(geometry, geometry_column, attributes_ipc, &options)?;
+    let encoded = encode_table_multi(geometries, attributes_ipc, &options)?;
     let batch = with_geo_metadata(&encoded.batch, &encoded.geo)?;
 
     let write_options = match compression {
@@ -786,11 +835,20 @@ pub fn to_arrow_ipc(
     attributes_ipc: &[u8],
     encoding: GeometryEncoding,
 ) -> Result<Vec<u8>, String> {
+    to_arrow_ipc_multi(&[(geometry_column, geometry)], attributes_ipc, encoding)
+}
+
+/// Like [`to_arrow_ipc`] for several geometry columns (the first is the primary one).
+pub fn to_arrow_ipc_multi(
+    geometries: &[(&str, &GeoColumn)],
+    attributes_ipc: &[u8],
+    encoding: GeometryEncoding,
+) -> Result<Vec<u8>, String> {
     let options = EncodeOptions {
         encoding,
         ..EncodeOptions::default()
     };
-    let encoded = encode_table(geometry, geometry_column, attributes_ipc, &options)?;
+    let encoded = encode_table_multi(geometries, attributes_ipc, &options)?;
     let batch = with_geo_metadata(&encoded.batch, &encoded.geo)?;
     let mut out = Vec::new();
     {

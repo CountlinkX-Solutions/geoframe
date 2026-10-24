@@ -4,11 +4,12 @@
 use geoframe_core::{
     deck_buffers, from_arrow_ipc, geoparquet_metadata, gpkg_info, gpkg_layers, read_feather,
     read_flatgeobuf, read_geojson, read_geojson_str, read_geoparquet_filtered, read_gpkg,
-    read_shapefile, shapefile_info, to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson,
-    write_geoparquet_multi, write_gpkg, write_shapefile, BufferOptions, FeatherCompression,
-    GeoColumn, GeometryEncoding, GpkgWriteOptions, GridFeature, GridType, JoinHow, LayerInfo,
-    NearestPairs, OffsetJoin, OffsetParams, Origin, ParquetOptions, PrecisionMode, Predicate,
-    QueryPredicate, SetOp, TableRead, UnaryOp, VectorRead, VertexKind, VertexParts,
+    read_shapefile, shapefile_info, to_arrow_ipc_multi, write_feather_multi, write_flatgeobuf,
+    write_geojson, write_geoparquet_multi, write_gpkg, write_shapefile, BufferOptions,
+    FeatherCompression, GeoColumn, GeometryEncoding, GpkgWriteOptions, GridFeature, GridType,
+    JoinHow, LayerInfo, NearestPairs, OffsetJoin, OffsetParams, Origin, ParquetOptions,
+    PrecisionMode, Predicate, QueryPredicate, SetOp, TableRead, UnaryOp, VectorRead, VertexKind,
+    VertexParts,
 };
 use rustler::{Binary, Encoder, Env, OwnedBinary, ResourceArc, Term};
 
@@ -678,23 +679,45 @@ fn write_parquet(
     write_geoparquet_multi(&path, &geometries, attributes_ipc.as_slice(), &options)
 }
 
-fn table_read<'a>(env: Env<'a>, read: TableRead) -> (Handle, String, Binary<'a>) {
+fn table_read<'a>(env: Env<'a>, read: TableRead) -> (Handle, String, Binary<'a>, Secondary) {
     let ipc = binary(env, &read.attributes_ipc);
-    (wrap(read.geometry), read.geometry_column, ipc)
+    let secondary = read
+        .secondary_geometries
+        .into_iter()
+        .map(|(name, column)| (name, wrap(column)))
+        .collect();
+    (wrap(read.geometry), read.geometry_column, ipc, secondary)
 }
 
-/// Reads a Feather v2 file. Returns `{geometry, geometry_column, attributes_ipc}`.
+/// The primary geometry column followed by the secondary ones, as `(name, column)` pairs.
+fn geometry_columns<'a>(
+    column: &'a Handle,
+    geometry_column: &'a str,
+    secondary: &'a Secondary,
+) -> Vec<(&'a str, &'a GeoColumn)> {
+    let mut geometries = vec![(geometry_column, &column.0)];
+    geometries.extend(
+        secondary
+            .iter()
+            .map(|(name, handle)| (name.as_str(), &handle.0)),
+    );
+    geometries
+}
+
+/// Reads a Feather v2 file. Returns `{geometry, geometry_column, attributes_ipc, secondary}`
+/// where `secondary` lists `{name, geometry}` for the other geometry columns.
 #[rustler::nif(schedule = "DirtyIo")]
 fn read_feather_file<'a>(
     env: Env<'a>,
     path: String,
     columns: Option<Vec<String>>,
     geometry_column: Option<String>,
-) -> Result<(Handle, String, Binary<'a>), String> {
+) -> Result<(Handle, String, Binary<'a>, Secondary), String> {
     read_feather(&path, columns.as_deref(), geometry_column.as_deref())
         .map(|read| table_read(env, read))
 }
 
+/// `secondary` lists `{name, geometry}` of the other geometry columns, written after the primary.
 #[rustler::nif(schedule = "DirtyIo")]
 fn write_feather_file(
     column: Handle,
@@ -703,18 +726,19 @@ fn write_feather_file(
     path: String,
     geometry_encoding: String,
     compression: String,
+    secondary: Secondary,
 ) -> Result<(), String> {
-    write_feather(
+    write_feather_multi(
         &path,
-        &column.0,
-        &geometry_column,
+        &geometry_columns(&column, &geometry_column, &secondary),
         attributes_ipc.as_slice(),
         GeometryEncoding::parse(&geometry_encoding)?,
         FeatherCompression::parse(&compression)?,
     )
 }
 
-/// Encodes geometry plus attributes (empty bytes: none) as an Arrow IPC stream.
+/// Encodes geometry plus attributes (empty bytes: none) as an Arrow IPC stream; `secondary`
+/// lists `{name, geometry}` of the other geometry columns.
 #[rustler::nif(schedule = "DirtyCpu")]
 fn to_arrow_stream<'a>(
     env: Env<'a>,
@@ -722,10 +746,10 @@ fn to_arrow_stream<'a>(
     geometry_column: String,
     attributes_ipc: Binary,
     geometry_encoding: String,
+    secondary: Secondary,
 ) -> Result<Binary<'a>, String> {
-    let bytes = to_arrow_ipc(
-        &column.0,
-        &geometry_column,
+    let bytes = to_arrow_ipc_multi(
+        &geometry_columns(&column, &geometry_column, &secondary),
         attributes_ipc.as_slice(),
         GeometryEncoding::parse(&geometry_encoding)?,
     )?;
@@ -739,7 +763,7 @@ fn from_arrow_stream<'a>(
     bytes: Binary,
     columns: Option<Vec<String>>,
     geometry_column: Option<String>,
-) -> Result<(Handle, String, Binary<'a>), String> {
+) -> Result<(Handle, String, Binary<'a>, Secondary), String> {
     from_arrow_ipc(
         bytes.as_slice(),
         columns.as_deref(),

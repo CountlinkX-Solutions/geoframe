@@ -142,6 +142,7 @@ defmodule GeoFrame.PostGIS do
       )
 
     validate_opts!(opts)
+    GeoFrame.Formats.single_geometry!(gdf, "to_postgis")
     validate_width!(gdf)
     ensure_postgrex!()
 

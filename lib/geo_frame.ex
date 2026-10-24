@@ -42,6 +42,10 @@ defmodule GeoFrame do
   A file with several geometry columns reads as a frame with one active geometry (the
   `primary_column`) and secondary `GeoFrame.GeoSeries` columns (`GeoDataFrame.geometry_columns/1`,
   `GeoDataFrame.set_geometry/3`); `write_parquet/3` writes all of them with their own CRS.
+  Feather and Arrow IPC (`write_feather/3`, `read_feather/2`, `GeoDataFrame.to_arrow/2`) keep
+  every geometry column too. The formats with one geometry per feature (GeoPackage, GeoJSON,
+  FlatGeobuf, Shapefile, PostGIS) raise `ArgumentError` for a frame with secondary geometry
+  columns, like GeoPandas `to_file`: drop them, convert them to WKT or use Parquet/Feather.
 
   `read_parquet/2` and `write_parquet/3` split a file in two halves. The geometry column
   lives in Rust memory (a `GeoFrame.GeoSeries`); every other column crosses the NIF
@@ -278,7 +282,9 @@ defmodule GeoFrame do
 
   The geometry column is the primary column of the `geo` metadata, else the first
   `geoarrow.*` extension column, else a binary (WKB) or string (WKT) column named
-  `"geometry"`. The CRS comes from the `geo` metadata, else from the extension metadata.
+  `"geometry"`; every other geometry column (declared in `geo` or a `geoarrow.*` extension
+  column) is a secondary geometry column of the frame. The CRS comes from the `geo` metadata,
+  else from the extension metadata.
   LZ4 and Zstandard compressed files read.
 
   Options: `:columns` - attribute column names to keep; `:geometry` - the name of the
@@ -297,7 +303,8 @@ defmodule GeoFrame do
   CRS as PROJJSON, and the schema metadata has the GeoParquet-style `geo` entry.
 
   Options: `:compression` - `:lz4` (default, as pyarrow), `:zstd` or `:uncompressed`;
-  `:geometry_encoding` - `:wkb` (default) or `:geoarrow` (see `write_parquet/3`).
+  `:geometry_encoding` - `:wkb` (default) or `:geoarrow` (see `write_parquet/3`). Secondary
+  geometry columns are written after the active one with their own CRS and `geo` entry.
 
   Returns `:ok` or `{:error, message}`; a partially written file is removed.
   """

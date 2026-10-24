@@ -168,9 +168,9 @@ defmodule GeoFrame.MultiGeometryTest do
                ["POINT(10 10)", "POINT(10 10)", "POINT(20 20)"]
     end
 
-    test "dissolve keeps only the active geometry" do
+    test "dissolve keeps the secondary columns (first non-null geometry per group)" do
       out = GeoDataFrame.dissolve(frame(), by: "name")
-      assert GeoDataFrame.geometry_columns(out) == ["geometry"]
+      assert GeoDataFrame.geometry_columns(out) == ["geometry", "footprint"]
     end
   end
 

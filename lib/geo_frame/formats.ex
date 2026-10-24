@@ -70,7 +70,7 @@ defmodule GeoFrame.Formats do
              to_string(path),
              {Atom.to_string(compression), level, row_group_size, Atom.to_string(encoding),
               covering, version},
-             Enum.map(gdf.secondary_geometries, fn {name, %GeoSeries{ref: ref}} -> {name, ref} end)
+             secondary_refs(gdf)
            ) do
       :ok
     end
@@ -83,8 +83,10 @@ defmodule GeoFrame.Formats do
     columns = opts |> Keyword.get(:columns) |> normalize_columns()
     geometry = opts |> Keyword.get(:geometry) |> optional_string()
 
-    with {:ok, {ref, name, ipc}} <- Native.read_feather_file(to_string(path), columns, geometry) do
-      assemble_named(ref, name, ipc)
+    with {:ok, {ref, name, ipc, secondary}} <-
+           Native.read_feather_file(to_string(path), columns, geometry),
+         {:ok, gdf} <- assemble_named(ref, name, ipc) do
+      {:ok, put_secondary(gdf, secondary)}
     end
   end
 
@@ -101,7 +103,8 @@ defmodule GeoFrame.Formats do
              ipc,
              to_string(path),
              Atom.to_string(encoding),
-             Atom.to_string(compression)
+             Atom.to_string(compression),
+             secondary_refs(gdf)
            ) do
       :ok
     end
@@ -117,7 +120,8 @@ defmodule GeoFrame.Formats do
              gdf.geometry.ref,
              gdf.geometry_column,
              ipc,
-             Atom.to_string(encoding)
+             Atom.to_string(encoding),
+             secondary_refs(gdf)
            ) do
       bytes
     else
@@ -129,7 +133,7 @@ defmodule GeoFrame.Formats do
     validate_options!(opts, [:geometry_encoding])
     encoding = enum!(opts, :geometry_encoding, @encodings, :wkb)
 
-    case Native.to_arrow_stream(ref, "geometry", <<>>, Atom.to_string(encoding)) do
+    case Native.to_arrow_stream(ref, "geometry", <<>>, Atom.to_string(encoding), []) do
       {:ok, bytes} -> bytes
       {:error, message} -> raise ArgumentError, message
     end
@@ -141,9 +145,9 @@ defmodule GeoFrame.Formats do
     geometry = opts |> Keyword.get(:geometry) |> optional_string()
     crs = Keyword.get(opts, :crs)
 
-    with {:ok, {ref, name, ipc}} <- Native.from_arrow_stream(bytes, columns, geometry),
+    with {:ok, {ref, name, ipc, secondary}} <- Native.from_arrow_stream(bytes, columns, geometry),
          {:ok, gdf} <- assemble_named(ref, name, ipc) do
-      {:ok, default_crs(gdf, crs)}
+      {:ok, gdf |> put_secondary(secondary) |> default_crs(crs)}
     end
   end
 
@@ -151,7 +155,7 @@ defmodule GeoFrame.Formats do
     validate_options!(opts, [:geometry, :crs])
     geometry = opts |> Keyword.get(:geometry) |> optional_string()
 
-    with {:ok, {ref, _name, _ipc}} <- Native.from_arrow_stream(bytes, [], geometry) do
+    with {:ok, {ref, _name, _ipc, _secondary}} <- Native.from_arrow_stream(bytes, [], geometry) do
       series = %GeoSeries{ref: ref}
 
       case {GeoSeries.crs(series), Keyword.get(opts, :crs)} do
@@ -180,6 +184,7 @@ defmodule GeoFrame.Formats do
 
   def write_geojson(%GeoDataFrame{} = gdf, path, opts) do
     validate_options!(opts, [:force])
+    single_geometry!(gdf, "write_geojson")
     force = Keyword.get(opts, :force, false) == true
 
     with {:ok, ipc} <- Attributes.dump(gdf.data),
@@ -201,6 +206,7 @@ defmodule GeoFrame.Formats do
 
   def write_flatgeobuf(%GeoDataFrame{} = gdf, path, opts) do
     validate_options!(opts, [:index, :name])
+    single_geometry!(gdf, "write_flatgeobuf")
     index = Keyword.get(opts, :index, true) != false
     path = to_string(path)
     name = opts |> Keyword.get(:name, path |> Path.basename() |> Path.rootname()) |> to_string()
@@ -272,6 +278,27 @@ defmodule GeoFrame.Formats do
   end
 
   # -- helpers --------------------------------------------------------------------------
+
+  @doc """
+  Raises `ArgumentError` when `gdf` has secondary geometry columns: the formats that hold
+  one geometry column per feature (GeoPackage, GeoJSON, FlatGeobuf, Shapefile, PostGIS, JSON)
+  cannot store them, and GeoPandas `to_file` refuses such a frame the same way.
+  """
+  @spec single_geometry!(GeoDataFrame.t(), String.t()) :: :ok
+  def single_geometry!(%GeoDataFrame{secondary_geometries: []}, _what), do: :ok
+
+  def single_geometry!(%GeoDataFrame{} = gdf, what) do
+    names = gdf |> GeoDataFrame.geometry_columns() |> Enum.map_join(", ", &inspect/1)
+
+    raise ArgumentError,
+          "GeoDataFrame contains multiple geometry columns (#{names}) but #{what} supports only " <>
+            "a single geometry column. Use write_parquet/3 or write_feather/3, drop the " <>
+            "additional geometry columns (GeoDataFrame.discard/2) or convert them to a " <>
+            "supported format like well-known text (GeoSeries.to_wkt/1)"
+  end
+
+  defp secondary_refs(%GeoDataFrame{secondary_geometries: secondary}),
+    do: Enum.map(secondary, fn {name, %GeoSeries{ref: ref}} -> {name, ref} end)
 
   defp put_secondary(gdf, secondary) do
     Enum.reduce(secondary, gdf, fn {name, ref}, acc ->
