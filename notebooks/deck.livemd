@@ -54,6 +54,10 @@ GeoFrame.Kino.deck(countries,
 )
 ```
 
+A column color comes with a legend card in the bottom-right corner (a gradient bar with ticks here,
+swatches for `:categorical`; pass `legend: false` to hide it), and metric and imperial scale bars sit
+in the bottom-left corner (`scale: false` hides them).
+
 Population alone mostly maps country size. Project to an equal-area CRS (EPSG:6933), compute the
 area in km² and color by the logarithm of the people per km² instead; the widget reprojects back to longitude and
 latitude by itself.

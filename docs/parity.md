@@ -509,7 +509,7 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
 | `plot` (matplotlib) | — | `GeoFrame.Kino.map/2`, `Kino.Render` (MapLibre) | ⛔ | replaced by Livebook map; `max_map_features` and `max_map_vertices` caps (the Table tab is capped too: `max_table_rows`, `max_table_vertices`); GeometryCollections are drawn member by member |
-| `explore` (folium) | — | `GeoFrame.Kino.deck/2` (deck.gl, binary buffers), `GeoFrame.Kino.map/2` (MapLibre), Smart Cells "Read spatial file" and "Spatial join" | 🟡 | deck widget: hover tooltips, color by column (viridis ramp or categorical), size/width by column, fit bounds, Carto basemap; no popups on click, legend, or layer control |
+| `explore` (folium) | — | `GeoFrame.Kino.deck/2` (deck.gl, binary buffers), `GeoFrame.Kino.map/2` (MapLibre), Smart Cells "Read spatial file" and "Spatial join" | 🟡 | deck widget: hover tooltips, color by column (viridis ramp or categorical) with a `legend:` card (gradient bar with ticks, or capped swatches), size/width by column, fit bounds, Carto basemap, metric and imperial scale bars (`scale:`); no popups on click or layer control |
 | `preview` | — | `preview/1` | ✅ | GeoFrame-only |
 
 ## 16. Testing
