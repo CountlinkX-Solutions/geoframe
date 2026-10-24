@@ -73,6 +73,7 @@ defmodule GeoFrame.GeoDataFrame do
   """
   @spec new(DataFrame.t(), GeoSeries.t(), keyword()) :: t()
   def new(%DataFrame{} = data, %GeoSeries{} = geometry, opts \\ []) do
+    GeoFrame.Options.validate!(opts, [:geometry_column])
     column = opts |> Keyword.get(:geometry_column, "geometry") |> to_string()
     rows = GeoSeries.size(geometry)
 
@@ -178,6 +179,7 @@ defmodule GeoFrame.GeoDataFrame do
   end
 
   defp build(df, column, opts, encoding) do
+    GeoFrame.Options.validate!(opts, [:crs, :geometry_column])
     column = to_string(column)
 
     if column in DataFrame.names(df) do
@@ -972,6 +974,8 @@ defmodule GeoFrame.GeoDataFrame do
   """
   @spec to_explorer(t(), keyword()) :: DataFrame.t()
   def to_explorer(%__MODULE__{data: data, geometry: geometry} = gdf, opts \\ []) do
+    GeoFrame.Options.validate!(opts, [:encoding])
+
     encode = fn geometry ->
       {values, dtype} =
         case Keyword.get(opts, :encoding, :wkb) do

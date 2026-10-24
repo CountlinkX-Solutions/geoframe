@@ -51,6 +51,7 @@ defmodule GeoFrame.Dissolve do
   """
   @spec dissolve(GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
   def dissolve(%GeoDataFrame{} = gdf, opts \\ []) do
+    GeoFrame.Options.validate!(opts, [:by, :aggfunc, :dropna, :sort])
     by = opts |> Keyword.get(:by) |> List.wrap() |> Enum.map(&to_string/1)
     names = DataFrame.names(gdf.data)
     check_by!(by, names, gdf.geometry_column)

@@ -377,13 +377,7 @@ defmodule GeoFrame.Formats do
 
   @doc false
   def validate_options!(opts, allowed) do
-    unknown = Keyword.keys(opts) -- allowed
-
-    if unknown != [] do
-      raise ArgumentError,
-            "unknown option(s) #{inspect(unknown)}; supported options: #{inspect(allowed)}"
-    end
-
+    GeoFrame.Options.validate!(opts, allowed)
     :ok
   end
 end

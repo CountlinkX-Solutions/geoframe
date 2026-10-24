@@ -505,6 +505,7 @@ defmodule GeoFrame.GeoSeries do
     do: ref |> Native.length_geodesic() |> unwrap!() |> float_series()
 
   defp measure_method!(opts, allowed) do
+    GeoFrame.Options.validate!(opts, [:method])
     method = Keyword.get(opts, :method, :planar)
 
     if method in allowed do
@@ -736,6 +737,7 @@ defmodule GeoFrame.GeoSeries do
   """
   @spec translate(t(), param(), param(), keyword()) :: t()
   def translate(%__MODULE__{ref: ref} = series, xoff, yoff, opts \\ []) do
+    GeoFrame.Options.validate!(opts, [:zoff])
     zoff = z_factor!(opts, :zoff, 0)
 
     if is_number(xoff) and is_number(yoff) do
@@ -2274,6 +2276,7 @@ defmodule GeoFrame.GeoSeries do
 
   def sindex_query(%__MODULE__{ref: left}, %__MODULE__{ref: right}, predicate, opts)
       when is_atom(predicate) and is_list(opts) do
+    GeoFrame.Options.validate!(opts, [:distance])
     distance = opts |> Keyword.get(:distance) |> then(&(&1 && &1 * 1.0))
 
     left
@@ -2305,6 +2308,7 @@ defmodule GeoFrame.GeoSeries do
   def sindex_nearest(left, right, opts \\ [])
 
   def sindex_nearest(%__MODULE__{ref: left}, %__MODULE__{ref: right}, opts) when is_list(opts) do
+    GeoFrame.Options.validate!(opts, [:max_distance, :exclusive])
     max_distance = opts |> Keyword.get(:max_distance) |> then(&(&1 && &1 * 1.0))
     exclusive = Keyword.get(opts, :exclusive, false)
 

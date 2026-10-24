@@ -16,7 +16,7 @@ defmodule GeoFrame.ExplorerVerbsTest do
       DataFrame.new(id: rows, pop: Enum.map(rows, &(&1 * 10)), name: Enum.map(rows, &"n#{&1}"))
 
     geometry = GeoSeries.from_wkt!(Enum.map(rows, &"POINT (#{&1} #{&1})"), opts)
-    GeoDataFrame.new(data, geometry, opts)
+    GeoDataFrame.new(data, geometry, Keyword.take(opts, [:geometry_column]))
   end
 
   defp col(gdf, name), do: gdf |> GeoDataFrame.data() |> DataFrame.pull(name) |> Series.to_list()

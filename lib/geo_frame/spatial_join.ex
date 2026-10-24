@@ -36,8 +36,11 @@ defmodule GeoFrame.SpatialJoin do
   alias Explorer.Series
   alias GeoFrame.GeoDataFrame
   alias GeoFrame.GeoSeries
+  alias GeoFrame.Options
 
   @hows [:inner, :left, :right]
+  @sjoin_options [:how, :predicate, :distance, :lsuffix, :rsuffix]
+  @nearest_options [:how, :max_distance, :distance_col, :exclusive, :lsuffix, :rsuffix]
 
   @doc """
   Joins `left` and `right` on a spatial relation.
@@ -50,11 +53,12 @@ defmodule GeoFrame.SpatialJoin do
     * `:distance` - required for `:dwithin`.
     * `:lsuffix` / `:rsuffix` - suffixes for colliding attribute names (`"left"` / `"right"`).
 
-  Raises `ArgumentError` for bad options, a CRS mismatch, or when the result would contain
+  Raises `ArgumentError` for bad or unknown options, a CRS mismatch, or when the result would contain
   two columns with the same name (including an existing `index_right` / `index_left`).
   """
   @spec sjoin(GeoDataFrame.t(), GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
   def sjoin(%GeoDataFrame{} = left, %GeoDataFrame{} = right, opts \\ []) do
+    Options.validate!(opts, @sjoin_options)
     how = fetch_how!(opts)
     predicate = Keyword.get(opts, :predicate, :intersects)
 
@@ -83,11 +87,12 @@ defmodule GeoFrame.SpatialJoin do
     * `:lsuffix` / `:rsuffix` - suffixes for colliding attribute names (`"left"` / `"right"`).
 
   Column order and nulls follow `sjoin/3`; the distance column comes after the right
-  attributes. Null and empty geometries never match. Raises `ArgumentError` for bad options,
+  attributes. Null and empty geometries never match. Raises `ArgumentError` for bad or unknown options,
   a CRS mismatch or duplicate result column names.
   """
   @spec sjoin_nearest(GeoDataFrame.t(), GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
   def sjoin_nearest(%GeoDataFrame{} = left, %GeoDataFrame{} = right, opts \\ []) do
+    Options.validate!(opts, @nearest_options)
     how = fetch_how!(opts)
     nearest_opts = Keyword.take(opts, [:max_distance, :exclusive])
 
