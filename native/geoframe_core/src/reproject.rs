@@ -26,6 +26,7 @@ use geo::{Coord, Geometry, MapCoords};
 use proj4rs::Proj;
 use serde_json::Value;
 
+use crate::proj_ext::{self, Ext};
 use crate::GeoColumn;
 
 /// Proj string for `OGC:CRS84`: WGS 84 as lon/lat.
@@ -40,6 +41,34 @@ struct Resolved {
     fallback: Option<Proj>,
     /// EPSG code of the geographic CRS the definition is based on, the key of its grids.
     base: Option<u32>,
+    /// Helmert operations of the datum by area of use (see [`crate::datum::area_variants`]):
+    /// the first whose area holds the point replaces the single `+towgs84` set of the table.
+    areas: Vec<([f64; 4], Proj)>,
+    /// Set for a projection `proj4rs` lacks (see [`crate::proj_ext`]); `proj` is then the
+    /// geographic CRS under it and coordinates go through this first.
+    ext: Option<Ext>,
+    /// Radians per unit of a geographic CRS (grads for the Paris-meridian CRSs).
+    angular: f64,
+}
+
+impl Resolved {
+    /// Whether coordinates are angles (a geographic CRS).
+    fn is_geographic(&self) -> bool {
+        self.ext.is_none() && self.proj.is_latlong()
+    }
+}
+
+/// Definitions where the bundled table differs from the current EPSG registry (as PROJ 9.8 has it).
+fn table_fix(code: u16) -> Option<&'static str> {
+    match code {
+        // False easting is 40 000 chains (804 670.24 m), not 40 000 m.
+        3167 => Some(
+            "+proj=omerc +lat_0=4 +lonc=102.25 +alpha=323.0257905 +k=0.99984 +x_0=804670.24 \
+             +y_0=0 +no_uoff +gamma=323.1301023611111 +a=6377295.664 +b=6356094.667915204 \
+             +to_meter=20.116756 +no_defs",
+        ),
+        _ => None,
+    }
 }
 
 fn parse_epsg_code(text: &str, input: &str) -> Result<u16, String> {
@@ -77,33 +106,48 @@ fn resolve(input: &str) -> Result<Resolved, String> {
     let (authority, code) = text
         .split_once(':')
         .ok_or_else(|| format!("unsupported CRS {input:?}: expected EPSG:<code> or OGC:CRS84"))?;
-    let (label, proj_string, base) = match authority.trim().to_ascii_uppercase().as_str() {
+    let (label, proj_string, base, angular) = match authority.trim().to_ascii_uppercase().as_str() {
         "EPSG" => {
             let code = parse_epsg_code(code, input)?;
             let def = crs_definitions::from_code(code)
                 .ok_or_else(|| format!("unknown EPSG code {code}: not in the bundled table"))?;
             (
                 format!("EPSG:{code}"),
-                def.proj4,
+                crate::datum::with_axes(table_fix(code).unwrap_or(def.proj4), def.wkt),
                 crate::datum::base_geographic_code(def.wkt),
+                crate::datum::angular_unit(def.wkt),
             )
         }
-        "OGC" if code.trim().eq_ignore_ascii_case("CRS84") => {
-            ("OGC:CRS84".to_string(), CRS84_PROJ, None)
-        }
+        "OGC" if code.trim().eq_ignore_ascii_case("CRS84") => (
+            "OGC:CRS84".to_string(),
+            CRS84_PROJ.to_string(),
+            None,
+            std::f64::consts::PI / 180.0,
+        ),
         other => {
             return Err(format!(
                 "unsupported CRS authority {other:?} in {input:?}: expected EPSG or OGC:CRS84"
             ))
         }
     };
-    let (proj, fallback) = crate::datum::build(proj_string, base)
+    let (proj_string, ext) = if proj_ext::handles(&proj_string) {
+        let (ext, geographic) = proj_ext::build(&proj_string)
+            .map_err(|e| format!("cannot build projection for {label}: {e}"))?;
+        (geographic, Some(ext))
+    } else {
+        (proj_string, None)
+    };
+    let (proj, fallback) = crate::datum::build(&proj_string, base)
         .map_err(|e| format!("cannot build projection for {label}: {e}"))?;
+    let areas = crate::datum::area_variants(&proj_string, base);
     Ok(Resolved {
         label,
         proj,
         fallback,
         base,
+        areas,
+        ext,
+        angular,
     })
 }
 
@@ -171,7 +215,64 @@ pub fn crs_equivalent(a: &str, b: &str) -> bool {
 
 /// Whether `input` names a geographic (lon/lat) CRS; `None` when it cannot be resolved.
 pub fn crs_is_geographic(input: &str) -> Option<bool> {
-    resolve(input).ok().map(|r| r.proj.is_latlong())
+    resolve(input).ok().map(|r| r.is_geographic())
+}
+
+thread_local! {
+    static WGS84: Proj = Proj::from_proj_string("+proj=longlat +datum=WGS84 +no_defs")
+        .expect("WGS 84 is a valid proj string");
+}
+
+/// Whether `at` (lon, lat in degrees) lies in `area` (`west > east` across the antimeridian).
+fn in_area(area: &[f64; 4], at: (f64, f64)) -> bool {
+    let [w, s, e, n] = *area;
+    let lon_ok = if w <= e {
+        at.0 >= w && at.0 <= e
+    } else {
+        at.0 >= w || at.0 <= e
+    };
+    lon_ok && at.1 >= s && at.1 <= n
+}
+
+impl Resolved {
+    /// The Helmert variant of this CRS for a point: the first operation by area of use that holds
+    /// it, else the one `+towgs84` set of the table.
+    fn helmert_at(&self, at: Option<(f64, f64)>) -> &Proj {
+        at.and_then(|at| {
+            self.areas
+                .iter()
+                .find(|(area, _)| in_area(area, at))
+                .map(|(_, p)| p)
+        })
+        .unwrap_or_else(|| self.fallback.as_ref().unwrap_or(&self.proj))
+    }
+
+    /// The projection tried first: the grids when it has them, else the Helmert variant.
+    fn primary_at(&self, at: Option<(f64, f64)>) -> &Proj {
+        if self.fallback.is_some() {
+            &self.proj
+        } else {
+            self.helmert_at(at)
+        }
+    }
+}
+
+/// Longitude and latitude in degrees (WGS 84, to the metres that matter for choosing an area) of
+/// a point given in the engine coordinates of `src`; `None` when neither CRS has areas to choose
+/// from.
+fn locate(src: &Resolved, dst: &Resolved, x: f64, y: f64) -> Option<(f64, f64)> {
+    if src.areas.is_empty() && dst.areas.is_empty() {
+        return None;
+    }
+    if src.ext.is_some() || src.proj.is_latlong() {
+        let pm = src.proj.from_greenwich();
+        return Some(((x + pm).to_degrees(), y.to_degrees()));
+    }
+    let mut point = (x, y);
+    WGS84
+        .with(|w| proj4rs::transform::transform(&src.proj, w, &mut point))
+        .ok()?;
+    Some((point.0.to_degrees(), point.1.to_degrees()))
 }
 
 /// Runs `f` with the projections of both CRSs, then, when a point lies outside every datum
@@ -179,39 +280,72 @@ pub fn crs_is_geographic(input: &str) -> Option<bool> {
 fn with_fallback<T>(
     src: &Resolved,
     dst: &Resolved,
+    at: Option<(f64, f64)>,
     f: impl Fn(&Proj, &Proj) -> Result<T, proj4rs::errors::Error>,
 ) -> Result<T, String> {
-    match f(&src.proj, &dst.proj) {
+    match f(src.primary_at(at), dst.primary_at(at)) {
         Err(proj4rs::errors::Error::PointOutsideNadShiftArea)
             if src.fallback.is_some() || dst.fallback.is_some() =>
         {
-            f(
-                src.fallback.as_ref().unwrap_or(&src.proj),
-                dst.fallback.as_ref().unwrap_or(&dst.proj),
-            )
+            f(src.helmert_at(at), dst.helmert_at(at))
         }
         other => other,
     }
     .map_err(|e| e.to_string())
 }
 
-/// Transforms one coordinate; geographic CRSs are in degrees outside, radians inside.
+/// Angle in radians; `unit` is radians per unit. Degrees go through `to_radians` so that a round
+/// trip is exact.
+fn to_radians(v: f64, unit: f64) -> f64 {
+    if unit == std::f64::consts::PI / 180.0 {
+        v.to_radians()
+    } else {
+        v * unit
+    }
+}
+
+fn to_degrees(v: f64, unit: f64) -> f64 {
+    if unit == std::f64::consts::PI / 180.0 {
+        v.to_degrees()
+    } else {
+        v / unit
+    }
+}
+
+/// CRS coordinates to what the `proj4rs` projection of `res` takes: angles in radians (from the
+/// unit of a geographic CRS, or through the extension projection) or the coordinates as they are.
+fn to_engine(res: &Resolved, x: f64, y: f64) -> Result<(f64, f64), String> {
+    if let Some(ext) = &res.ext {
+        ext.inverse(x, y)
+    } else if res.proj.is_latlong() {
+        Ok((to_radians(x, res.angular), to_radians(y, res.angular)))
+    } else {
+        Ok((x, y))
+    }
+}
+
+/// The inverse of [`to_engine`].
+fn from_engine(res: &Resolved, x: f64, y: f64) -> Result<(f64, f64), String> {
+    if let Some(ext) = &res.ext {
+        ext.forward(x, y)
+    } else if res.proj.is_latlong() {
+        Ok((to_degrees(x, res.angular), to_degrees(y, res.angular)))
+    } else {
+        Ok((x, y))
+    }
+}
+
+/// Transforms one coordinate; geographic CRSs are in their own angular unit outside (degrees,
+/// or grads for the Paris-meridian CRSs), radians inside.
 fn transform_coord(src: &Resolved, dst: &Resolved, c: Coord<f64>) -> Result<Coord<f64>, String> {
-    let (x, y) = with_fallback(src, dst, |src, dst| {
-        let (mut x, mut y) = (c.x, c.y);
-        if src.is_latlong() {
-            x = x.to_radians();
-            y = y.to_radians();
-        }
+    let (x, y) = to_engine(src, c.x, c.y)?;
+    let at = locate(src, dst, x, y);
+    let (x, y) = with_fallback(src, dst, at, |src, dst| {
         let mut point = (x, y);
         proj4rs::transform::transform(src, dst, &mut point)?;
-        let (mut x, mut y) = point;
-        if dst.is_latlong() {
-            x = x.to_degrees();
-            y = y.to_degrees();
-        }
-        Ok((x, y))
+        Ok(point)
     })?;
+    let (x, y) = from_engine(dst, x, y)?;
     if x.is_finite() && y.is_finite() {
         Ok(Coord { x, y })
     } else {
@@ -232,26 +366,30 @@ fn transform_coord3(
     if z.is_nan() || !(src.proj.is_geocent() || dst.proj.is_geocent()) {
         return Ok((transform_coord(src, dst, c)?, z));
     }
-    let (x, y, nz) = with_fallback(src, dst, |src, dst| {
-        let (mut x, mut y) = (c.x, c.y);
-        if src.is_latlong() {
-            x = x.to_radians();
-            y = y.to_radians();
-        }
+    let (x, y) = to_engine(src, c.x, c.y)?;
+    let at = locate(src, dst, x, y);
+    let (x, y, nz) = with_fallback(src, dst, at, |src, dst| {
         let mut point = (x, y, z);
         proj4rs::transform::transform(src, dst, &mut point)?;
-        let (mut x, mut y, nz) = point;
-        if dst.is_latlong() {
-            x = x.to_degrees();
-            y = y.to_degrees();
-        }
-        Ok((x, y, nz))
+        Ok(point)
     })?;
+    let (x, y) = from_engine(dst, x, y)?;
     if x.is_finite() && y.is_finite() && nz.is_finite() {
         Ok((Coord { x, y }, nz))
     } else {
         Err("non-finite result".to_string())
     }
+}
+
+/// Transforms one `(x, y)` position between two CRS labels (the engine behind
+/// [`GeoColumn::to_crs`]); used by the sweep example and tests.
+pub fn transform_xy(source: &str, target: &str, x: f64, y: f64) -> Result<(f64, f64), String> {
+    let (src, dst) = (resolve(source)?, resolve(target)?);
+    catch_unwind(AssertUnwindSafe(|| {
+        transform_coord(&src, &dst, Coord { x, y })
+    }))
+    .map_err(|_| "transform panicked".to_string())?
+    .map(|c| (c.x, c.y))
 }
 
 impl GeoColumn {
@@ -314,7 +452,7 @@ impl GeoColumn {
             .total_bounds()
             .ok_or_else(|| "cannot estimate a UTM CRS: no non-empty geometries".to_string())?;
         let src = resolve(&source)?;
-        let [minx, miny, maxx, maxy] = if src.proj.is_latlong() {
+        let [minx, miny, maxx, maxy] = if src.is_geographic() {
             bounds
         } else {
             bounds_to_lonlat(&src, &resolve("OGC:CRS84")?, bounds)?

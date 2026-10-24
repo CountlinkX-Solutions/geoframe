@@ -11,6 +11,8 @@ mod coverage_simplify;
 mod crs_wkt;
 mod datum;
 mod datum_grids;
+#[allow(clippy::approx_constant)] // generated data: a bounding box edge reads 3.14
+mod datum_helmert;
 mod dbf;
 mod deck;
 mod ewkb;
@@ -33,6 +35,7 @@ mod parity_j;
 mod parquet_io;
 mod polygonize;
 mod predicates;
+mod proj_ext;
 mod projjson;
 mod reproject;
 mod set_ops;
@@ -75,7 +78,7 @@ pub use polygonize::Polygonized;
 pub use predicates::Predicate;
 pub use reproject::{
     crs_equivalent, crs_is_geographic, grid_status, normalize_crs, register_grids_for,
-    unregister_grids_for,
+    transform_xy, unregister_grids_for,
 };
 pub use set_ops::SetOp;
 pub use shapefile_io::{read_shapefile, shapefile_info, write_shapefile};
@@ -90,6 +93,8 @@ mod arrow_multi_tests;
 mod coverage_simplify_tests;
 #[cfg(test)]
 mod coverage_tests;
+#[cfg(test)]
+mod crs_parity_tests;
 #[cfg(test)]
 mod datum_tests;
 #[cfg(test)]

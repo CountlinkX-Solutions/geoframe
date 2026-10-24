@@ -727,13 +727,23 @@ defmodule GeoFrame.GeoSeries do
   ## Datum shifts and accuracy
 
   A datum other than WGS 84 (NAD27, OSGB36, ED50, DHDN, Tokyo, ...) is shifted by a grid when
-  one is installed and by a Helmert (`+towgs84`) set otherwise, as PROJ does without network
-  access. Nothing is downloaded. Without grids expect metre-level ballpark accuracy (a few metres
-  for OSGB36, DHDN, NZGD49, Tokyo; up to ~25 m for NAD27 and ~60 m for ED50 at the edge of its
-  area, against the best PROJ operation of the region); with NTv2 or GeoTIFF grids of PROJ-data it
-  is centimetres to a metre and agrees with PROJ to under a millimetre. A point outside every
-  installed grid takes the Helmert shift instead of failing. See `GeoFrame.Grids` to point at the
-  grid files and `docs/parity.md` for the measured numbers.
+  one is installed and otherwise by the Helmert (`+towgs84`) operation PROJ picks for the point
+  by area of use: the best-accuracy operation whose area holds it, from a table generated from
+  the PROJ database, and no shift where PROJ has only a ballpark transformation. Nothing is
+  downloaded. Without grids this agrees with pyproj to a few metres for about 99 % of the EPSG
+  codes; it is centimetres to a metre with NTv2 or GeoTIFF grids of PROJ-data (under a
+  millimetre of PROJ on the same file). A point outside every installed grid takes the Helmert
+  operation instead of failing. See `GeoFrame.Grids` to point at the grid files and
+  `docs/parity.md` for the measured numbers and the known deviations.
+
+  ## Units, axes and projections
+
+  A geographic CRS is read and written in its own angular unit (grads for the Paris-meridian
+  CRSs such as `EPSG:4807`, with the Paris prime meridian applied), and a projected CRS keeps
+  its axis directions (`EPSG:5513` is southing/westing), both as pyproj with `always_xy`.
+  Cassini-Soldner, Hotine Oblique Mercator (variants A and B), Polyconic, Equal Earth,
+  `EPSG:4087`'s ellipsoidal Equidistant Cylindrical and the New Zealand Map Grid are
+  implemented on top of `proj4rs` after the PROJ formulas.
 
       iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (0 0)"], crs: "EPSG:4326")
       iex> s |> GeoFrame.GeoSeries.to_crs(3857) |> GeoFrame.GeoSeries.crs()
