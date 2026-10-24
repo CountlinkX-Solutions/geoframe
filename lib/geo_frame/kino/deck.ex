@@ -58,11 +58,11 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       * `:legend` - `true` (default) or `false`. With a column color (`{column, :viridis}` or
         `{column, :categorical}`) a card in the bottom-right corner explains the colors, like
         GeoPandas `explore(legend=True)`: a gradient bar of the same ramp with the column name
-        and five ticks for a numeric column; swatches in the exact colors and order the widget
-        assigns for a categorical one, capped at #{10} entries followed by "N more". A gray entry
-        marks missing values when there are any. A fixed color draws no legend. The legend data
-        is computed in Elixir next to the colors and travels in the payload; JavaScript only
-        draws it.
+        and three ticks (min, middle, max, three significant digits) for a numeric column;
+        swatches in the exact colors and order the widget assigns for a categorical one, capped
+        at #{10} entries followed by "N more". A gray entry marks missing values when there are
+        any. A fixed color draws no legend. The legend data is computed in Elixir next to the
+        colors and travels in the payload; JavaScript only draws it.
       * `:scale` - `true` (default) or `false`. Draws metric and imperial scale bars in the
         bottom-left corner (MapLibre `ScaleControl`), like the `control_scale=True` of GeoPandas
         `explore`.
@@ -103,7 +103,8 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       :scale
     ]
     @legend_max_items 10
-    @legend_ticks 5
+    # Three ticks of at most three significant digits fit the 180px bar without overlapping.
+    @legend_ticks 3
 
     # viridis sampled at 0, 1/8, ..., 1.
     @viridis [
@@ -399,7 +400,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     defp category_label(value) when is_binary(value), do: printable(value)
     defp category_label(value), do: text(value)
 
-    # 1500000 -> "1.5M", 2.5 -> "2.5", 10.0 -> "10", 0.00042 -> "0.00042".
+    # 1500000 -> "1.5M", 614270 -> "614k", 2.5 -> "2.5", 10.0 -> "10", 0.00042 -> "0.00042".
     defp format_tick(value) do
       {divisor, suffix} =
         cond do
@@ -415,13 +416,14 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     defp trim_number(number) when number == 0, do: "0"
 
     defp trim_number(number) do
-      digits = if abs(number) >= 1, do: 2, else: min(2 - floor(:math.log10(abs(number))), 12)
+      # Three significant digits.
+      digits = min(max(2 - floor(:math.log10(abs(number))), 0), 12)
 
-      number
-      |> Float.round(digits)
-      |> :erlang.float_to_binary(decimals: digits)
-      |> String.trim_trailing("0")
-      |> String.trim_trailing(".")
+      text = number |> Float.round(digits) |> :erlang.float_to_binary(decimals: digits)
+
+      if digits > 0,
+        do: text |> String.trim_trailing("0") |> String.trim_trailing("."),
+        else: text
     end
 
     defp viridis(t) do
