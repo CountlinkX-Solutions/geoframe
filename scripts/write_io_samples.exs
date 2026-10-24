@@ -639,8 +639,7 @@ files =
     acc -> zm_vector.(acc, name, gdf, gpkg.(layer: layer), "gpkg", layer: layer)
   end
 
-# FlatGeobuf: no null rows (GDAL cannot parse the empty geometry GeoFrame stores for a null),
-# one geometry type per file, and one dimension (a mixed file is promoted with NaN).
+# FlatGeobuf: one geometry type per file, and one dimension (a mixed file is promoted with NaN).
 fgb_frames = [
   {"z_points.fgb",
    frame.(
@@ -714,6 +713,10 @@ files =
   for {name, gdf} <- fgb_frames, reduce: files do
     acc -> zm_vector.(acc, name, gdf, flatgeobuf.(index: false), "flatgeobuf", [])
   end
+
+# A null row is a feature without a geometry, which GDAL reads as null (issue #78). Without
+# an index so the rows keep their order.
+files = write.(files, "null_rows.fgb", points, flatgeobuf.(index: false), kind: "flatgeobuf")
 
 files = zm_vector.(files, "z_features.geojson", zlines, geojson.([]), "geojson", [])
 files = zm_vector.(files, "z_mixed.geojson", zmixed, geojson.([]), "geojson", [])

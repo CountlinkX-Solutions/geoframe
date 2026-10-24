@@ -20,8 +20,9 @@
 //!
 //! The header geometry type is the common type of all rows, or `Unknown` for a mix, so
 //! polygons are never silently promoted to multipolygons. Null rows and empty points are
-//! stored as features without geometry (the encoder writes them as empty geometries, which
-//! read back as null). Curve geometries are rejected on read.
+//! stored as features without a geometry field, like GDAL does (the encoder writes them as
+//! empty geometries, which GDAL cannot parse; `flatgeobuf_nulls.rs` rewrites them); the reader
+//! also takes an empty geometry for null. Curve geometries are rejected on read.
 //!
 //! # Z and M
 //!
@@ -462,7 +463,8 @@ fn build(
 
     let mut out = Vec::new();
     writer.write(&mut out).map_err(|e| e.to_string())?;
-    Ok(out)
+    // The encoder writes a null row as an empty geometry, which GDAL cannot parse.
+    crate::flatgeobuf_nulls::drop_empty_geometries(out)
 }
 
 /// A row's geometry for the FlatGeobuf encoder; a null row emits nothing.
