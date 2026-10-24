@@ -498,7 +498,7 @@ defmodule GeoFrame.ParityG1Test do
     end
 
     test "GeoFrame reads the files GeoPandas wrote for these CRS" do
-      for code <- [3035, 32633] do
+      for code <- [3035, 32_633] do
         path = Path.join(@fixtures, "wkb_#{code}.parquet")
         assert GeoDataFrame.crs(GeoFrame.read_file!(path)) == "EPSG:#{code}"
       end
