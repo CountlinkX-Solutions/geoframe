@@ -67,6 +67,25 @@ defmodule GeoFrame.UnaryOpsTest do
       assert list(GeoSeries.count_coordinates(GeoSeries.simplify(line, 0.1))) == [2]
     end
 
+    test "preserve_topology: false removes rings that collapse, like GEOS" do
+      series =
+        s([
+          "POLYGON ((0 0, 0.1 0, 0.1 0.1, 0 0.1, 0 0))",
+          "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (4 4, 4.1 4, 4.1 4.1, 4 4.1, 4 4))",
+          "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((20 20, 20.1 20, 20.1 20.1, 20 20.1, 20 20)))",
+          "LINESTRING (0 0, 0.3 0.1, 0.6 -0.1, 1 0)"
+        ])
+
+      out = GeoSeries.simplify(series, 1, preserve_topology: false)
+
+      assert GeoSeries.to_wkt(out) == [
+               "POLYGON EMPTY",
+               "POLYGON((0 0,10 0,10 10,0 10,0 0))",
+               "POLYGON((0 0,10 0,10 10,0 10,0 0))",
+               "LINESTRING(0 0,1 0)"
+             ]
+    end
+
     test "points and nulls pass through" do
       out = GeoSeries.simplify(s(["POINT (1 2)", nil]), 1)
       assert equal?(out, ["POINT (1 2)", nil]) == [true, nil]

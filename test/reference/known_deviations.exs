@@ -66,10 +66,6 @@ zm_deviations =
 
 # Z/M constructive operations (file zm_ops.json): one entry per (reason, op).
 zm_ops_classes = [
-  {"hole", "simplify",
-   [
-     "simplify(1.0, preserve_topology=false):z2_poly_hole_z"
-   ]},
   {"mixed", "affine_transform",
    [
      "affine_transform(12):z_coll_mixed",
@@ -301,9 +297,7 @@ zm_ops_reasons = %{
   "one" =>
     "A one-member GEOMETRYCOLLECTION is stored as that member when parsed (see geom_type), so the result describes the member where Shapely keeps the collection.",
   "zmnan" =>
-    "Shapely 2.2 (GEOS 3.14) affine and transform functions turn an XYZM geometry into XYZM with NaN in both Z and M (it applies the matrix to a 4-column coordinate array). GeoFrame keeps Z (transformed as for XYZ) and drops M, which is what the operation is defined to do.",
-  "hole" =>
-    "simplify with preserve_topology=false: GEOS removes a polygon hole whose ring collapses under the tolerance; geo's Ramer-Douglas-Peucker keeps the three-vertex hole. Not Z-related (the 2D result differs the same way)."
+    "Shapely 2.2 (GEOS 3.14) affine and transform functions turn an XYZM geometry into XYZM with NaN in both Z and M (it applies the matrix to a 4-column coordinate array). GeoFrame keeps Z (transformed as for XYZ) and drops M, which is what the operation is defined to do."
 }
 
 zm_ops_deviations =
@@ -764,6 +758,23 @@ zm_deviations ++
         "invalid_coverage_edges(null_point_empty, gap_width=0.0)",
         "invalid_coverage_edges(null_point_empty, gap_width=0.2)",
         "invalid_coverage_edges(null_point_empty, gap_width=1.0)"
+      ]
+    },
+    %{
+      reason:
+        "simplify with preserve_topology=false when the Douglas-Peucker result (or the input) is invalid, a self-crossing ring or parts that overlap or touch along an edge: GEOS repairs it with buffer(0), splitting a bowtie into its lobes and dissolving touching parts. GeoFrame returns the Douglas-Peucker rings as they are (it has no GEOS buffer(0)); a valid result, including the removal of collapsed rings, agrees vertex for vertex.",
+      doc: "docs/parity.md#reference-testing",
+      op: "simplify",
+      cases: [
+        "simplify(0.0, preserve_topology=false, collapse):s_bowtie_ring",
+        "simplify(0.0, preserve_topology=false, collapse):s_cross",
+        "simplify(0.0, preserve_topology=false, collapse):s_touching",
+        "simplify(0.05, preserve_topology=false, collapse):s_bowtie_ring",
+        "simplify(0.05, preserve_topology=false, collapse):s_cross",
+        "simplify(0.05, preserve_topology=false, collapse):s_touching",
+        "simplify(1.0, preserve_topology=false, collapse):s_bowtie_ring",
+        "simplify(1.0, preserve_topology=false, collapse):s_cross",
+        "simplify(1.0, preserve_topology=false, collapse):s_touching"
       ]
     }
   ]

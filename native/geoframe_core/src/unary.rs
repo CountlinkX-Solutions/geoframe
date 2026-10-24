@@ -12,7 +12,7 @@ use geo::algorithm::buffer::{BufferStyle, LineCap, LineJoin};
 use geo::{
     AffineTransform, BoundingRect, Buffer, Centroid, ConvexHull, Coord, CoordsIter, Geometry,
     GeometryCollection, InteriorPoint, LineString, MakeValid, MultiLineString, MultiPoint,
-    MultiPolygon, Point, Polygon, Simplify, SimplifyVwPreserve, Validation,
+    MultiPolygon, Point, Polygon, SimplifyVwPreserve, Validation,
 };
 use geo_traits::{GeometryTrait, GeometryType};
 use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
@@ -139,7 +139,8 @@ impl GeoColumn {
 
     /// Simplifies lines and polygon rings. `preserve_topology` selects Visvalingam-Whyatt with
     /// topology checks (`SimplifyVwPreserve`; `tolerance` is a triangle *area*), otherwise
-    /// Ramer-Douglas-Peucker (`Simplify`; `tolerance` is a *distance*). Points are unchanged.
+    /// GEOS's Ramer-Douglas-Peucker (own code, `tolerance` is a *distance*): rings that collapse
+    /// are removed. Points are unchanged.
     pub fn simplify(&self, tolerance: f64, preserve_topology: bool) -> Result<Self, String> {
         self.map_geometry_zm(Keep::Z, |g| {
             Some(simplify_geometry(g, tolerance, preserve_topology))
@@ -293,21 +294,16 @@ fn collapse(mut multi: MultiPolygon<f64>) -> Geometry<f64> {
 }
 
 fn simplify_geometry(geom: &Geometry<f64>, tolerance: f64, preserve: bool) -> Geometry<f64> {
+    if !preserve {
+        return douglas_peucker_geometry(geom, tolerance);
+    }
     match geom {
-        Geometry::LineString(g) if preserve => {
-            Geometry::LineString(g.simplify_vw_preserve(tolerance))
-        }
-        Geometry::LineString(g) => Geometry::LineString(g.simplify(tolerance)),
-        Geometry::MultiLineString(g) if preserve => {
+        Geometry::LineString(g) => Geometry::LineString(g.simplify_vw_preserve(tolerance)),
+        Geometry::MultiLineString(g) => {
             Geometry::MultiLineString(g.simplify_vw_preserve(tolerance))
         }
-        Geometry::MultiLineString(g) => Geometry::MultiLineString(g.simplify(tolerance)),
-        Geometry::Polygon(g) if preserve => Geometry::Polygon(g.simplify_vw_preserve(tolerance)),
-        Geometry::Polygon(g) => Geometry::Polygon(g.simplify(tolerance)),
-        Geometry::MultiPolygon(g) if preserve => {
-            Geometry::MultiPolygon(g.simplify_vw_preserve(tolerance))
-        }
-        Geometry::MultiPolygon(g) => Geometry::MultiPolygon(g.simplify(tolerance)),
+        Geometry::Polygon(g) => Geometry::Polygon(g.simplify_vw_preserve(tolerance)),
+        Geometry::MultiPolygon(g) => Geometry::MultiPolygon(g.simplify_vw_preserve(tolerance)),
         Geometry::GeometryCollection(members) => {
             Geometry::GeometryCollection(GeometryCollection::new_from(
                 members
@@ -316,6 +312,172 @@ fn simplify_geometry(geom: &Geometry<f64>, tolerance: f64, preserve: bool) -> Ge
                     .collect(),
             ))
         }
+        other => other.clone(),
+    }
+}
+
+// -- Douglas-Peucker, as GEOS --------------------------------------------------------------
+
+/// GEOS `Distance::pointToSegment`.
+fn point_to_segment(p: Coord<f64>, a: Coord<f64>, b: Coord<f64>) -> f64 {
+    let distance = |u: Coord<f64>, v: Coord<f64>| {
+        ((u.x - v.x) * (u.x - v.x) + (u.y - v.y) * (u.y - v.y)).sqrt()
+    };
+    if a == b {
+        return distance(p, a);
+    }
+    let len2 = (b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y);
+    let r = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / len2;
+    if r <= 0.0 {
+        return distance(p, a);
+    }
+    if r >= 1.0 {
+        return distance(p, b);
+    }
+    let s = ((a.y - p.y) * (b.x - a.x) - (a.x - p.x) * (b.y - a.y)) / len2;
+    s.abs() * len2.sqrt()
+}
+
+/// GEOS `DouglasPeuckerLineSimplifier`: a section is replaced by its end points when no vertex
+/// is farther than `tolerance` from the chord, otherwise it splits at the first farthest
+/// vertex. There is no minimum vertex count (`geo` keeps four per ring), so a ring can come out
+/// with fewer than four vertices and is then dropped by the caller.
+fn douglas_peucker(points: &[Coord<f64>], tolerance: f64) -> Vec<Coord<f64>> {
+    if points.len() < 3 {
+        return points.to_vec();
+    }
+    let mut keep = vec![true; points.len()];
+    let mut sections = vec![(0, points.len() - 1)];
+    while let Some((i, j)) = sections.pop() {
+        if i + 1 >= j {
+            continue;
+        }
+        let (mut max_distance, mut max_index) = (-1.0, i);
+        for (k, point) in points.iter().enumerate().take(j).skip(i + 1) {
+            let distance = point_to_segment(*point, points[i], points[j]);
+            if distance > max_distance {
+                max_distance = distance;
+                max_index = k;
+            }
+        }
+        if max_distance <= tolerance {
+            keep[i + 1..j].fill(false);
+        } else {
+            sections.push((i, max_index));
+            sections.push((max_index, j));
+        }
+    }
+    points
+        .iter()
+        .zip(keep)
+        .filter_map(|(point, keep)| keep.then_some(*point))
+        .collect()
+}
+
+fn dp_line(line: &LineString<f64>, tolerance: f64) -> LineString<f64> {
+    LineString::new(douglas_peucker(&line.0, tolerance))
+}
+
+/// GEOS also simplifies the closing vertex of a ring: when the start vertex lies within the
+/// tolerance of the chord between its two neighbours it is dropped and the ring closes on the
+/// next vertex. Only done once, and not for closed line strings.
+fn drop_redundant_ring_start(ring: &mut Vec<Coord<f64>>, tolerance: f64) {
+    if ring.len() <= 3 {
+        return;
+    }
+    let (previous, next) = (ring[ring.len() - 2], ring[1]);
+    if point_to_segment(ring[0], previous, next) <= tolerance {
+        ring.remove(0);
+        ring.pop();
+        ring.push(ring[0]);
+    }
+}
+
+/// A ring needs four vertices; one that collapses below that is `None`.
+fn dp_ring(ring: &LineString<f64>, tolerance: f64) -> Option<LineString<f64>> {
+    let mut simplified = douglas_peucker(&ring.0, tolerance);
+    drop_redundant_ring_start(&mut simplified, tolerance);
+    (simplified.len() >= 4).then(|| LineString::new(simplified))
+}
+
+/// A polygon whose shell collapses is empty; a hole that collapses is removed.
+fn dp_polygon(polygon: &Polygon<f64>, tolerance: f64) -> Polygon<f64> {
+    match dp_ring(polygon.exterior(), tolerance) {
+        None => Polygon::new(LineString::new(vec![]), vec![]),
+        Some(shell) => Polygon::new(
+            shell,
+            polygon
+                .interiors()
+                .iter()
+                .filter_map(|hole| dp_ring(hole, tolerance))
+                .collect(),
+        ),
+    }
+}
+
+/// GEOS builds a multi geometry from what is left of its parts: a single part is returned
+/// as itself.
+fn from_parts<T>(
+    mut parts: Vec<T>,
+    single: impl Fn(T) -> Geometry<f64>,
+    many: impl Fn(Vec<T>) -> Geometry<f64>,
+) -> Geometry<f64> {
+    if parts.len() == 1 {
+        single(parts.remove(0))
+    } else {
+        many(parts)
+    }
+}
+
+fn is_empty_result(geom: &Geometry<f64>) -> bool {
+    match geom {
+        Geometry::Polygon(p) => p.exterior().0.is_empty(),
+        Geometry::MultiPolygon(m) => m.0.is_empty(),
+        Geometry::LineString(l) => l.0.is_empty(),
+        Geometry::MultiLineString(m) => m.0.is_empty(),
+        Geometry::GeometryCollection(c) => c.0.is_empty(),
+        _ => false,
+    }
+}
+
+/// `shapely.simplify(preserve_topology=False)`: GEOS `DouglasPeuckerSimplifier`. GEOS also
+/// repairs an invalid result with `buffer(0)`; that step is not reproduced, so a result whose
+/// rings cross or whose parts overlap stays as Douglas-Peucker left it.
+fn douglas_peucker_geometry(geom: &Geometry<f64>, tolerance: f64) -> Geometry<f64> {
+    match geom {
+        Geometry::LineString(l) => Geometry::LineString(dp_line(l, tolerance)),
+        Geometry::MultiLineString(m) => {
+            let parts: Vec<LineString<f64>> =
+                m.0.iter()
+                    .map(|l| dp_line(l, tolerance))
+                    .filter(|l| !l.0.is_empty())
+                    .collect();
+            from_parts(parts, Geometry::LineString, |p| {
+                Geometry::MultiLineString(MultiLineString::new(p))
+            })
+        }
+        Geometry::Polygon(p) => Geometry::Polygon(dp_polygon(p, tolerance)),
+        Geometry::MultiPolygon(m) => {
+            let parts: Vec<Polygon<f64>> =
+                m.0.iter()
+                    .map(|p| dp_polygon(p, tolerance))
+                    .filter(|p| !p.exterior().0.is_empty())
+                    .collect();
+            from_parts(parts, Geometry::Polygon, |p| {
+                Geometry::MultiPolygon(MultiPolygon::new(p))
+            })
+        }
+        Geometry::GeometryCollection(members) => {
+            Geometry::GeometryCollection(GeometryCollection::new_from(
+                members
+                    .iter()
+                    .map(|m| douglas_peucker_geometry(m, tolerance))
+                    .filter(|m| !is_empty_result(m))
+                    .collect(),
+            ))
+        }
+        // GEOS builds a one-point multipoint as the point.
+        Geometry::MultiPoint(m) if m.0.len() == 1 => Geometry::Point(m.0[0]),
         other => other.clone(),
     }
 }
