@@ -184,10 +184,11 @@ internet access in the browser for the basemap.
 |----------|---------------|
 | [`notebooks/tour.livemd`](notebooks/tour.livemd) | A tour on one story (Europe): every file format, reprojection, buffers, spatial joins, overlay, dissolve, simplification, distances and the coverage tools. |
 | [`notebooks/deck.livemd`](notebooks/deck.livemd) | The deck.gl widget on real data: countries, cities, rivers, colour and size by column, the Smart Cells, one million points. |
+| [`notebooks/compare.livemd`](notebooks/compare.livemd) | GeoFrame and GeoPandas side by side: ten analyses on real data (buffer and dissolve, overlay, joins, nearest, clipping, geodesic distances, Voronoi), each in GeoFrame and in an executable Python cell (Pythonx), with a PASS/FAIL table per metric. `scripts/compare_geopandas.sh` repeats the comparison from the command line. |
 | [`notebooks/spike.livemd`](notebooks/spike.livemd) | The short first walkthrough: read GeoParquet, measures, reprojection, filtering, maps, Z coordinates, write and read back. |
 
 Livebook has no headless runner, so `elixir scripts/run_livemd.exs notebooks/tour.livemd`
-extracts a notebook's code cells and runs them in order. CI does this for all three.
+extracts a notebook's code cells and runs them in order. It also runs the Python cells through Pythonx. CI does this for all four.
 
 ## Limits and known deviations
 
