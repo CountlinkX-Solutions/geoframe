@@ -34,8 +34,8 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       * `:color` - `{r, g, b}` or `{r, g, b, a}` (0-255), or `{column, :viridis}` (numeric ramp
         between the column's min and max) or `{column, :categorical}` (one palette color per
         distinct value). Missing values are gray. Default: blue.
-      * `:radius` - point radius in pixels (number), or a numeric column scaled to 2-20 px.
-        Default `4`.
+      * `:radius` - point radius in pixels (number), or a numeric column scaled to 2-20 px so
+        that the circle *area* follows the value (square-root scale). Default `4`.
       * `:width` - line and polygon outline width in pixels, or a numeric column scaled to 1-8 px
         (lines only; outlines use the number). Default `2`.
       * `:opacity` - layer opacity, 0 to 1. Default `0.8`.
@@ -129,8 +129,13 @@ if Code.ensure_loaded?(Kino.JS.Live) do
         end
 
       {color_config, colors} = color_style(frame, opts[:color])
-      {radius_config, radius_sizes} = size_style(frame, opts[:radius], 4, @radius_range, :radius)
-      {width_config, width_sizes} = size_style(frame, opts[:width], 2, @width_range, :width)
+
+      {radius_config, radius_sizes} =
+        size_style(frame, opts[:radius], 4, @radius_range, :radius, :area)
+
+      {width_config, width_sizes} =
+        size_style(frame, opts[:width], 2, @width_range, :width, :linear)
+
       {buffers, skipped} = build_buffers(geometry, colors, radius_sizes, width_sizes)
       tooltip = tooltip(frame, opts[:tooltip], GeoSeries.size(geometry))
       {entries, binary} = pack(buffers)
@@ -304,29 +309,35 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     defp rgba([r, g, b, a]), do: <<r, g, b, a>>
 
     # {config value, per-row f32 binary}. A number is config; a column is a binary.
-    defp size_style(_frame, nil, default, _range, _name), do: {default, <<>>}
+    defp size_style(_frame, nil, default, _range, _name, _scale), do: {default, <<>>}
 
-    defp size_style(_frame, value, _default, _range, _name) when is_number(value) and value > 0,
-      do: {value, <<>>}
+    defp size_style(_frame, value, _default, _range, _name, _scale)
+         when is_number(value) and value > 0,
+         do: {value, <<>>}
 
-    defp size_style(frame, column, _default, {lo, hi}, _name)
+    defp size_style(frame, column, _default, {lo, hi}, _name, scale)
          when is_atom(column) or is_binary(column) do
       numbers = frame |> column_values(column) |> numeric!(column)
       {min, max} = extent(numbers)
 
       sizes =
         for value <- numbers, into: <<>> do
-          size = if value, do: lo + unit(value, min, max) * (hi - lo), else: lo
+          size = if value, do: lo + scaled(unit(value, min, max), scale) * (hi - lo), else: lo
           <<size::float-32-little>>
         end
 
       {nil, sizes}
     end
 
-    defp size_style(_frame, other, _default, _range, name) do
+    defp size_style(_frame, other, _default, _range, name, _scale) do
       raise ArgumentError,
             "invalid #{inspect(name)} #{inspect(other)}; expected a positive number or a column"
     end
+
+    # `:area` makes the symbol area, not its radius, proportional to the value, so a skewed
+    # column (population) still shows its small values.
+    defp scaled(t, :area), do: :math.sqrt(t)
+    defp scaled(t, :linear), do: t
 
     defp unit(_value, same, same), do: 0.5
     defp unit(value, min, max), do: (value - min) / (max - min)
