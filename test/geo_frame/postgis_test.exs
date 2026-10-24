@@ -176,7 +176,6 @@ defmodule GeoFrame.PostgisTest do
                "a" => {:s, 64},
                "c" => {:s, 64},
                "d" => {:f, 64},
-               "f" => {:f, 64},
                "g" => :string,
                "h" => :boolean,
                "i" => :date,
@@ -185,7 +184,8 @@ defmodule GeoFrame.PostgisTest do
                "l" => :string
              } = dtypes
 
-      assert Explorer.Series.to_list(data["f"]) == [3.25]
+      assert %{"f" => {:decimal, _, 2}} = dtypes
+      assert Explorer.Series.to_list(data["f"]) == [Decimal.new("3.25")]
       assert Explorer.Series.to_list(data["l"]) == [~s|{"a":1}|]
     end
 
@@ -203,6 +203,168 @@ defmodule GeoFrame.PostgisTest do
       gdf = GeoFrame.read_postgis!(conn, ~s|SELECT * FROM "#{table}" WHERE id < 0|)
       assert GeoDataFrame.n_rows(gdf) == 0
       assert "id" in GeoDataFrame.names(gdf)
+    end
+  end
+
+  describe "read_postgis numeric precision (#55)" do
+    test "numeric above 2^53 keeps every digit", %{conn: conn} do
+      sql = "SELECT 18446744073709551615::numeric(20, 0) AS big, ST_MakePoint(0, 0) AS geom"
+      data = GeoFrame.read_postgis!(conn, sql).data
+      assert %{"big" => {:decimal, 20, 0}} = DataFrame.dtypes(data)
+      assert Explorer.Series.to_list(data["big"]) == [Decimal.new("18446744073709551615")]
+    end
+
+    test "numeric(p, s) with more than 15 digits keeps its scale", %{conn: conn} do
+      sql = """
+      SELECT x AS n, ST_MakePoint(0, 0) AS geom
+      FROM (VALUES (123456789012345.678901::numeric), (NULL), (0.5)) AS t(x)
+      """
+
+      data = GeoFrame.read_postgis!(conn, sql).data
+      assert %{"n" => {:decimal, 21, 6}} = DataFrame.dtypes(data)
+
+      assert Explorer.Series.to_list(data["n"]) ==
+               [Decimal.new("123456789012345.678901"), nil, Decimal.new("0.500000")]
+    end
+
+    test "a u64 column survives a write and a read", %{conn: conn, table: table} do
+      big = 18_446_744_073_709_551_615
+      data = DataFrame.new(big: Explorer.Series.from_list([big, 1], dtype: {:u, 64}))
+      :ok = GeoFrame.to_postgis(GeoDataFrame.new(data, points(2)), conn, table)
+      back = GeoFrame.read_postgis!(conn, ~s|SELECT * FROM "#{table}"|, geom_col: "geometry")
+
+      assert Explorer.Series.to_list(back.data["big"]) ==
+               [Decimal.new(big), Decimal.new(1)]
+    end
+
+    test "a decimal column round-trips", %{conn: conn, table: table} do
+      values = [Decimal.new("1.25"), nil, Decimal.new("-300.10")]
+      data = DataFrame.new(d: Explorer.Series.from_list(values, dtype: {:decimal, 10, 2}))
+      :ok = GeoFrame.to_postgis(GeoDataFrame.new(data, points(3)), conn, table)
+      back = GeoFrame.read_postgis!(conn, ~s|SELECT * FROM "#{table}"|, geom_col: "geometry")
+      assert Explorer.Series.to_list(back.data["d"]) == values
+    end
+
+    test "NaN and Infinity numerics fall back to float64", %{conn: conn} do
+      sql = """
+      SELECT x AS n, ST_MakePoint(0, 0) AS geom
+      FROM (VALUES (1.5::numeric), ('NaN'::numeric), ('Infinity'::numeric)) AS t(x)
+      """
+
+      data = GeoFrame.read_postgis!(conn, sql).data
+      assert %{"n" => {:f, 64}} = DataFrame.dtypes(data)
+      assert Explorer.Series.to_list(data["n"]) == [1.5, :nan, :infinity]
+    end
+
+    test "numerics wider than 38 digits become exact text", %{conn: conn} do
+      digits = String.duplicate("9", 40)
+      sql = "SELECT #{digits}::numeric AS n, ST_MakePoint(0, 0) AS geom"
+      data = GeoFrame.read_postgis!(conn, sql).data
+      assert %{"n" => :string} = DataFrame.dtypes(data)
+      assert Explorer.Series.to_list(data["n"]) == [digits]
+    end
+  end
+
+  describe "read_postgis edge cases (#56)" do
+    test "duplicate column names are an error, not a silent drop", %{conn: conn} do
+      sql = "SELECT 1 AS id, 2 AS id, ST_MakePoint(0, 0) AS geom"
+      assert {:error, message} = GeoFrame.read_postgis(conn, sql)
+      assert message =~ "duplicate column"
+      assert message =~ ~s|"id"|
+    end
+
+    test "an empty result is typed from the query, not :string", %{conn: conn} do
+      sql = """
+      SELECT 1::int4 AS a, 2.5::float8 AS b, 'x'::text AS c, true AS d, DATE '2024-01-01' AS e,
+             TIMESTAMPTZ '2024-01-01 00:00:00+00' AS f, '{}'::jsonb AS g, 1::numeric AS h,
+             ST_MakePoint(0, 0) AS geom
+      WHERE false
+      """
+
+      gdf = GeoFrame.read_postgis!(conn, sql)
+      assert GeoDataFrame.n_rows(gdf) == 0
+
+      assert %{
+               "a" => {:s, 64},
+               "b" => {:f, 64},
+               "c" => :string,
+               "d" => :boolean,
+               "e" => :date,
+               "f" => {:datetime, :microsecond, "Etc/UTC"},
+               "g" => :string,
+               "h" => {:decimal, _, _}
+             } = DataFrame.dtypes(gdf.data)
+    end
+
+    test "an all-NULL column keeps its Postgres type", %{conn: conn} do
+      sql = "SELECT NULL::int4 AS a, NULL::float8 AS b, ST_MakePoint(0, 0) AS geom"
+      dtypes = DataFrame.dtypes(GeoFrame.read_postgis!(conn, sql).data)
+      assert %{"a" => {:s, 64}, "b" => {:f, 64}} = dtypes
+    end
+
+    test "intervals, ranges, network and geometric types become text", %{conn: conn} do
+      sql = """
+      SELECT INTERVAL '1 year 2 mons 3 days 04:05:06' AS iv, int4range(1, 5) AS rg,
+             '10.0.0.1/24'::inet AS ip, point(1, 2) AS pt, ST_MakePoint(0, 0) AS geom
+      """
+
+      data = GeoFrame.read_postgis!(conn, sql).data
+
+      assert %{"iv" => :string, "rg" => :string, "ip" => :string, "pt" => :string} =
+               DataFrame.dtypes(data)
+
+      assert Explorer.Series.to_list(data["iv"]) == ["P1Y2M3DT4H5M6S"]
+      assert Explorer.Series.to_list(data["ip"]) == ["10.0.0.1/24"]
+    end
+
+    test "uuid columns are formatted as text", %{conn: conn} do
+      sql = "SELECT '123e4567-e89b-12d3-a456-426614174000'::uuid AS u, ST_MakePoint(0, 0) AS geom"
+      data = GeoFrame.read_postgis!(conn, sql).data
+      assert Explorer.Series.to_list(data["u"]) == ["123e4567-e89b-12d3-a456-426614174000"]
+    end
+
+    test "values that cannot be encoded are an error, not a crash", %{conn: conn} do
+      sql = "SELECT ARRAY['\\xff'::bytea] AS bad, ST_MakePoint(0, 0) AS geom"
+      assert {:error, message} = GeoFrame.read_postgis(conn, sql)
+      assert message =~ "bad"
+    end
+
+    test "arrays and jsonb read as JSON text", %{conn: conn} do
+      sql =
+        "SELECT ARRAY[1, 2] AS xs, '[1, {\"a\": null}]'::jsonb AS js, ST_MakePoint(0, 0) AS geom"
+
+      data = GeoFrame.read_postgis!(conn, sql).data
+      assert Explorer.Series.to_list(data["xs"]) == ["[1,2]"]
+      assert Explorer.Series.to_list(data["js"]) == [~s|[1,{"a":null}]|]
+    end
+  end
+
+  describe "to_postgis dtype whitelist (#56)" do
+    test "multi-word and parameterised type names are accepted", %{conn: conn, table: table} do
+      :ok =
+        GeoFrame.to_postgis(frame(), conn, table,
+          dtype: %{
+            "score" => "double precision",
+            "name" => "character varying(20)",
+            "at" => "timestamp(3) without time zone",
+            "id" => "BIGINT"
+          }
+        )
+    end
+
+    test "constraints and trailing clauses are rejected", %{conn: conn, table: table} do
+      for bad <- [
+            "integer PRIMARY KEY",
+            "integer NOT NULL",
+            "text DEFAULT 'x'",
+            "int, extra int",
+            "text COLLATE \"C\"",
+            "integer; DROP TABLE x"
+          ] do
+        assert_raise ArgumentError, ~r/invalid SQL type/, fn ->
+          GeoFrame.to_postgis(frame(), conn, table, dtype: %{"id" => bad})
+        end
+      end
     end
   end
 

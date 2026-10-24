@@ -82,7 +82,14 @@ columns decode to raw EWKB (parsed in Rust, SRID becomes the CRS):
 :ok = GeoFrame.to_postgis(gdf, conn, "places_copy", if_exists: :replace, spatial_index: true)
 ```
 
-Without the types module, select `ST_AsEWKB(geom) AS geom`. Tests tagged `:postgis` need
+Without the types module, select `ST_AsEWKB(geom) AS geom`.
+
+Attribute columns map to exact dtypes: `numeric` becomes an Explorer `{:decimal, p, s}` series
+(no float rounding, so a `numeric(20, 0)` holding a u64 survives; `NaN` / `Infinity` force
+float64 and values wider than 38 digits are read as exact text), and a result with no rows,
+or an all-`NULL` column, keeps the dtype of its Postgres type. Intervals, ranges, `inet`,
+`uuid` and geometric types are read as text. Duplicate column names are an error (alias them).
+Tests tagged `:postgis` need
 `GEOFRAME_POSTGIS_URL` (see Development).
 
 ## Z and M coordinates
