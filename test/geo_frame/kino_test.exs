@@ -124,6 +124,80 @@ defmodule GeoFrame.KinoTest do
     end
   end
 
+  describe "vertex limits" do
+    setup do
+      series =
+        GeoSeries.from_wkt!(
+          ["POINT (1 1)", "LINESTRING (0 0, 1 1, 2 2, 3 3)", "POINT (2 2)", "POINT (3 3)"],
+          crs: "EPSG:4326"
+        )
+
+      %{series: series, frame: GeoDataFrame.new(Explorer.DataFrame.new(id: [1, 2, 3, 4]), series)}
+    end
+
+    test "the map is replaced by a notice above :max_vertices", %{series: series} do
+      assert %Kino.Markdown{} = notice = GeoFrame.Kino.map(series, max_vertices: 4)
+      assert inspect(notice) =~ "vertices"
+      assert %Kino.JS.Live{} = GeoFrame.Kino.map(series, max_vertices: 7)
+    end
+
+    test "the global map vertex cap comes from the application environment", %{series: series} do
+      Application.put_env(:geoframe, :max_map_vertices, 3)
+      on_exit(fn -> Application.delete_env(:geoframe, :max_map_vertices) end)
+
+      assert GeoFrame.Kino.max_vertices() == 3
+      assert %Kino.Markdown{} = GeoFrame.Kino.map(series)
+    end
+
+    test "table/2 shows every row under the caps", %{frame: frame} do
+      assert %Kino.JS.Live{} = GeoFrame.Kino.table(frame)
+    end
+
+    test "table/2 keeps the leading rows that fit :max_vertices and says so", %{frame: frame} do
+      assert %Kino.Layout{type: :grid, items: [notice, table]} =
+               GeoFrame.Kino.table(frame, max_vertices: 4)
+
+      assert inspect(notice) =~ "first 1 of 4 rows"
+      assert inspect(notice) =~ "vertices"
+      assert %Kino.JS.Live{} = table
+    end
+
+    test "table/2 keeps the leading rows under :max_rows", %{frame: frame} do
+      assert %Kino.Layout{items: [notice, _table]} = GeoFrame.Kino.table(frame, max_rows: 2)
+      assert inspect(notice) =~ "first 2 of 4 rows"
+    end
+
+    test "the Table tab of a rendered frame is capped", %{frame: frame} do
+      Application.put_env(:geoframe, :max_table_vertices, 4)
+      on_exit(fn -> Application.delete_env(:geoframe, :max_table_vertices) end)
+
+      assert %{type: :tabs, outputs: [_map, table, _inspect]} = Kino.Render.to_livebook(frame)
+      assert inspect(table) =~ "first 1 of 4 rows"
+    end
+  end
+
+  describe "GeometryCollections on the map" do
+    test "members become one feature each, nested collections flattened, with their row" do
+      series =
+        GeoSeries.from_wkt!([
+          "POINT (9 9)",
+          "GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (0 0, 1 1), GEOMETRYCOLLECTION (POLYGON ((0 0, 2 0, 2 2, 0 0))), POINT EMPTY)",
+          nil
+        ])
+
+      features =
+        series
+        |> GeoFrame.Kino.maplibre()
+        |> MapLibre.to_spec()
+        |> get_in(["sources", "geoframe", "data", "features"])
+
+      assert Enum.map(features, & &1["geometry"]["type"]) ==
+               ["Point", "Point", "LineString", "Polygon"]
+
+      assert Enum.map(features, & &1["properties"]["row"]) == [0, 1, 1, 1]
+    end
+  end
+
   defp restore_env(nil), do: Application.delete_env(:geoframe, :max_map_features)
   defp restore_env(value), do: Application.put_env(:geoframe, :max_map_features, value)
 end

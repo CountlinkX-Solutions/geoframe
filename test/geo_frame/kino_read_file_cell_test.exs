@@ -9,6 +9,10 @@ defmodule GeoFrame.Kino.ReadFileCellTest do
 
   setup :configure_livebook_bridge
 
+  # Generous so a loaded machine never turns a slow reply into a failure; assert_receive
+  # returns as soon as the message arrives, so the happy path pays nothing.
+  @timeout 5_000
+
   @io Path.expand("../reference/fixtures/io", __DIR__)
   @gpkg Path.join(@io, "vector/multi.gpkg")
   @shp Path.join(@io, "vector/points.shp")
@@ -133,7 +137,7 @@ defmodule GeoFrame.Kino.ReadFileCellTest do
   describe "ReadFileCell as a smart cell" do
     test "reports the layers of an existing GeoPackage on connect" do
       {kino, _source} = start_smart_cell!(ReadFileCell, read_attrs(%{"path" => @gpkg}))
-      payload = connect(kino)
+      payload = connect(kino, nil, @timeout)
 
       assert payload.fields["path"] == @gpkg
       assert "polys" in payload.layers
@@ -144,10 +148,10 @@ defmodule GeoFrame.Kino.ReadFileCellTest do
 
     test "no layers for a missing path or another format" do
       {kino, _} = start_smart_cell!(ReadFileCell, read_attrs(%{"path" => "/nope/x.gpkg"}))
-      assert connect(kino).layers == []
+      assert connect(kino, nil, @timeout).layers == []
 
       {kino, _} = start_smart_cell!(ReadFileCell, read_attrs())
-      assert connect(kino).layers == []
+      assert connect(kino, nil, @timeout).layers == []
     end
 
     test "the initial source comes from the attrs" do
@@ -163,7 +167,8 @@ defmodule GeoFrame.Kino.ReadFileCellTest do
       assert_smart_cell_update(
         kino,
         %{"show_map" => true, "variable" => "gdf"},
-        source
+        source,
+        @timeout
       )
 
       assert source =~ "GeoFrame.Kino.deck(gdf)"
@@ -171,11 +176,11 @@ defmodule GeoFrame.Kino.ReadFileCellTest do
 
     test "changing the path to a GeoPackage broadcasts its layers" do
       {kino, _} = start_smart_cell!(ReadFileCell, read_attrs())
-      connect(kino)
+      connect(kino, nil, @timeout)
 
       push_event(kino, "update_field", %{"field" => "path", "value" => @gpkg})
 
-      assert_broadcast_event(kino, "update_field", %{"layers" => layers} = payload)
+      assert_broadcast_event(kino, "update_field", %{"layers" => layers} = payload, @timeout)
       assert "polys" in layers
       assert payload["fields"]["path"] == @gpkg
     end
@@ -183,17 +188,17 @@ defmodule GeoFrame.Kino.ReadFileCellTest do
     test "a GeoPackage path selects its first layer when none is chosen" do
       {kino, source} = start_smart_cell!(ReadFileCell, read_attrs(%{"path" => @gpkg}))
       assert source =~ ~s|layer: "pts"|
-      assert connect(kino).fields["layer"] == "pts"
+      assert connect(kino, nil, @timeout).fields["layer"] == "pts"
 
       {kino, _} = start_smart_cell!(ReadFileCell, read_attrs())
       push_event(kino, "update_field", %{"field" => "path", "value" => @gpkg})
-      assert_smart_cell_update(kino, %{"layer" => "pts"}, source)
+      assert_smart_cell_update(kino, %{"layer" => "pts"}, source, @timeout)
       assert source =~ ~s|layer: "pts"|
     end
 
     test "default attrs allocate a variable name" do
       {kino, _} = start_smart_cell!(ReadFileCell, %{})
-      assert connect(kino).fields["variable"] =~ ~r/^gdf\d*$/
+      assert connect(kino, nil, @timeout).fields["variable"] =~ ~r/^gdf\d*$/
     end
   end
 

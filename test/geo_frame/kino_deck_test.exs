@@ -219,12 +219,56 @@ defmodule GeoFrame.Kino.DeckTest do
     end
   end
 
+  describe "geometry collections" do
+    test "members are drawn as separate parts that keep the source row" do
+      series =
+        points([
+          "POINT (9 9)",
+          "GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (0 0, 1 1), GEOMETRYCOLLECTION (POLYGON ((0 0, 2 0, 2 2, 0 0))))"
+        ])
+
+      payload = Deck.payload(series, [])
+
+      assert elem(payload, 1).layers == %{points: 2, lines: 1, polygons: 1}
+      assert i32s(buffer(payload, "points.rows")) == [0, 1]
+      assert i32s(buffer(payload, "lines.rows")) == [1]
+      assert i32s(buffer(payload, "polygons.rows")) == [1]
+    end
+  end
+
+  describe "vertex limit" do
+    test "an input above :max_vertices raises with advice" do
+      series = points(["LINESTRING (0 0, 1 1, 2 2)", "POINT (1 1)"])
+
+      assert_raise ArgumentError, ~r/4 vertices is above the deck.gl limit of 3/, fn ->
+        Deck.payload(series, max_vertices: 3)
+      end
+
+      assert {:binary, _, _} = Deck.payload(series, max_vertices: 4)
+    end
+
+    test "null and empty rows add no vertices" do
+      series = points([nil, "POINT EMPTY", "POINT (1 1)"])
+      assert {:binary, _, _} = Deck.payload(series, max_vertices: 1)
+    end
+
+    test ":max_vertices must be a positive integer" do
+      assert_raise ArgumentError, ~r/max_vertices/, fn ->
+        Deck.payload(points(), max_vertices: 0)
+      end
+    end
+
+    test "the default scales to millions of vertices" do
+      assert {:binary, _, _} = Deck.payload(points(), [])
+    end
+  end
+
   describe "GeoFrame.Kino.deck/2" do
     test "returns a Kino.JS.Live that sends the binary payload on connect" do
       kino = GeoFrame.Kino.deck(points(), color: {0, 128, 255})
 
       assert %Kino.JS.Live{} = kino
-      assert {:binary, info, bin} = connect(kino, nil, 2_000)
+      assert {:binary, info, bin} = connect(kino, nil, 5_000)
       assert info.layers.points == 3
       assert byte_size(bin) > 0
     end
