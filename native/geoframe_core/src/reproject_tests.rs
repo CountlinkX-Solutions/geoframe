@@ -399,3 +399,14 @@ fn estimate_utm_crs_matches_geopandas_on_the_fixture_grid() {
         &wrong[..wrong.len().min(10)]
     );
 }
+
+#[test]
+fn estimate_utm_crs_accepts_a_nad27_source() {
+    // The CRS used to fail to build without a datum grid; GeoPandas answers 32615 / 26915.
+    let bx = [-100.0, 40.0, -90.0, 45.0];
+    assert_eq!(utm_of("EPSG:4267", bx, None).unwrap(), "EPSG:32615");
+    assert_eq!(
+        utm_of("EPSG:4267", bx, Some("NAD83")).unwrap(),
+        "EPSG:26915"
+    );
+}

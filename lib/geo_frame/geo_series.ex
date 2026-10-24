@@ -709,6 +709,17 @@ defmodule GeoFrame.GeoSeries do
   (outside the projection's domain), become null. Z is kept (unchanged between CRSs that are
   not geocentric; transformed to or from a geocentric CRS such as `EPSG:4978`); M is dropped.
 
+  ## Datum shifts and accuracy
+
+  A datum other than WGS 84 (NAD27, OSGB36, ED50, DHDN, Tokyo, ...) is shifted by a grid when
+  one is installed and by a Helmert (`+towgs84`) set otherwise, as PROJ does without network
+  access. Nothing is downloaded. Without grids expect metre-level ballpark accuracy (a few metres
+  for OSGB36, DHDN, NZGD49, Tokyo; up to ~25 m for NAD27 and ~60 m for ED50 at the edge of its
+  area, against the best PROJ operation of the region); with NTv2 or GeoTIFF grids of PROJ-data it
+  is centimetres to a metre and agrees with PROJ to under a millimetre. A point outside every
+  installed grid takes the Helmert shift instead of failing. See `GeoFrame.Grids` to point at the
+  grid files and `docs/parity.md` for the measured numbers.
+
       iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (0 0)"], crs: "EPSG:4326")
       iex> s |> GeoFrame.GeoSeries.to_crs(3857) |> GeoFrame.GeoSeries.crs()
       "EPSG:3857"

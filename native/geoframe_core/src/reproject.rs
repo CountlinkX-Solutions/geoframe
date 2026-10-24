@@ -31,10 +31,15 @@ use crate::GeoColumn;
 /// Proj string for `OGC:CRS84`: WGS 84 as lon/lat.
 const CRS84_PROJ: &str = "+proj=longlat +datum=WGS84 +no_defs";
 
-/// A resolved CRS: canonical label plus the engine's projection.
+/// A resolved CRS: canonical label plus the engine's projection. `fallback` is the Helmert
+/// variant of `proj` when `proj` shifts its datum with grids (see [`crate::datum`]); points
+/// outside every grid use it.
 struct Resolved {
     label: String,
     proj: Proj,
+    fallback: Option<Proj>,
+    /// EPSG code of the geographic CRS the definition is based on, the key of its grids.
+    base: Option<u32>,
 }
 
 fn parse_epsg_code(text: &str, input: &str) -> Result<u16, String> {
@@ -72,23 +77,71 @@ fn resolve(input: &str) -> Result<Resolved, String> {
     let (authority, code) = text
         .split_once(':')
         .ok_or_else(|| format!("unsupported CRS {input:?}: expected EPSG:<code> or OGC:CRS84"))?;
-    let (label, proj_string) = match authority.trim().to_ascii_uppercase().as_str() {
+    let (label, proj_string, base) = match authority.trim().to_ascii_uppercase().as_str() {
         "EPSG" => {
             let code = parse_epsg_code(code, input)?;
             let def = crs_definitions::from_code(code)
                 .ok_or_else(|| format!("unknown EPSG code {code}: not in the bundled table"))?;
-            (format!("EPSG:{code}"), def.proj4)
+            (
+                format!("EPSG:{code}"),
+                def.proj4,
+                crate::datum::base_geographic_code(def.wkt),
+            )
         }
-        "OGC" if code.trim().eq_ignore_ascii_case("CRS84") => ("OGC:CRS84".to_string(), CRS84_PROJ),
+        "OGC" if code.trim().eq_ignore_ascii_case("CRS84") => {
+            ("OGC:CRS84".to_string(), CRS84_PROJ, None)
+        }
         other => {
             return Err(format!(
                 "unsupported CRS authority {other:?} in {input:?}: expected EPSG or OGC:CRS84"
             ))
         }
     };
-    let proj = Proj::from_proj_string(proj_string)
+    let (proj, fallback) = crate::datum::build(proj_string, base)
         .map_err(|e| format!("cannot build projection for {label}: {e}"))?;
-    Ok(Resolved { label, proj })
+    Ok(Resolved {
+        label,
+        proj,
+        fallback,
+        base,
+    })
+}
+
+/// Uses the grid files `names` (PROJ-data names, tried in order) for the datum of `input`, a
+/// geographic CRS or a projected one on it, instead of the built-in table; an empty list turns
+/// grids off for that datum. Returns the EPSG code of the geographic CRS the entry is keyed on.
+pub fn register_grids_for(input: &str, names: Vec<String>) -> Result<u32, String> {
+    let base = datum_of(input)?;
+    crate::datum::register_grids(base, names);
+    Ok(base)
+}
+
+/// Removes a [`register_grids_for`] entry; the built-in table applies again.
+pub fn unregister_grids_for(input: &str) -> Result<u32, String> {
+    let base = datum_of(input)?;
+    crate::datum::unregister_grids(base);
+    Ok(base)
+}
+
+fn datum_of(input: &str) -> Result<u32, String> {
+    resolve(input)?
+        .base
+        .ok_or_else(|| format!("{input:?} is not based on an EPSG geographic CRS"))
+}
+
+/// The grid files that may shift the datum of `input` and where each is installed (`None`:
+/// not found in the grid directories). Empty for a CRS whose datum has no grid.
+pub fn grid_status(input: &str) -> Result<Vec<(String, Option<String>)>, String> {
+    let base = resolve(input)?.base;
+    Ok(base
+        .map(crate::datum::grid_names)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| {
+            let path = crate::datum::locate(&name).map(|p| p.display().to_string());
+            (name, path)
+        })
+        .collect())
 }
 
 /// Normalises a CRS string (`EPSG:<code>`, `OGC:CRS84`, or PROJJSON with an `id`) to its
@@ -121,20 +174,44 @@ pub fn crs_is_geographic(input: &str) -> Option<bool> {
     resolve(input).ok().map(|r| r.proj.is_latlong())
 }
 
+/// Runs `f` with the projections of both CRSs, then, when a point lies outside every datum
+/// grid, once more with their Helmert variants (what PROJ does by trying its next operation).
+fn with_fallback<T>(
+    src: &Resolved,
+    dst: &Resolved,
+    f: impl Fn(&Proj, &Proj) -> Result<T, proj4rs::errors::Error>,
+) -> Result<T, String> {
+    match f(&src.proj, &dst.proj) {
+        Err(proj4rs::errors::Error::PointOutsideNadShiftArea)
+            if src.fallback.is_some() || dst.fallback.is_some() =>
+        {
+            f(
+                src.fallback.as_ref().unwrap_or(&src.proj),
+                dst.fallback.as_ref().unwrap_or(&dst.proj),
+            )
+        }
+        other => other,
+    }
+    .map_err(|e| e.to_string())
+}
+
 /// Transforms one coordinate; geographic CRSs are in degrees outside, radians inside.
-fn transform_coord(src: &Proj, dst: &Proj, c: Coord<f64>) -> Result<Coord<f64>, String> {
-    let (mut x, mut y) = (c.x, c.y);
-    if src.is_latlong() {
-        x = x.to_radians();
-        y = y.to_radians();
-    }
-    let mut point = (x, y);
-    proj4rs::transform::transform(src, dst, &mut point).map_err(|e| e.to_string())?;
-    let (mut x, mut y) = point;
-    if dst.is_latlong() {
-        x = x.to_degrees();
-        y = y.to_degrees();
-    }
+fn transform_coord(src: &Resolved, dst: &Resolved, c: Coord<f64>) -> Result<Coord<f64>, String> {
+    let (x, y) = with_fallback(src, dst, |src, dst| {
+        let (mut x, mut y) = (c.x, c.y);
+        if src.is_latlong() {
+            x = x.to_radians();
+            y = y.to_radians();
+        }
+        let mut point = (x, y);
+        proj4rs::transform::transform(src, dst, &mut point)?;
+        let (mut x, mut y) = point;
+        if dst.is_latlong() {
+            x = x.to_degrees();
+            y = y.to_degrees();
+        }
+        Ok((x, y))
+    })?;
     if x.is_finite() && y.is_finite() {
         Ok(Coord { x, y })
     } else {
@@ -147,28 +224,31 @@ fn transform_coord(src: &Proj, dst: &Proj, c: Coord<f64>) -> Result<Coord<f64>, 
 /// offers for 2D use); it is transformed only when either CRS is geocentric. A NaN `z` (no Z
 /// ordinate) stays NaN.
 fn transform_coord3(
-    src: &Proj,
-    dst: &Proj,
+    src: &Resolved,
+    dst: &Resolved,
     c: Coord<f64>,
     z: f64,
 ) -> Result<(Coord<f64>, f64), String> {
-    if z.is_nan() || !(src.is_geocent() || dst.is_geocent()) {
+    if z.is_nan() || !(src.proj.is_geocent() || dst.proj.is_geocent()) {
         return Ok((transform_coord(src, dst, c)?, z));
     }
-    let (mut x, mut y) = (c.x, c.y);
-    if src.is_latlong() {
-        x = x.to_radians();
-        y = y.to_radians();
-    }
-    let mut point = (x, y, if z.is_nan() { 0.0 } else { z });
-    proj4rs::transform::transform(src, dst, &mut point).map_err(|e| e.to_string())?;
-    let (mut x, mut y, nz) = point;
-    if dst.is_latlong() {
-        x = x.to_degrees();
-        y = y.to_degrees();
-    }
+    let (x, y, nz) = with_fallback(src, dst, |src, dst| {
+        let (mut x, mut y) = (c.x, c.y);
+        if src.is_latlong() {
+            x = x.to_radians();
+            y = y.to_radians();
+        }
+        let mut point = (x, y, z);
+        proj4rs::transform::transform(src, dst, &mut point)?;
+        let (mut x, mut y, nz) = point;
+        if dst.is_latlong() {
+            x = x.to_degrees();
+            y = y.to_degrees();
+        }
+        Ok((x, y, nz))
+    })?;
     if x.is_finite() && y.is_finite() && nz.is_finite() {
-        Ok((Coord { x, y }, if z.is_nan() { f64::NAN } else { nz }))
+        Ok((Coord { x, y }, nz))
     } else {
         Err("non-finite result".to_string())
     }
@@ -190,7 +270,7 @@ impl GeoColumn {
             // Z rides along: heights are transformed only where the CRS pair needs it
             // (geographic 3D to geocentric); otherwise they are unchanged. M is dropped.
             self.map_vertices(|_, _| {
-                let (src, dst) = (&src.proj, &dst.proj);
+                let (src, dst) = (&src, &dst);
                 Some(Box::new(move |x, y, z, _m| {
                     let c = transform_coord3(src, dst, Coord { x, y }, z)?;
                     Ok((c.0.x, c.0.y, c.1))
@@ -203,8 +283,7 @@ impl GeoColumn {
                 .map(|row| {
                     row.as_ref().and_then(|g| {
                         catch_unwind(AssertUnwindSafe(|| {
-                            g.try_map_coords(|c| transform_coord(&src.proj, &dst.proj, c))
-                                .ok()
+                            g.try_map_coords(|c| transform_coord(&src, &dst, c)).ok()
                         }))
                         .ok()
                         .flatten()
@@ -238,7 +317,7 @@ impl GeoColumn {
         let [minx, miny, maxx, maxy] = if src.proj.is_latlong() {
             bounds
         } else {
-            bounds_to_lonlat(&src.proj, &resolve("OGC:CRS84")?.proj, bounds)?
+            bounds_to_lonlat(&src, &resolve("OGC:CRS84")?, bounds)?
         };
         let lon = if minx > maxx {
             // Crossed the antimeridian: shift maxx to [0, 360), centre, shift back.
@@ -271,7 +350,7 @@ const DENSIFY_POINTS: usize = 21;
 /// densification: the box edges are sampled, a pole inside the box widens it to every
 /// longitude, and a jump of more than 180 degrees between neighbouring samples marks an
 /// antimeridian crossing.
-fn bounds_to_lonlat(src: &Proj, lonlat: &Proj, b: [f64; 4]) -> Result<[f64; 4], String> {
+fn bounds_to_lonlat(src: &Resolved, lonlat: &Resolved, b: [f64; 4]) -> Result<[f64; 4], String> {
     let [minx, miny, maxx, maxy] = b;
     let steps = DENSIFY_POINTS + 1;
     let mut ring = Vec::with_capacity(4 * steps);

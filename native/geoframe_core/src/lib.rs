@@ -9,6 +9,8 @@ pub(crate) mod column;
 mod coverage;
 mod coverage_simplify;
 mod crs_wkt;
+mod datum;
+mod datum_grids;
 mod dbf;
 mod deck;
 mod ewkb;
@@ -52,6 +54,7 @@ pub use arrow_io::{
 };
 pub use attributes::VectorRead;
 pub use column::GeoColumn;
+pub use datum::{grid_dirs, register_grids, set_grid_dirs, unregister_grids};
 pub use deck::{deck_buffers, DeckBuffers};
 pub use ewkb::{ewkb_to_iso, wkb_to_ewkb};
 pub use flatgeobuf_io::{read_flatgeobuf, write_flatgeobuf};
@@ -70,7 +73,10 @@ pub use parquet_io::{
 };
 pub use polygonize::Polygonized;
 pub use predicates::Predicate;
-pub use reproject::{crs_equivalent, crs_is_geographic, normalize_crs};
+pub use reproject::{
+    crs_equivalent, crs_is_geographic, grid_status, normalize_crs, register_grids_for,
+    unregister_grids_for,
+};
 pub use set_ops::SetOp;
 pub use shapefile_io::{read_shapefile, shapefile_info, write_shapefile};
 pub use sindex::{join_rows, JoinHow, JoinRows, NearestPairs, QueryPredicate, NO_ROW};
@@ -82,6 +88,8 @@ mod affine_tests;
 mod coverage_simplify_tests;
 #[cfg(test)]
 mod coverage_tests;
+#[cfg(test)]
+mod datum_tests;
 #[cfg(test)]
 mod deck_tests;
 #[cfg(test)]
