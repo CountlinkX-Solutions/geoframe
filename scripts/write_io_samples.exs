@@ -158,7 +158,17 @@ files = write.(files, "wkb_nocrs.parquet", mixed_nocrs, parquet.([]), kind: "par
 
 # Projected CRS that GeoPandas can only read when the PROJJSON is complete (issue #88).
 files =
-  for {code, name} <- [{3035, "laea_europe"}, {32633, "utm33n"}, {4326, "wgs84"}],
+  for {code, name} <- [
+        {3035, "laea_europe"},
+        {32633, "utm33n"},
+        {4326, "wgs84"},
+        # Geocentric, 3D geographic, datum-shifted and compound CRS (issue #50).
+        {3822, "twd97_geocentric"},
+        {4480, "cgcs2000_3d"},
+        {3823, "twd97_bound"},
+        {5707, "lambert_i_ngf"},
+        {5498, "nad83_navd88"}
+      ],
       reduce: files do
     acc ->
       gdf = GeoDataFrame.set_crs(mixed, "EPSG:#{code}")

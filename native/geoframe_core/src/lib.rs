@@ -37,6 +37,7 @@ mod shapefile_io;
 mod sindex;
 mod unary;
 mod wkt1_projjson;
+mod wkt2_projjson;
 mod zm;
 mod zm_bridge;
 mod zm_io;

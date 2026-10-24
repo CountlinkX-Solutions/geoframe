@@ -1,4 +1,7 @@
-//! OGC WKT1 to PROJJSON, for the EPSG definitions in the bundled `crs-definitions` table.
+//! OGC WKT to PROJJSON, for the EPSG definitions in the bundled `crs-definitions` table.
+//!
+//! The table holds WKT1 (`GEOGCS`, `PROJCS`, `GEOCCS`, `COMPD_CS`) and, for 3D geographic and
+//! datum-shifted entries, WKT2 (`GEOGCRS`, `BOUNDCRS`, translated in `wkt2_projjson.rs`).
 //!
 //! pyproj (and so GeoPandas) cannot parse a PROJJSON object that lacks a top-level `type`, a
 //! projected CRS also needs its base CRS, conversion and coordinate system. There is no PROJ
@@ -10,12 +13,12 @@
 
 use serde_json::{json, Map, Value};
 
-const SCHEMA: &str = "https://proj.org/schemas/v0.7/projjson.schema.json";
+pub(crate) const SCHEMA: &str = "https://proj.org/schemas/v0.7/projjson.schema.json";
 
 // -- a tiny WKT parser ----------------------------------------------------------------------
 
 #[derive(Debug)]
-enum Arg {
+pub(crate) enum Arg {
     Text(String),
     Number(f64),
     Word(String),
@@ -23,46 +26,50 @@ enum Arg {
 }
 
 #[derive(Debug)]
-struct Node {
-    keyword: String,
-    args: Vec<Arg>,
+pub(crate) struct Node {
+    pub(crate) keyword: String,
+    pub(crate) args: Vec<Arg>,
 }
 
 impl Node {
-    fn child<'a>(&'a self, keyword: &'a str) -> Option<&'a Node> {
+    pub(crate) fn child<'a>(&'a self, keyword: &'a str) -> Option<&'a Node> {
         self.children(keyword).next()
     }
 
-    fn children<'a>(&'a self, keyword: &'a str) -> impl Iterator<Item = &'a Node> {
+    pub(crate) fn children<'a>(&'a self, keyword: &'a str) -> impl Iterator<Item = &'a Node> {
         self.args.iter().filter_map(move |a| match a {
             Arg::Node(n) if n.keyword == keyword => Some(n),
             _ => None,
         })
     }
 
-    fn text(&self, index: usize) -> Option<&str> {
+    pub(crate) fn text(&self, index: usize) -> Option<&str> {
         match self.args.get(index)? {
             Arg::Text(s) | Arg::Word(s) => Some(s),
             _ => None,
         }
     }
 
-    fn number(&self, index: usize) -> Option<f64> {
+    pub(crate) fn number(&self, index: usize) -> Option<f64> {
         match self.args.get(index)? {
             Arg::Number(n) => Some(*n),
             _ => None,
         }
     }
 
-    /// The `AUTHORITY["EPSG", "code"]` of this node, as a PROJJSON `id`.
-    fn id(&self) -> Option<Value> {
-        let authority = self.child("AUTHORITY")?;
-        let code = authority.text(1).and_then(|c| c.parse::<u64>().ok())?;
+    /// The `AUTHORITY["EPSG", "code"]` (WKT1) or `ID["EPSG", code]` (WKT2) of this node, as a
+    /// PROJJSON `id`.
+    pub(crate) fn id(&self) -> Option<Value> {
+        let authority = self.child("AUTHORITY").or_else(|| self.child("ID"))?;
+        let code = authority
+            .text(1)
+            .and_then(|c| c.parse::<u64>().ok())
+            .or_else(|| authority.number(1).map(|c| c as u64))?;
         Some(json!({ "authority": authority.text(0)?, "code": code }))
     }
 }
 
-fn parse(text: &str) -> Option<Node> {
+pub(crate) fn parse(text: &str) -> Option<Node> {
     let chars: Vec<char> = text.chars().collect();
     let mut at = 0;
     let node = parse_node(&chars, &mut at)?;
@@ -133,7 +140,7 @@ fn parse_node(c: &[char], at: &mut usize) -> Option<Node> {
 
 // -- units and numbers ---------------------------------------------------------------------
 
-fn number(value: f64) -> Value {
+pub(crate) fn number(value: f64) -> Value {
     if value.fract() == 0.0 && value.abs() < 1e15 {
         Value::from(value as i64)
     } else {
@@ -142,7 +149,7 @@ fn number(value: f64) -> Value {
 }
 
 /// A PROJJSON unit: the bare name for `degree`, `metre` and `unity`, an object otherwise.
-fn unit_value(unit: &Node, angular: bool) -> Option<Value> {
+pub(crate) fn unit_value(unit: &Node, angular: bool) -> Option<Value> {
     let name = unit.text(0)?;
     let factor = unit.number(1)?;
     let plain = if angular {
@@ -216,9 +223,13 @@ fn axes(node: &Node, unit: &Value, default: [(&str, &str); 2]) -> Vec<Value> {
 
 // -- geographic CRS ------------------------------------------------------------------------
 
-fn geographic(node: &Node, with_schema: bool) -> Option<Value> {
-    let datum = node.child("DATUM")?;
-    let spheroid = datum.child("SPHEROID")?;
+/// The `GeodeticReferenceFrame` of a `DATUM`, its `SPHEROID`/`ELLIPSOID` and the optional
+/// `PRIMEM` of the CRS that holds them.
+pub(crate) fn reference_frame(
+    datum: &Node,
+    spheroid: &Node,
+    meridian: Option<&Node>,
+) -> Option<Value> {
     let mut ellipsoid = Map::new();
     ellipsoid.insert("name".into(), Value::from(spheroid.text(0)?));
     let inverse_flattening = spheroid.number(2)?;
@@ -231,7 +242,6 @@ fn geographic(node: &Node, with_schema: bool) -> Option<Value> {
     if let Some(id) = spheroid.id() {
         ellipsoid.insert("id".into(), id);
     }
-    let angular = unit_value(node.child("UNIT")?, true)?;
     let mut frame = Map::new();
     frame.insert("type".into(), Value::from("GeodeticReferenceFrame"));
     frame.insert(
@@ -239,16 +249,20 @@ fn geographic(node: &Node, with_schema: bool) -> Option<Value> {
         Value::from(underscores_to_spaces(datum.text(0)?)),
     );
     frame.insert("ellipsoid".into(), Value::Object(ellipsoid));
-    if let Some(meridian) = node.child("PRIMEM") {
+    if let Some(meridian) = meridian {
         // WKT1 gives the prime meridian in degrees whatever the unit of the CRS (Paris is
-        // 2.33722917, not 2.5969213 grads).
+        // 2.33722917, not 2.5969213 grads); WKT2 states the unit on the node.
         let longitude = meridian.number(1)?;
+        let unit = match meridian.child("ANGLEUNIT") {
+            Some(unit) => unit_value(unit, true)?,
+            None => Value::from("degree"),
+        };
         if longitude != 0.0 {
             frame.insert(
                 "prime_meridian".into(),
                 json!({
                     "name": meridian.text(0)?,
-                    "longitude": { "value": number(longitude), "unit": "degree" },
+                    "longitude": { "value": number(longitude), "unit": unit },
                 }),
             );
         }
@@ -256,13 +270,20 @@ fn geographic(node: &Node, with_schema: bool) -> Option<Value> {
     if let Some(id) = datum.id() {
         frame.insert("id".into(), id);
     }
+    Some(Value::Object(frame))
+}
+
+fn geographic(node: &Node, with_schema: bool) -> Option<Value> {
+    let datum = node.child("DATUM")?;
+    let frame = reference_frame(datum, datum.child("SPHEROID")?, node.child("PRIMEM"))?;
+    let angular = unit_value(node.child("UNIT")?, true)?;
     let mut out = Map::new();
     if with_schema {
         out.insert("$schema".into(), Value::from(SCHEMA));
     }
     out.insert("type".into(), Value::from("GeographicCRS"));
     out.insert("name".into(), Value::from(node.text(0)?));
-    out.insert("datum".into(), Value::Object(frame));
+    out.insert("datum".into(), frame);
     out.insert(
         "coordinate_system".into(),
         json!({
@@ -270,6 +291,111 @@ fn geographic(node: &Node, with_schema: bool) -> Option<Value> {
             "axis": axes(node, &angular, [("Geodetic latitude", "north"), ("Geodetic longitude", "east")]),
         }),
     );
+    if let Some(id) = node.id() {
+        out.insert("id".into(), id);
+    }
+    Some(Value::Object(out))
+}
+
+/// A geocentric CRS (`GEOCCS`): Cartesian X, Y, Z axes on the datum's ellipsoid.
+fn geocentric(node: &Node) -> Option<Value> {
+    let datum = node.child("DATUM")?;
+    let frame = reference_frame(datum, datum.child("SPHEROID")?, node.child("PRIMEM"))?;
+    let linear = unit_value(node.child("UNIT")?, false)?;
+    let axis = |name: &str, abbreviation: &str, direction: &str| {
+        json!({
+            "name": name,
+            "abbreviation": abbreviation,
+            "direction": direction,
+            "unit": linear,
+        })
+    };
+    let mut out = Map::new();
+    out.insert("$schema".into(), Value::from(SCHEMA));
+    out.insert("type".into(), Value::from("GeodeticCRS"));
+    out.insert("name".into(), Value::from(node.text(0)?));
+    out.insert("datum".into(), frame);
+    out.insert(
+        "coordinate_system".into(),
+        json!({
+            "subtype": "Cartesian",
+            "axis": [
+                axis("Geocentric X", "X", "geocentricX"),
+                axis("Geocentric Y", "Y", "geocentricY"),
+                axis("Geocentric Z", "Z", "geocentricZ"),
+            ],
+        }),
+    );
+    if let Some(id) = node.id() {
+        out.insert("id".into(), id);
+    }
+    Some(Value::Object(out))
+}
+
+/// A vertical CRS (`VERT_CS`). The `EXTENSION` grids some entries carry are PROJ.4 hints, not
+/// part of the EPSG definition, and are left out.
+fn vertical(node: &Node) -> Option<Value> {
+    let datum = node.child("VERT_DATUM")?;
+    let linear = unit_value(node.child("UNIT")?, false)?;
+    let down = node
+        .child("AXIS")
+        .and_then(|a| a.text(1))
+        .is_some_and(|d| d.eq_ignore_ascii_case("down"));
+    let (name, abbreviation, direction) = if down {
+        ("Depth", "D", "down")
+    } else {
+        ("Gravity-related height", "H", "up")
+    };
+    let mut frame = Map::new();
+    frame.insert("type".into(), Value::from("VerticalReferenceFrame"));
+    frame.insert("name".into(), Value::from(datum.text(0)?));
+    if let Some(id) = datum.id() {
+        frame.insert("id".into(), id);
+    }
+    let mut out = Map::new();
+    out.insert("type".into(), Value::from("VerticalCRS"));
+    out.insert("name".into(), Value::from(node.text(0)?));
+    out.insert("datum".into(), Value::Object(frame));
+    out.insert(
+        "coordinate_system".into(),
+        json!({
+            "subtype": "vertical",
+            "axis": [{
+                "name": name,
+                "abbreviation": abbreviation,
+                "direction": direction,
+                "unit": linear,
+            }],
+        }),
+    );
+    if let Some(id) = node.id() {
+        out.insert("id".into(), id);
+    }
+    Some(Value::Object(out))
+}
+
+/// A compound CRS (`COMPD_CS`): a geographic or projected CRS plus a vertical one. Datum
+/// shifts (`TOWGS84`) are dropped from the components, as they are everywhere else here.
+fn compound(node: &Node) -> Option<Value> {
+    let mut components = Vec::new();
+    for arg in &node.args {
+        let Arg::Node(part) = arg else { continue };
+        components.push(match part.keyword.as_str() {
+            "GEOGCS" => geographic(part, false)?,
+            "PROJCS" => projected(part, false)?,
+            "VERT_CS" => vertical(part)?,
+            "AUTHORITY" => continue,
+            _ => return None,
+        });
+    }
+    if components.len() != 2 {
+        return None;
+    }
+    let mut out = Map::new();
+    out.insert("$schema".into(), Value::from(SCHEMA));
+    out.insert("type".into(), Value::from("CompoundCRS"));
+    out.insert("name".into(), Value::from(node.text(0)?));
+    out.insert("components".into(), Value::Array(components));
     if let Some(id) = node.id() {
         out.insert("id".into(), id);
     }
@@ -460,6 +586,62 @@ const HOTINE_B: &[Param] = &[
     ),
 ];
 
+const LABORDE: &[Param] = &[
+    (
+        &["latitude_of_center"],
+        "Latitude of projection centre",
+        8811,
+        Kind::Angle,
+    ),
+    (
+        &["longitude_of_center"],
+        "Longitude of projection centre",
+        8812,
+        Kind::Angle,
+    ),
+    (
+        &["azimuth"],
+        "Azimuth at projection centre",
+        8813,
+        Kind::Angle,
+    ),
+    (
+        &["scale_factor"],
+        "Scale factor at projection centre",
+        8815,
+        Kind::Scale,
+    ),
+    FALSE_EASTING,
+    FALSE_NORTHING,
+];
+
+const TUNISIA_MINING_GRID: &[Param] = &[
+    (
+        &["latitude_of_origin"],
+        "Latitude of false origin",
+        8821,
+        Kind::Angle,
+    ),
+    (
+        &["central_meridian"],
+        "Longitude of false origin",
+        8822,
+        Kind::Angle,
+    ),
+    (
+        &["false_easting"],
+        "Easting at false origin",
+        8826,
+        Kind::Linear,
+    ),
+    (
+        &["false_northing"],
+        "Northing at false origin",
+        8827,
+        Kind::Linear,
+    ),
+];
+
 const KROVAK: &[Param] = &[
     (
         &["latitude_of_center"],
@@ -516,6 +698,11 @@ fn method(
             ("Hotine Oblique Mercator (variant B)", 9815, HOTINE_B)
         }
         "Oblique_Stereographic" => ("Oblique Stereographic", 9809, NATURAL_ORIGIN),
+        "Lambert_Conformal_Conic_2SP_Belgium" => {
+            ("Lambert Conic Conformal (2SP Belgium)", 9803, FALSE_ORIGIN)
+        }
+        "Laborde_Oblique_Mercator" => ("Laborde Oblique Mercator", 9813, LABORDE),
+        "Tunisia_Mining_Grid" => ("Tunisia Mining Grid", 9816, TUNISIA_MINING_GRID),
         "Lambert_Azimuthal_Equal_Area" => (
             "Lambert Azimuthal Equal Area",
             9820,
@@ -569,6 +756,10 @@ fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
             if name == "scale_factor" && value == 1.0 {
                 continue;
             }
+            // The Laborde grid angle is not an EPSG parameter of that method (PROJ drops it).
+            if projection == "Laborde_Oblique_Mercator" && name == "rectified_grid_angle" {
+                continue;
+            }
             return None;
         };
         let unit = match kind {
@@ -614,34 +805,43 @@ fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
     }))
 }
 
-/// Translates an OGC WKT1 `PROJCS`/`GEOGCS` into a complete PROJJSON object, or `None` when it
-/// uses a projection or parameter outside the supported set.
+fn projected(node: &Node, with_schema: bool) -> Option<Value> {
+    let base_node = node.child("GEOGCS")?;
+    let base = geographic(base_node, false)?;
+    let linear = unit_value(node.child("UNIT")?, false)?;
+    let mut out = Map::new();
+    if with_schema {
+        out.insert("$schema".into(), Value::from(SCHEMA));
+    }
+    out.insert("type".into(), Value::from("ProjectedCRS"));
+    out.insert("name".into(), Value::from(node.text(0)?));
+    out.insert("base_crs".into(), base);
+    out.insert("conversion".into(), conversion(node, base_node, &linear)?);
+    out.insert(
+        "coordinate_system".into(),
+        json!({
+            "subtype": "Cartesian",
+            "axis": axes(node, &linear, [("Easting", "east"), ("Northing", "north")]),
+        }),
+    );
+    if let Some(id) = node.id() {
+        out.insert("id".into(), id);
+    }
+    Some(Value::Object(out))
+}
+
+/// Translates an OGC WKT definition from the table (`GEOGCS`, `PROJCS`, `GEOCCS`, `COMPD_CS`,
+/// `GEOGCRS`, `BOUNDCRS`) into a complete PROJJSON object, or `None` when it uses a projection
+/// or parameter outside the supported set.
 pub(crate) fn wkt1_to_projjson(wkt: &str) -> Option<Value> {
     let node = parse(wkt.trim())?;
     match node.keyword.as_str() {
         "GEOGCS" => geographic(&node, true),
-        "PROJCS" => {
-            let base_node = node.child("GEOGCS")?;
-            let base = geographic(base_node, false)?;
-            let linear = unit_value(node.child("UNIT")?, false)?;
-            let mut out = Map::new();
-            out.insert("$schema".into(), Value::from(SCHEMA));
-            out.insert("type".into(), Value::from("ProjectedCRS"));
-            out.insert("name".into(), Value::from(node.text(0)?));
-            out.insert("base_crs".into(), base);
-            out.insert("conversion".into(), conversion(&node, base_node, &linear)?);
-            out.insert(
-                "coordinate_system".into(),
-                json!({
-                    "subtype": "Cartesian",
-                    "axis": axes(&node, &linear, [("Easting", "east"), ("Northing", "north")]),
-                }),
-            );
-            if let Some(id) = node.id() {
-                out.insert("id".into(), id);
-            }
-            Some(Value::Object(out))
-        }
+        "PROJCS" => projected(&node, true),
+        "GEOCCS" => geocentric(&node),
+        "COMPD_CS" => compound(&node),
+        "GEOGCRS" => crate::wkt2_projjson::geographic(&node, true),
+        "BOUNDCRS" => crate::wkt2_projjson::bound(&node),
         _ => None,
     }
 }
