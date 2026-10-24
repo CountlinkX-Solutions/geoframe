@@ -153,6 +153,12 @@ destination and rename it over `path` on success; a failure never removes an exi
 CRS labels that differ only by case, or `OGC:CRS84` against `EPSG:4326`, are compatible for
 binary operations, joins, overlay and `concat`.
 
+`to_crs` / `set_crs` take any EPSG geographic, geocentric, projected or compound CRS (the
+`crs-definitions` table plus a 51 KB supplementary table generated from the PROJ database), or a
+PROJJSON or WKT (WKT1, WKT2) definition without a code, as `pyproj.CRS.from_user_input` does.
+A definition is converted for the common projection methods; any other method is an error that
+names it. See [CRS definitions and codes outside the table](docs/parity.md#crs-definitions-and-codes-outside-the-table).
+
 Shapefile and zip input/output:
 
 - Zip archives (zipped Shapefiles): a member may decompress to at most 2 GiB (`MAX_ZIP_MEMBER_BYTES`); larger members are an error.
@@ -222,3 +228,7 @@ GEOFRAME_POSTGIS_URL=postgres://postgres:geoframe@127.0.0.1:55432/postgres mix t
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+The EPSG definitions and datum operations GeoFrame embeds come from the EPSG Geodetic Parameter
+Dataset (IOGP), through the `crs-definitions` crate and tables generated from the PROJ database;
+see [NOTICE](NOTICE) for the attribution and the EPSG terms of use.
