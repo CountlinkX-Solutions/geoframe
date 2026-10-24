@@ -10,7 +10,40 @@ use geoframe_core::{
     OffsetJoin, OffsetParams, Origin, ParquetOptions, PrecisionMode, Predicate, QueryPredicate,
     SetOp, TableRead, UnaryOp, VectorRead, VertexKind, VertexParts,
 };
-use rustler::{Binary, Env, OwnedBinary, ResourceArc};
+use rustler::{Binary, Encoder, Env, OwnedBinary, ResourceArc, Term};
+
+rustler::atoms! {
+    nan,
+    infinity,
+    neg_infinity,
+}
+
+/// A float result that may be non-finite. `enif_make_double` cannot encode NaN or infinity
+/// (the call raises `badarg`), so those cross as the atoms Explorer's `f64` series accepts
+/// and returns: `:nan`, `:infinity` and `:neg_infinity`.
+pub struct Real(f64);
+
+impl Encoder for Real {
+    fn encode<'a>(&self, env: Env<'a>) -> Term<'a> {
+        if self.0.is_nan() {
+            nan().encode(env)
+        } else if self.0 == f64::INFINITY {
+            infinity().encode(env)
+        } else if self.0 == f64::NEG_INFINITY {
+            neg_infinity().encode(env)
+        } else {
+            self.0.encode(env)
+        }
+    }
+}
+
+fn reals(values: Vec<Option<f64>>) -> Vec<Option<Real>> {
+    values.into_iter().map(|v| v.map(Real)).collect()
+}
+
+fn reals_result(values: Result<Vec<Option<f64>>, String>) -> Result<Vec<Option<Real>>, String> {
+    values.map(reals)
+}
 
 /// Resource handle for a GeoArrow geometry column living in Rust memory.
 pub struct GeoColumnResource(GeoColumn);
@@ -99,23 +132,23 @@ fn take(column: Handle, indices: Vec<usize>) -> Result<Handle, String> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn area(column: Handle) -> Vec<Option<f64>> {
-    column.0.area()
+fn area(column: Handle) -> Vec<Option<Real>> {
+    reals(column.0.area())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn length(column: Handle) -> Vec<Option<f64>> {
-    column.0.length()
+fn length(column: Handle) -> Vec<Option<Real>> {
+    reals(column.0.length())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn area_geodesic(column: Handle) -> Result<Vec<Option<f64>>, String> {
-    column.0.area_geodesic()
+fn area_geodesic(column: Handle) -> Result<Vec<Option<Real>>, String> {
+    reals_result(column.0.area_geodesic())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn length_geodesic(column: Handle) -> Result<Vec<Option<f64>>, String> {
-    column.0.length_geodesic()
+fn length_geodesic(column: Handle) -> Result<Vec<Option<Real>>, String> {
+    reals_result(column.0.length_geodesic())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -123,8 +156,8 @@ fn distance_geodesic(
     left: Handle,
     right: Handle,
     haversine: bool,
-) -> Result<Vec<Option<f64>>, String> {
-    left.0.distance_geodesic(&right.0, haversine)
+) -> Result<Vec<Option<Real>>, String> {
+    reals_result(left.0.distance_geodesic(&right.0, haversine))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -133,18 +166,21 @@ fn validity(column: Handle) -> Vec<Option<bool>> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn bounds(column: Handle) -> Vec<Option<(f64, f64, f64, f64)>> {
+fn bounds(column: Handle) -> Vec<Option<(Real, Real, Real, Real)>> {
     column
         .0
         .bounds()
         .into_iter()
-        .map(|b| b.map(|[a, b, c, d]| (a, b, c, d)))
+        .map(|b| b.map(|[a, b, c, d]| (Real(a), Real(b), Real(c), Real(d))))
         .collect()
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn total_bounds(column: Handle) -> Option<(f64, f64, f64, f64)> {
-    column.0.total_bounds().map(|[a, b, c, d]| (a, b, c, d))
+fn total_bounds(column: Handle) -> Option<(Real, Real, Real, Real)> {
+    column
+        .0
+        .total_bounds()
+        .map(|[a, b, c, d]| (Real(a), Real(b), Real(c), Real(d)))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -160,8 +196,8 @@ fn predicate(left: Handle, right: Handle, name: String) -> Result<Vec<Option<boo
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn distance(left: Handle, right: Handle) -> Result<Vec<Option<f64>>, String> {
-    left.0.distance(&right.0)
+fn distance(left: Handle, right: Handle) -> Result<Vec<Option<Real>>, String> {
+    reals_result(left.0.distance(&right.0))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -346,13 +382,13 @@ fn rotate(
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn x(column: Handle) -> Vec<Option<f64>> {
-    column.0.x()
+fn x(column: Handle) -> Vec<Option<Real>> {
+    reals(column.0.x())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn y(column: Handle) -> Vec<Option<f64>> {
-    column.0.y()
+fn y(column: Handle) -> Vec<Option<Real>> {
+    reals(column.0.y())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -366,13 +402,13 @@ fn has_m(column: Handle) -> Vec<bool> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn get_z(column: Handle) -> Vec<Option<f64>> {
-    column.0.z()
+fn get_z(column: Handle) -> Vec<Option<Real>> {
+    reals(column.0.z())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn get_m(column: Handle) -> Vec<Option<f64>> {
-    column.0.m()
+fn get_m(column: Handle) -> Vec<Option<Real>> {
+    reals(column.0.m())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -919,8 +955,8 @@ fn interpolate(
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn project(left: Handle, right: Handle, normalized: bool) -> Result<Vec<Option<f64>>, String> {
-    left.0.project(&right.0, normalized)
+fn project(left: Handle, right: Handle, normalized: bool) -> Result<Vec<Option<Real>>, String> {
+    reals_result(left.0.project(&right.0, normalized))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -953,8 +989,8 @@ fn hausdorff_distance(
     left: Handle,
     right: Handle,
     densify: Option<f64>,
-) -> Result<Vec<Option<f64>>, String> {
-    left.0.hausdorff_distance(&right.0, densify)
+) -> Result<Vec<Option<Real>>, String> {
+    reals_result(left.0.hausdorff_distance(&right.0, densify))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -962,8 +998,8 @@ fn frechet_distance(
     left: Handle,
     right: Handle,
     densify: Option<f64>,
-) -> Result<Vec<Option<f64>>, String> {
-    left.0.frechet_distance(&right.0, densify)
+) -> Result<Vec<Option<Real>>, String> {
+    reals_result(left.0.frechet_distance(&right.0, densify))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -994,8 +1030,8 @@ fn minimum_bounding_circle(column: Handle) -> Result<Handle, String> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn minimum_bounding_radius(column: Handle) -> Vec<Option<f64>> {
-    column.0.minimum_bounding_radius()
+fn minimum_bounding_radius(column: Handle) -> Vec<Option<Real>> {
+    reals(column.0.minimum_bounding_radius())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -1133,8 +1169,8 @@ fn shared_paths(left: Handle, right: Handle) -> Result<Handle, String> {
 
 /// Per row: the clearance, `f64::MAX` when none exists (the Elixir side maps it to infinity).
 #[rustler::nif(schedule = "DirtyCpu")]
-fn minimum_clearance(column: Handle) -> Vec<Option<f64>> {
-    column.0.minimum_clearance()
+fn minimum_clearance(column: Handle) -> Vec<Option<Real>> {
+    reals(column.0.minimum_clearance())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]

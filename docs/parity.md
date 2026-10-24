@@ -34,6 +34,11 @@ are listed in `test/reference/known_deviations.exs` and the suite asserts that e
 - **Null and empty inputs.** GeoFrame returns `nil` where GeoPandas returns `False`, `0`, `NaN` or an empty
   geometry (`area`, predicates, `centroid`, `envelope`, `bounds`, ...); `count_geometries` of an empty atomic
   geometry is 0 (Shapely: 1). `POINT EMPTY` cannot be stored in `geo` types.
+- **Non-finite results.** A measure that overflows or is undefined (`area`, `length`, `distance`, `hausdorff_distance`,
+  `frechet_distance`, `project`, `bounds`, `total_bounds`, `x`, `y`, `z`, `m`, geodesic and minimum-bounding measures)
+  is `:infinity`, `:neg_infinity` or `:nan` in the Explorer `f64` series, as GeoPandas gives `inf`/`nan` (issue #60);
+  the NIF used to raise `ArgumentError` there. Overflow inside a distance gives `:infinity` as GEOS does. GeoFrame
+  can differ where GEOS overflows an intermediate (a 1e200 square: `length` is finite here, `inf` in GEOS).
 - **Invalid input.** Predicates and `relate` on a self-intersecting bowtie polygon follow geo's relate and differ
   from GEOS in a few pairs. Valid inputs agree in every case.
 - **Zero-area polygons and degenerate lines.** `is_valid` accepts a polygon whose ring is collinear (GEOS: invalid)
