@@ -144,5 +144,67 @@ defmodule GeoFrame.TestingTest do
       assert_raise ExUnit.AssertionError, fn -> assert_geodataframe_equal(a, b) end
       assert_geodataframe_equal(a, b, check_less_precise: true)
     end
+
+    # Secondary geometry columns (issue #93): GeoPandas compares every geometry column.
+    defp with_extra(wkt, opts \\ []),
+      do:
+        GeoDataFrame.put_geometry(
+          gdf([1, 2], ["POINT (1 1)", "POINT (2 2)"]),
+          "extra",
+          s(wkt, opts)
+        )
+
+    test "secondary geometry columns are compared" do
+      same = ["POINT (10 10)", "POINT (20 20)"]
+      assert assert_geodataframe_equal(with_extra(same), with_extra(same)) == :ok
+
+      error =
+        assert_raise ExUnit.AssertionError, fn ->
+          assert_geodataframe_equal(
+            with_extra(same),
+            with_extra(["POINT (10 10)", "POINT (21 21)"])
+          )
+        end
+
+      assert error.message =~ ~s(geometry column "extra")
+      assert error.message =~ "row 1"
+    end
+
+    test "secondary geometry column CRS, names and order are compared" do
+      same = ["POINT (10 10)", "POINT (20 20)"]
+
+      assert_raise ExUnit.AssertionError, ~r/geometry column "extra".*CRS/s, fn ->
+        assert_geodataframe_equal(with_extra(same, crs: "EPSG:3857"), with_extra(same))
+      end
+
+      assert_geodataframe_equal(with_extra(same, crs: "EPSG:3857"), with_extra(same),
+        check_crs: false
+      )
+
+      renamed = GeoDataFrame.rename(with_extra(same), %{"extra" => "other"})
+
+      assert_raise ExUnit.AssertionError, ~r/columns/, fn ->
+        assert_geodataframe_equal(with_extra(same), renamed)
+      end
+
+      two = GeoDataFrame.put_geometry(with_extra(same), "second", s(same))
+      swapped = GeoDataFrame.rename(two, %{"extra" => "second", "second" => "extra"})
+      assert_raise ExUnit.AssertionError, fn -> assert_geodataframe_equal(two, swapped) end
+    end
+
+    test "a missing secondary column is a column difference" do
+      same = ["POINT (10 10)", "POINT (20 20)"]
+
+      assert_raise ExUnit.AssertionError, ~r/columns/, fn ->
+        assert_geodataframe_equal(with_extra(same), gdf([1, 2], ["POINT (1 1)", "POINT (2 2)"]))
+      end
+    end
+
+    test "check_less_precise applies to secondary columns" do
+      a = with_extra(["POINT (10 10)", "POINT (20 20)"])
+      b = with_extra(["POINT (10.0000001 10)", "POINT (20 20)"])
+      assert_raise ExUnit.AssertionError, fn -> assert_geodataframe_equal(a, b) end
+      assert_geodataframe_equal(a, b, check_less_precise: true)
+    end
   end
 end
