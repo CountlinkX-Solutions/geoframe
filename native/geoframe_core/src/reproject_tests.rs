@@ -245,30 +245,168 @@ fn estimate_utm_crs_picks_zone_and_hemisphere() {
         Some("EPSG:4326"),
     )
     .unwrap();
-    assert_eq!(miami.estimate_utm_crs().unwrap(), "EPSG:32617");
+    assert_eq!(miami.estimate_utm_crs(None).unwrap(), "EPSG:32617");
     assert_eq!(
-        pt(151.2, -33.87, "EPSG:4326").estimate_utm_crs().unwrap(),
+        pt(151.2, -33.87, "EPSG:4326")
+            .estimate_utm_crs(None)
+            .unwrap(),
         "EPSG:32756"
     );
     // A projected source is converted to lon/lat first.
     let merc = miami.to_crs("EPSG:3857").unwrap();
-    assert_eq!(merc.estimate_utm_crs().unwrap(), "EPSG:32617");
-    // Zones stay in 1..=60; longitude 180 wraps to -180, which is zone 1.
+    assert_eq!(merc.estimate_utm_crs(None).unwrap(), "EPSG:32617");
+    // Longitude 180 is the edge of zone 60 (pyproj answers 32660; the old wrap gave zone 1).
     assert_eq!(
-        pt(179.9, 10.0, "EPSG:4326").estimate_utm_crs().unwrap(),
+        pt(179.9, 10.0, "EPSG:4326").estimate_utm_crs(None).unwrap(),
         "EPSG:32660"
     );
     assert_eq!(
-        pt(180.0, 10.0, "EPSG:4326").estimate_utm_crs().unwrap(),
-        "EPSG:32601"
+        pt(180.0, 10.0, "EPSG:4326").estimate_utm_crs(None).unwrap(),
+        "EPSG:32660"
     );
-    assert!(pt(0.0, 85.0, "EPSG:4326").estimate_utm_crs().is_err());
+    assert!(pt(0.0, 85.0, "EPSG:4326").estimate_utm_crs(None).is_err());
     assert!(GeoColumn::from_wkt(&[Some("POINT (1 1)")], None)
         .unwrap()
-        .estimate_utm_crs()
+        .estimate_utm_crs(None)
         .is_err());
     assert!(GeoColumn::from_wkt(&[None::<&str>], Some("EPSG:4326"))
         .unwrap()
-        .estimate_utm_crs()
+        .estimate_utm_crs(None)
         .is_err());
+}
+
+fn utm_of(crs: &str, bx: [f64; 4], datum: Option<&str>) -> Result<String, String> {
+    let rows = [
+        Some(format!("POINT ({:?} {:?})", bx[0], bx[1])),
+        Some(format!("POINT ({:?} {:?})", bx[2], bx[3])),
+    ];
+    GeoColumn::from_wkt(&rows, Some(crs))
+        .unwrap()
+        .estimate_utm_crs(datum)
+}
+
+#[test]
+fn estimate_utm_crs_ignores_the_norway_and_svalbard_exceptions_like_pyproj() {
+    // The MGRS-style exceptions (32V widened to 3-12 E, Svalbard zones 32/34/36 dropped) are
+    // not in the EPSG database that `pyproj.database.query_utm_crs_info` reads, so GeoPandas
+    // returns the plain 6-degree band; so must we.
+    for (lon, lat, want) in [
+        (5.0, 60.0, "EPSG:32631"),
+        (10.0, 60.0, "EPSG:32632"),
+        (2.0, 60.0, "EPSG:32631"),
+        (5.0, 78.0, "EPSG:32631"),
+        (15.0, 78.0, "EPSG:32633"),
+        (25.0, 78.0, "EPSG:32635"),
+        (35.0, 78.0, "EPSG:32636"),
+        (45.0, 78.0, "EPSG:32638"),
+    ] {
+        assert_eq!(
+            utm_of("EPSG:4326", [lon, lat, lon, lat], None).unwrap(),
+            want,
+            "{lon} {lat}"
+        );
+    }
+}
+
+#[test]
+fn estimate_utm_crs_zone_edges_pick_the_lowest_code_like_pyproj() {
+    // A point on a zone edge lies in both zones' area of use; pyproj lists them by code and
+    // GeoPandas takes the first. The equator is in the northern and southern CRS.
+    let utm = |lon: f64, lat: f64| utm_of("EPSG:4326", [lon, lat, lon, lat], None);
+    assert_eq!(utm(6.0, 10.0).unwrap(), "EPSG:32631");
+    assert_eq!(utm(0.0, 0.0).unwrap(), "EPSG:32630");
+    assert_eq!(utm(180.0, 10.0).unwrap(), "EPSG:32660");
+    assert_eq!(utm(-180.0, 10.0).unwrap(), "EPSG:32601");
+    // 84 N and 80 S belong to a CRS, anything beyond does not.
+    assert_eq!(utm(0.0, 84.0).unwrap(), "EPSG:32630");
+    assert_eq!(utm(0.0, -80.0).unwrap(), "EPSG:32730");
+    assert!(utm(0.0, 84.1).unwrap_err().contains("UTM"));
+    assert!(utm(0.0, -80.5).unwrap_err().contains("UTM"));
+}
+
+#[test]
+fn estimate_utm_crs_datum_name_selects_the_utm_family() {
+    let at = |datum: &str| utm_of("EPSG:4326", [-100.0, 40.0, -100.0, 40.0], Some(datum));
+    assert_eq!(at("WGS 84").unwrap(), "EPSG:32614");
+    assert_eq!(at("WGS84").unwrap(), "EPSG:32614", "spaces do not matter");
+    assert_eq!(at("NAD83").unwrap(), "EPSG:26914");
+    assert_eq!(at("NAD27").unwrap(), "EPSG:26714");
+    // A datum without a UTM CRS over the point, or an unknown one, is an error like
+    // GeoPandas' "Unable to determine UTM CRS".
+    let err = at("ETRS89").unwrap_err();
+    assert!(err.contains("ETRS89"), "{err}");
+    assert!(at("nad83").is_err(), "the match is case sensitive");
+    assert!(at("NoSuchDatum").is_err());
+}
+
+#[test]
+fn estimate_utm_crs_converts_the_bounds_not_the_centre_for_projected_sources() {
+    // Web Mercator: the centre of the converted box differs from the converted centre.
+    let wide = [-2.0e7, -1.0e6, 2.0e7, 1.0e6];
+    assert_eq!(utm_of("EPSG:3857", wide, None).unwrap(), "EPSG:32630");
+    // A box crossing the antimeridian in a projected CRS (PDC Mercator, lon_0 = 150) is centred
+    // on 180 (bounds 176.95 .. -176.76), not on 0.
+    assert_eq!(
+        utm_of("EPSG:3832", [3.0e6, 0.0, 3.7e6, 1.0e6], None).unwrap(),
+        "EPSG:32601"
+    );
+    assert_eq!(
+        utm_of("EPSG:3832", [-1.0e6, 0.0, 1.0e6, 1.0e6], None).unwrap(),
+        "EPSG:32655"
+    );
+    // Polar stereographic boxes holding the pole span every longitude: centre 0.
+    assert_eq!(
+        utm_of("EPSG:3413", [-3.0e6, -3.0e6, 3.0e6, 3.0e6], None).unwrap(),
+        "EPSG:32630"
+    );
+    assert_eq!(
+        utm_of("EPSG:3031", [-2.0e6, -2.0e6, 2.0e6, 2.0e6], None).unwrap(),
+        "EPSG:32730"
+    );
+}
+
+#[test]
+fn estimate_utm_crs_matches_geopandas_on_the_fixture_grid() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test/reference/fixtures/crs_datum/utm_estimate.json"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let cases = doc["cases"].as_array().unwrap();
+    assert!(cases.len() > 2000, "{}", cases.len());
+    let mut wrong = Vec::new();
+    for case in cases {
+        let crs = case[0].as_str().unwrap();
+        let datum = case[1].as_str();
+        let b: Vec<f64> = case[2]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let got = utm_of(crs, [b[0], b[1], b[2], b[3]], datum).ok();
+        let want = case[3].as_str().map(str::to_string);
+        if got != want {
+            wrong.push(format!("{crs} {datum:?} {b:?}: got {got:?}, want {want:?}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {} cases differ, first: {:#?}",
+        wrong.len(),
+        cases.len(),
+        &wrong[..wrong.len().min(10)]
+    );
+}
+
+#[test]
+fn estimate_utm_crs_accepts_a_nad27_source() {
+    // The CRS used to fail to build without a datum grid; GeoPandas answers 32615 / 26915.
+    let bx = [-100.0, 40.0, -90.0, 45.0];
+    assert_eq!(utm_of("EPSG:4267", bx, None).unwrap(), "EPSG:32615");
+    assert_eq!(
+        utm_of("EPSG:4267", bx, Some("NAD83")).unwrap(),
+        "EPSG:26915"
+    );
 }

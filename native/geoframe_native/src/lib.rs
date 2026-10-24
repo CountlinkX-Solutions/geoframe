@@ -381,9 +381,35 @@ fn to_crs(column: Handle, target: String) -> Result<Handle, String> {
     column.0.to_crs(&target).map(wrap)
 }
 
+/// `[{file_name, path | nil}]`: the grid files that may shift the datum of `crs`.
+#[rustler::nif]
+fn grid_status(crs: String) -> Result<Vec<(String, Option<String>)>, String> {
+    geoframe_core::grid_status(&crs)
+}
+
+#[rustler::nif]
+fn set_grid_dirs(dirs: Vec<String>) {
+    geoframe_core::set_grid_dirs(dirs)
+}
+
+#[rustler::nif]
+fn grid_dirs() -> Vec<String> {
+    geoframe_core::grid_dirs()
+}
+
+#[rustler::nif]
+fn register_grids(crs: String, names: Vec<String>) -> Result<u32, String> {
+    geoframe_core::register_grids_for(&crs, names)
+}
+
+#[rustler::nif]
+fn unregister_grids(crs: String) -> Result<u32, String> {
+    geoframe_core::unregister_grids_for(&crs)
+}
+
 #[rustler::nif(schedule = "DirtyCpu")]
-fn estimate_utm_crs(column: Handle) -> Result<String, String> {
-    column.0.estimate_utm_crs()
+fn estimate_utm_crs(column: Handle, datum_name: Option<String>) -> Result<String, String> {
+    column.0.estimate_utm_crs(datum_name.as_deref())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]

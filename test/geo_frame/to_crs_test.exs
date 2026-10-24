@@ -131,7 +131,7 @@ defmodule GeoFrame.ToCrsTest do
     end
   end
 
-  describe "estimate_utm_crs/1" do
+  describe "estimate_utm_crs/2" do
     test "Miami is UTM 17N and Sydney is UTM 56S" do
       assert GeoSeries.estimate_utm_crs(s(["POINT (-80.3 25.6)", "POINT (-80.1 25.9)"])) ==
                "EPSG:32617"
