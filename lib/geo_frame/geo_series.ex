@@ -441,6 +441,21 @@ defmodule GeoFrame.GeoSeries do
     ref |> Native.take_u32(indices) |> wrap() |> unwrap!()
   end
 
+  @doc """
+  Like `take/2` for a list of positions in which `nil` selects a null geometry (with the CRS
+  of the series). Used where rows may have no partner: joins and `dissolve`.
+  """
+  @spec take_nullable(t(), [non_neg_integer() | nil]) :: t()
+  def take_nullable(%__MODULE__{} = series, indices) when is_list(indices) do
+    if nil in indices do
+      rows = size(series)
+      null = from_wkt!([nil], crs: crs(series))
+      [series, null] |> concat() |> take(Enum.map(indices, &(&1 || rows)))
+    else
+      take(series, indices)
+    end
+  end
+
   # -- measures -------------------------------------------------------------------------
 
   @geodesic_note """

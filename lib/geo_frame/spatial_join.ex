@@ -18,11 +18,20 @@ defmodule GeoFrame.SpatialJoin do
       position in the right frame, a nullable `s64`), then right attributes (never the right
       geometry). For `how: :right` it is `index_left`, left attributes, right attributes.
       An attribute name present on both sides becomes `name_left` / `name_right`
-      (`:lsuffix`, `:rsuffix`). The geometry is always the last column, whichever side it
+      (`:lsuffix`, `:rsuffix`), and the index column is `index_<rsuffix>` (`index_<lsuffix>`
+      for a right join), as in GeoPandas. The geometry is always the last column, whichever side it
       comes from (GeoPandas puts the right geometry in the middle of a right join; a
       `GeoFrame.GeoDataFrame` keeps its geometry last).
     * Row order: `:inner` and `:left` by left row then right row; `:right` by right row then
       left row.
+
+  ## Secondary geometry columns
+
+  The secondary geometry columns of both frames (`GeoFrame.GeoDataFrame.put_geometry/3`) are
+  attributes of the result, like the other geometry-dtype columns of a GeoPandas frame: each
+  keeps its own CRS, a name present on both sides gets the suffixes, and rows without a
+  partner hold a null geometry. They follow the active geometry (left columns first), whereas
+  GeoPandas leaves each at its original column position.
 
   ## Nulls on the unmatched side
 
@@ -155,13 +164,23 @@ defmodule GeoFrame.SpatialJoin do
         _ -> {GeoSeries.take(left.geometry, left_bin), left.geometry_column}
       end
 
-    index_name = if how == :right, do: "index_left", else: "index_right"
+    index_name = "index_" <> if(how == :right, do: lsuffix, else: rsuffix)
     index_values = if how == :right, do: left_rows, else: right_rows
     index = {index_name, nullable_index(index_values)}
 
     left_part = gather(left.data, left_rows)
     right_part = gather(right.data, right_rows)
-    {left_names, right_names} = suffixed(left_part, right_part, lsuffix, rsuffix)
+    left_geometries = gather_geometries(left.secondary_geometries, left_rows)
+    right_geometries = gather_geometries(right.secondary_geometries, right_rows)
+
+    # Secondary geometry columns are ordinary columns for the suffixes, as in GeoPandas.
+    {left_names, right_names} =
+      suffixed(
+        DataFrame.names(left_part) ++ Enum.map(left_geometries, &elem(&1, 0)),
+        DataFrame.names(right_part) ++ Enum.map(right_geometries, &elem(&1, 0)),
+        lsuffix,
+        rsuffix
+      )
 
     # GeoPandas order: left attributes then `index_right`, or `index_left` then the left
     # attributes for a right join; geometry stays last (GeoDataFrame invariant).
@@ -171,8 +190,20 @@ defmodule GeoFrame.SpatialJoin do
         else: columns(left_part, left_names) ++ [index] ++ columns(right_part, right_names)
       ) ++ distance_column(distance_col, distance_bin, index_values)
 
-    check_unique!(Enum.map(columns, &elem(&1, 0)), geometry_column, index_name)
-    GeoDataFrame.new(DataFrame.new(columns), geometry, geometry_column: geometry_column)
+    secondary =
+      renamed_geometries(left_geometries, left_names) ++
+        renamed_geometries(right_geometries, right_names)
+
+    check_unique!(
+      Enum.map(columns, &elem(&1, 0)),
+      [geometry_column | Enum.map(secondary, &elem(&1, 0))],
+      index_name
+    )
+
+    %{
+      GeoDataFrame.new(DataFrame.new(columns), geometry, geometry_column: geometry_column)
+      | secondary_geometries: secondary
+    }
   end
 
   defp unwrap!({:ok, value}), do: value
@@ -236,11 +267,9 @@ defmodule GeoFrame.SpatialJoin do
     Series.from_list([nil], dtype: data |> DataFrame.pull(name) |> Series.dtype())
   end
 
-  # Renames only the attribute names present on both sides.
+  # Renames only the names present on both sides; returns `{old, new}` pairs per side.
   @doc false
-  def suffixed(left, right, lsuffix, rsuffix) do
-    left_names = DataFrame.names(left)
-    right_names = DataFrame.names(right)
+  def suffixed(left_names, right_names, lsuffix, rsuffix) do
     shared = MapSet.new(left_names) |> MapSet.intersection(MapSet.new(right_names))
 
     rename = fn names, suffix ->
@@ -254,11 +283,36 @@ defmodule GeoFrame.SpatialJoin do
 
   @doc false
   def columns(data, names) do
-    for {old, new} <- names, do: {new, DataFrame.pull(data, old)}
+    for {old, new} <- names,
+        Enum.member?(DataFrame.names(data), old),
+        do: {new, DataFrame.pull(data, old)}
   end
 
-  defp check_unique!(names, geometry_column, index_name) do
-    all = names ++ [geometry_column]
+  # The secondary geometry columns of a side, gathered like the attributes: `rows` is a list
+  # (`nil` marks a row to fill with a null geometry) or a u32 series (`@no_row`). Returns a
+  # keyword-like list of `{name, series}`.
+  @doc false
+  def gather_geometries([], _rows), do: []
+
+  def gather_geometries(secondary, rows) do
+    positions =
+      if is_list(rows),
+        do: rows,
+        else: rows |> Series.to_list() |> Enum.map(&if(&1 == @no_row, do: nil, else: &1))
+
+    Enum.map(secondary, fn {name, series} ->
+      {name, GeoSeries.take_nullable(series, positions)}
+    end)
+  end
+
+  # Applies the `{old, new}` renames of `suffixed/4` to gathered geometry columns.
+  @doc false
+  def renamed_geometries(geometries, names) do
+    for {old, series} <- geometries, do: {names |> List.keyfind(old, 0) |> elem(1), series}
+  end
+
+  defp check_unique!(names, geometry_columns, index_name) do
+    all = names ++ geometry_columns
 
     case all -- Enum.uniq(all) do
       [] ->

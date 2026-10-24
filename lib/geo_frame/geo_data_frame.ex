@@ -16,9 +16,10 @@ defmodule GeoFrame.GeoDataFrame do
   `geometry_columns/1` lists them (active first). Row operations (`take/2`, `filter_with/2`,
   `sort_with/2`, `join/3`, `concat_rows/1`, `explode/2`, ...) keep every geometry column
   aligned; `to_crs/2` and `set_crs/2` act on the active one, as in GeoPandas. GeoParquet reads
-  and writes all of them (`GeoFrame.read_parquet/2`, `GeoFrame.write_parquet/3`). Operations
-  that build a new frame from a computation (`clip/3`, `overlay/3`, `sjoin/3`,
-  `sjoin_nearest/3`, `dissolve/2`) keep the active geometry only. The other formats write the
+  and writes all of them (`GeoFrame.read_parquet/2`, `GeoFrame.write_parquet/3`). `clip/3`, `overlay/3`, `sjoin/3`,
+  `sjoin_nearest/3` and `dissolve/2` carry them like GeoPandas (other geometry columns are
+  ordinary columns there): kept with their rows and CRS, suffixed on a name clash, null for
+  rows without a partner, aggregated by `dissolve/2` with `:first`, `:last` or `:count`. The other formats write the
   active geometry only.
 
   ## Row alignment
@@ -599,8 +600,8 @@ defmodule GeoFrame.GeoDataFrame do
     %{
       left
       | data: attributes,
-        geometry: take_nullable(geometry, indices, rows),
-        secondary_geometries: take_secondary(left, &take_nullable(&1, indices, rows))
+        geometry: GeoSeries.take_nullable(geometry, indices),
+        secondary_geometries: take_secondary(left, &GeoSeries.take_nullable(&1, indices))
     }
   end
 
@@ -618,16 +619,6 @@ defmodule GeoFrame.GeoDataFrame do
 
     if bad = Enum.find(names, &(to_string(&1) in geo)) do
       raise ArgumentError, "cannot join on the geometry column #{inspect(to_string(bad))}"
-    end
-  end
-
-  # `nil` positions (rows without a left match) get a null geometry, appended as a sentinel.
-  defp take_nullable(geometry, indices, rows) do
-    if nil in indices do
-      null = GeoSeries.from_wkt!([nil], crs: GeoSeries.crs(geometry))
-      [geometry, null] |> GeoSeries.concat() |> GeoSeries.take(Enum.map(indices, &(&1 || rows)))
-    else
-      GeoSeries.take(geometry, indices)
     end
   end
 

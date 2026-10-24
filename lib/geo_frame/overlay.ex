@@ -44,7 +44,8 @@ defmodule GeoFrame.Overlay do
 
   Rows are first filtered with the R-tree (`intersects`), then intersected with the mask
   (points are returned as they are). Rows that end up empty are dropped. A `GeoSeries` gives a
-  `GeoSeries`, a frame gives a frame with the attributes of the surviving rows.
+  `GeoSeries`, a frame gives a frame with the attributes of the surviving rows; its secondary
+  geometry columns follow their rows unclipped (only the active geometry is clipped).
 
   Options:
 
@@ -69,8 +70,9 @@ defmodule GeoFrame.Overlay do
 
   def clip(%GeoDataFrame{geometry: geometry} = gdf, mask, opts) do
     {positions, clipped} = clip_rows(geometry, mask, opts)
-    data = if names?(gdf.data), do: DataFrame.slice(gdf.data, positions), else: gdf.data
-    GeoDataFrame.new(data, clipped, geometry_column: gdf.geometry_column)
+    # Only the active geometry is clipped; the other geometry columns are attributes that
+    # follow their rows, as in GeoPandas.
+    %{GeoDataFrame.take(gdf, positions) | geometry: clipped}
   end
 
   def clip(%GeoSeries{} = series, mask, opts) do
@@ -250,6 +252,10 @@ defmodule GeoFrame.Overlay do
 
   ## Result columns and row order
 
+  Secondary geometry columns (`GeoFrame.GeoDataFrame.put_geometry/3`) of both frames are
+  columns like the attributes: `_1` / `_2` on a name clash, null for the missing side, their
+  own CRS kept (for `:difference` only `df1`'s remain). They come after the active geometry.
+
     * `:intersection`, `:union`, `:identity`, `:symmetric_difference`: the attributes of `df1`,
       then those of `df2`, then the geometry. A name present in both gets `_1` / `_2`.
     * `:difference`: only the attributes of `df1` (names unchanged).
@@ -386,8 +392,7 @@ defmodule GeoFrame.Overlay do
 
   defp repair(gdf, true, true) do
     {kept, geometry, _dropped} = extract(GeoSeries.make_valid(gdf.geometry), :polygon)
-    data = if names?(gdf.data), do: DataFrame.slice(gdf.data, kept), else: gdf.data
-    GeoDataFrame.new(data, geometry, geometry_column: gdf.geometry_column)
+    %{GeoDataFrame.take(gdf, kept) | geometry: geometry}
   end
 
   # -- pairs ----------------------------------------------------------------------------------
@@ -529,19 +534,34 @@ defmodule GeoFrame.Overlay do
   # -- helpers ----------------------------------------------------------------------------------
 
   defp assemble(:difference, df1, _df2, {rows, _none, geometry}) do
-    data = if names?(df1.data), do: DataFrame.slice(df1.data, rows), else: df1.data
-    GeoDataFrame.new(data, geometry, geometry_column: df1.geometry_column)
+    %{GeoDataFrame.take(df1, rows) | geometry: geometry}
   end
 
   defp assemble(_how, df1, df2, {left, right, geometry}) do
     left_part = SpatialJoin.gather(df1.data, left)
     right_part = SpatialJoin.gather(df2.data, right)
-    {left_names, right_names} = SpatialJoin.suffixed(left_part, right_part, "1", "2")
+    left_geometries = SpatialJoin.gather_geometries(df1.secondary_geometries, left)
+    right_geometries = SpatialJoin.gather_geometries(df2.secondary_geometries, right)
+
+    {left_names, right_names} =
+      SpatialJoin.suffixed(
+        DataFrame.names(left_part) ++ Enum.map(left_geometries, &elem(&1, 0)),
+        DataFrame.names(right_part) ++ Enum.map(right_geometries, &elem(&1, 0)),
+        "1",
+        "2"
+      )
 
     columns =
       SpatialJoin.columns(left_part, left_names) ++ SpatialJoin.columns(right_part, right_names)
 
-    GeoDataFrame.new(DataFrame.new(columns), geometry, geometry_column: df1.geometry_column)
+    secondary =
+      SpatialJoin.renamed_geometries(left_geometries, left_names) ++
+        SpatialJoin.renamed_geometries(right_geometries, right_names)
+
+    %{
+      GeoDataFrame.new(DataFrame.new(columns), geometry, geometry_column: df1.geometry_column)
+      | secondary_geometries: secondary
+    }
   end
 
   defp check_crs!(a, b) when is_nil(a) or is_nil(b), do: :ok
@@ -553,8 +573,6 @@ defmodule GeoFrame.Overlay do
       raise ArgumentError, "CRS mismatch between the inputs: #{inspect(a)} and #{inspect(b)}"
     end
   end
-
-  defp names?(data), do: DataFrame.names(data) != []
 
   defp types(series), do: series |> GeoSeries.geom_type() |> Explorer.Series.to_list()
 

@@ -136,7 +136,7 @@ defmodule GeoFrame.SjoinNearestTest do
       out = GeoFrame.sjoin_nearest(pts, pts, exclusive: true, lsuffix: "a", rsuffix: "b")
       assert col(out, "id_a") == [1, 2, 3]
       assert col(out, "id_b") == [2, 1, 2]
-      assert col(out, "index_right") == [1, 0, 1]
+      assert col(out, "index_b") == [1, 0, 1]
     end
 
     test "right join: nearest left per right row, geometry from the right", ctx do
