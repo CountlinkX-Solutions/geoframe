@@ -32,6 +32,8 @@ defmodule GeoFrame.MixProject do
 
   defp deps do
     [
+      # Hex has no rustler 0.39 yet; the crate is 0.39 (native/geoframe_native/Cargo.toml).
+      # "~> 0.38" admits 0.39 once published, so only the lock needs bumping then.
       {:rustler, "~> 0.38", runtime: false},
       {:explorer, "~> 0.13"},
       {:jason, "~> 1.4"},
