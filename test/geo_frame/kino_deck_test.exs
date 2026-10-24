@@ -128,11 +128,34 @@ defmodule GeoFrame.Kino.DeckTest do
       assert c1 != c2
     end
 
-    test "a radius column is scaled to a pixel range" do
+    test "a radius column is scaled to a pixel range by area" do
       frame = gdf(["POINT (0 0)", "POINT (1 1)", "POINT (2 2)"], n: [1, 2, 3])
       sizes = frame |> Deck.payload(radius: :n) |> buffer("points.sizes") |> f32s()
 
-      assert sizes == [2.0, 11.0, 20.0]
+      # Circle area, not radius, follows the value: the middle value sits at sqrt(0.5).
+      assert [2.0, middle, 20.0] = sizes
+      assert_in_delta middle, 2.0 + 18.0 * :math.sqrt(0.5), 1.0e-4
+    end
+
+    test "a skewed radius column keeps small values distinguishable from the minimum" do
+      frame = gdf(["POINT (0 0)", "POINT (1 1)", "POINT (2 2)"], n: [0, 1_000_000, 100_000_000])
+      [low, mid, high] = frame |> Deck.payload(radius: :n) |> buffer("points.sizes") |> f32s()
+
+      assert low == 2.0
+      assert high == 20.0
+      assert mid > 3.5
+    end
+
+    test "a width column is scaled linearly to a pixel range" do
+      frame =
+        gdf(["LINESTRING (0 0, 1 1)", "LINESTRING (1 1, 2 2)", "LINESTRING (2 2, 3 3)"],
+          n: [1, 2, 3]
+        )
+
+      sizes = frame |> Deck.payload(width: :n) |> buffer("lines.sizes") |> f32s()
+
+      # One value per vertex: every line has two.
+      assert sizes == [1.0, 1.0, 4.5, 4.5, 8.0, 8.0]
     end
 
     test "polygon and line colors are gathered per vertex through the row index" do
