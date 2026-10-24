@@ -33,24 +33,29 @@ end
 
 ## World countries
 
-Read the 110m countries file and color each country by population with the viridis ramp. Hover
-for the name, population and GDP.
+Read the 110m countries file and color each country by population with the viridis ramp. A
+handful of countries hold most of the people, so the ramp runs over the base-10 logarithm of the
+population; otherwise China and India are yellow and everything else is the same dark purple.
+Hover for the name, population and GDP.
 
 ```elixir
 countries =
   fetch.("ne_110m_admin_0_countries.geojson")
   |> GeoFrame.read_file!()
   |> GeoFrame.GeoDataFrame.select(["NAME", "ADM0_A3", "CONTINENT", "POP_EST", "GDP_MD"])
+  |> GeoFrame.GeoDataFrame.mutate_with(fn df ->
+    [LOG_POP: Explorer.Series.log(df["POP_EST"], 10)]
+  end)
 
 GeoFrame.Kino.deck(countries,
-  color: {"POP_EST", :viridis},
+  color: {"LOG_POP", :viridis},
   opacity: 0.8,
   tooltip: ["NAME", "POP_EST", "GDP_MD"]
 )
 ```
 
 Population alone mostly maps country size. Project to an equal-area CRS (EPSG:6933), compute the
-area in km² and color by people per km² instead; the widget reprojects back to longitude and
+area in km² and color by the logarithm of the people per km² instead; the widget reprojects back to longitude and
 latitude by itself.
 
 ```elixir
@@ -62,16 +67,21 @@ density =
     GeoFrame.GeoDataFrame.put(gdf, "AREA_KM2", area_km2)
   end)
   |> GeoFrame.GeoDataFrame.mutate_with(fn df ->
-    [DENSITY: Explorer.Series.divide(df["POP_EST"], df["AREA_KM2"])]
+    density = Explorer.Series.divide(df["POP_EST"], df["AREA_KM2"])
+    [DENSITY: density, LOG_DENSITY: Explorer.Series.log(density, 10)]
   end)
 
-GeoFrame.Kino.deck(density, color: {"DENSITY", :viridis}, tooltip: ["NAME", "POP_EST", "DENSITY"])
+GeoFrame.Kino.deck(density,
+  color: {"LOG_DENSITY", :viridis},
+  tooltip: ["NAME", "POP_EST", "DENSITY"]
+)
 ```
 
 ## Cities
 
-The 10m populated places as points: radius by the largest population estimate, a fixed orange
-color, and cities above one million people only. Hover for name, country and population.
+The 10m populated places as points, cities above one million people only. The circle *area*
+follows the largest population estimate (`:radius` takes a numeric column and scales it to 2-20
+px), and the color follows its logarithm. Hover for name, country and population.
 
 ```elixir
 cities =
@@ -79,10 +89,15 @@ cities =
   |> GeoFrame.read_file!()
   |> GeoFrame.GeoDataFrame.select(["name", "adm0name", "pop_max", "megacity"])
 
-big_cities = GeoFrame.GeoDataFrame.filter_with(cities, &Explorer.Series.greater(&1["pop_max"], 1_000_000))
+big_cities =
+  cities
+  |> GeoFrame.GeoDataFrame.filter_with(&Explorer.Series.greater(&1["pop_max"], 1_000_000))
+  |> GeoFrame.GeoDataFrame.mutate_with(fn df ->
+    [LOG_POP: Explorer.Series.log(df["pop_max"], 10)]
+  end)
 
 GeoFrame.Kino.deck(big_cities,
-  color: {230, 100, 30},
+  color: {"LOG_POP", :viridis},
   radius: "pop_max",
   opacity: 0.7,
   tooltip: ["name", "adm0name", "pop_max"]
@@ -92,7 +107,8 @@ GeoFrame.Kino.deck(big_cities,
 ## Rivers
 
 The 50m river centerlines are lines. Color them by the Natural Earth `scalerank` (smaller is a
-more important river); `:width` also accepts a numeric column.
+more important river, so purple rivers are the major ones) and draw them 2 px wide; `:width`
+also accepts a numeric column, scaled to 1-8 px.
 
 ```elixir
 rivers = fetch.("ne_50m_rivers_lake_centerlines.geojson") |> GeoFrame.read_file!()
@@ -104,7 +120,7 @@ GeoFrame.Kino.deck(rivers, color: {"scalerank", :viridis}, width: 2, tooltip: ["
 
 A spatial join answers "which country is each city in?". Keep the country name and code, join
 every city to the country polygon that contains it, then count the cities per country and
-color the countries by that count.
+color the countries by the logarithm of that count; countries without a city stay gray.
 
 ```elixir
 alias Explorer.DataFrame, as: DF
@@ -119,12 +135,15 @@ counts =
   |> DF.group_by("ADM0_A3")
   |> DF.summarise_with(&[N_CITIES: Explorer.Series.count(&1["name"])])
 
-by_country = GeoFrame.GeoDataFrame.join(countries, counts, on: "ADM0_A3", how: :left)
+by_country =
+  countries
+  |> GeoFrame.GeoDataFrame.join(counts, on: "ADM0_A3", how: :left)
+  |> GeoFrame.GeoDataFrame.mutate_with(fn df ->
+    [LOG_CITIES: Explorer.Series.log(df["N_CITIES"], 10)]
+  end)
 
-GeoFrame.Kino.deck(by_country, color: {"N_CITIES", :viridis}, tooltip: ["NAME", "N_CITIES"])
+GeoFrame.Kino.deck(by_country, color: {"LOG_CITIES", :viridis}, tooltip: ["NAME", "N_CITIES"])
 ```
-
-
 
 ## Smart Cells
 
