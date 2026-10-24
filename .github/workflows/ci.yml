@@ -95,7 +95,7 @@ jobs:
           # Mix.install fetches Explorer's precompiled NIF with :httpc, which fails on
           # GitHub's long redirect headers (header_too_long). Prefetch it into the
           # rustler_precompiled cache with curl; the checksum is still verified.
-          version=$(grep -o '"explorer": {:hex, :explorer, "[0-9.]*"' mix.lock | grep -o '[0-9][0-9.]*$')
+          version=$(sed -n 's/.*"explorer": {:hex, :explorer, "\([0-9.]*\)".*/\1/p' mix.lock)
           nif="libexplorer-v${version}-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz"
           cache="$HOME/.cache/rustler_precompiled/precompiled_nifs"
           mkdir -p "$cache"
