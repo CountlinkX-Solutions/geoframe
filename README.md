@@ -171,6 +171,10 @@ For large inputs use `GeoFrame.Kino.deck/2`: it sends binary buffers to deck.gl 
 so a million features stay interactive, with hover tooltips and colour or size by column
 (see [`notebooks/deck.livemd`](notebooks/deck.livemd)).
 
+[`notebooks/tour.livemd`](notebooks/tour.livemd) is a longer tour on one story (Europe): every file format,
+reprojection, buffers, spatial joins, overlay, dissolve, simplification, distance measures and the
+coverage tools, each ending in a table or a deck.gl map.
+
 Two Smart Cells are registered when the `:geoframe` application starts with Kino present. Add
 them from the **Smart** menu of a Livebook section:
 
