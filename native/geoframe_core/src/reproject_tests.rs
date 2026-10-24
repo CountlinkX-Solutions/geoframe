@@ -228,7 +228,8 @@ fn errors_are_clear() {
     assert!(col.to_crs("FOO:3857").unwrap_err().contains("FOO"));
 
     let no_id = pt(1.0, 1.0, r#"{"type":"GeographicCRS","name":"custom"}"#);
-    assert!(no_id.to_crs("EPSG:3857").unwrap_err().contains("PROJJSON"));
+    let err = no_id.to_crs("EPSG:3857").unwrap_err();
+    assert!(err.contains("PROJJSON") && err.contains("datum"), "{err}");
 }
 
 #[test]

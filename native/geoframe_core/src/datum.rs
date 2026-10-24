@@ -235,11 +235,32 @@ pub(crate) fn build(
     Ok((Proj::from_proj_string(&helmert)?, None))
 }
 
-/// The Helmert operations PROJ can pick from for the geographic CRS `code`, each as the
-/// projection `proj` with that operation's `+towgs84`, in the order they are tried, with the area
-/// of use (`[west, south, east, north]` degrees) they apply to, ending with the ballpark (no
-/// shift) PROJ uses where none applies. Empty when the CRS has none.
-pub(crate) fn area_variants(proj: &str, code: Option<u32>) -> Vec<([f64; 4], Proj)> {
+/// One operation by area of use: the projection of the CRS with the operation's datum shift
+/// (or, for a geographic offset, with none), and the offset when the operation is one.
+pub(crate) struct AreaOp {
+    /// `[west, south, east, north]` in degrees (west > east across the antimeridian).
+    pub(crate) area: [f64; 4],
+    pub(crate) proj: Proj,
+    pub(crate) offset: Option<Offset>,
+}
+
+/// A `geogoffset` operation, which `proj4rs` has no datum parameter for: the geographic
+/// coordinates on the ellipsoid of the CRS (`geo`, Greenwich-based) are moved by `dlat`/`dlon`
+/// (radians) and then read as the geographic CRS `post` (WGS 84, or GRS80 with a translation).
+pub(crate) struct Offset {
+    pub(crate) dlat: f64,
+    pub(crate) dlon: f64,
+    pub(crate) geo: Proj,
+    pub(crate) post: Proj,
+}
+
+const ARC_SECOND: f64 = std::f64::consts::PI / 648_000.0;
+
+/// The operations PROJ can pick from for the geographic CRS `code`, each as the projection `proj`
+/// with that operation's `+towgs84` (or offset), in the order they are tried, with the area of
+/// use they apply to, ending with the ballpark (no shift) PROJ uses where none applies. Empty
+/// when the CRS has none.
+pub(crate) fn area_variants(proj: &str, code: Option<u32>) -> Vec<AreaOp> {
     let Some(code) = code else {
         return Vec::new();
     };
@@ -255,17 +276,56 @@ pub(crate) fn area_variants(proj: &str, code: Option<u32>) -> Vec<([f64; 4], Pro
             None => t.to_string(),
         })
         .collect();
+    // The ellipsoid alone (no prime meridian): geographic coordinates counted from Greenwich.
+    let ellipsoid: Vec<&str> = base
+        .iter()
+        .map(String::as_str)
+        .filter(|t| {
+            ["+ellps=", "+a=", "+rf=", "+b=", "+f=", "+R=", "+es="]
+                .iter()
+                .any(|k| t.starts_with(k))
+        })
+        .collect();
+    let geo = format!("+proj=longlat {} +no_defs", ellipsoid.join(" "));
     // Where no operation applies PROJ falls back to its ballpark transformation, which keeps the
     // coordinates as they are: a projection with no datum shift at all.
     let ballpark = Proj::from_proj_string(&base.join(" "))
         .ok()
-        .map(|proj| ([-180.0, -90.0, 180.0, 90.0], proj));
+        .map(|proj| AreaOp {
+            area: [-180.0, -90.0, 180.0, 90.0],
+            proj,
+            offset: None,
+        });
     HELMERT_LISTS[DATUM_HELMERT[i].1 as usize]
         .iter()
-        .filter_map(|(area, p)| {
-            let set: Vec<String> = p.iter().map(|v| v.to_string()).collect();
-            let text = format!("{} +towgs84={}", base.join(" "), set.join(","));
-            Proj::from_proj_string(&text).ok().map(|proj| (*area, proj))
+        .filter_map(|(area, p, kind)| {
+            if *kind == 0 {
+                let set: Vec<String> = p.iter().map(|v| v.to_string()).collect();
+                let text = format!("{} +towgs84={}", base.join(" "), set.join(","));
+                return Proj::from_proj_string(&text).ok().map(|proj| AreaOp {
+                    area: *area,
+                    proj,
+                    offset: None,
+                });
+            }
+            let post = if *kind == 1 {
+                "+proj=longlat +datum=WGS84 +no_defs".to_string()
+            } else {
+                format!(
+                    "+proj=longlat +ellps=GRS80 +towgs84={},{},{} +no_defs",
+                    p[2], p[3], p[4]
+                )
+            };
+            Some(AreaOp {
+                area: *area,
+                proj: Proj::from_proj_string(&base.join(" ")).ok()?,
+                offset: Some(Offset {
+                    dlat: p[0] * ARC_SECOND,
+                    dlon: p[1] * ARC_SECOND,
+                    geo: Proj::from_proj_string(&geo).ok()?,
+                    post: Proj::from_proj_string(&post).ok()?,
+                }),
+            })
         })
         .chain(ballpark)
         .collect()
