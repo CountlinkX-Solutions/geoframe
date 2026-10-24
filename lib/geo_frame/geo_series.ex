@@ -426,11 +426,19 @@ defmodule GeoFrame.GeoSeries do
   @doc """
   Selects rows by zero-based position; repeats and reordering are allowed.
 
+  `indices` is a list, or a binary of native-endian unsigned 32-bit integers (what
+  `Explorer.Series.from_binary(binary, {:u, 32})` reads), which avoids building a list when
+  millions of rows are selected.
+
   Raises `ArgumentError` for out-of-bounds indices.
   """
-  @spec take(t(), [non_neg_integer()]) :: t()
+  @spec take(t(), [non_neg_integer()] | binary()) :: t()
   def take(%__MODULE__{ref: ref}, indices) when is_list(indices) do
     ref |> Native.take(indices) |> wrap() |> unwrap!()
+  end
+
+  def take(%__MODULE__{ref: ref}, indices) when is_binary(indices) do
+    ref |> Native.take_u32(indices) |> wrap() |> unwrap!()
   end
 
   # -- measures -------------------------------------------------------------------------
@@ -2274,7 +2282,16 @@ defmodule GeoFrame.GeoSeries do
   @spec sindex_query(t(), t(), atom(), keyword()) :: {[non_neg_integer()], [non_neg_integer()]}
   def sindex_query(left, right, predicate \\ :intersects, opts \\ [])
 
-  def sindex_query(%__MODULE__{ref: left}, %__MODULE__{ref: right}, predicate, opts)
+  def sindex_query(%__MODULE__{} = left, %__MODULE__{} = right, predicate, opts)
+      when is_atom(predicate) and is_list(opts) do
+    {left_rows, right_rows} = sindex_query_binaries(left, right, predicate, opts)
+    {u32_list(left_rows), u32_list(right_rows)}
+  end
+
+  # The pairs as native-endian u32 binaries, the form the joins consume (no list of millions
+  # of integers on the BEAM heap).
+  @doc false
+  def sindex_query_binaries(%__MODULE__{ref: left}, %__MODULE__{ref: right}, predicate, opts)
       when is_atom(predicate) and is_list(opts) do
     GeoFrame.Options.validate!(opts, [:distance])
     distance = opts |> Keyword.get(:distance) |> then(&(&1 && &1 * 1.0))
@@ -2283,6 +2300,8 @@ defmodule GeoFrame.GeoSeries do
     |> Native.sindex_query(right, Atom.to_string(predicate), distance)
     |> unwrap!()
   end
+
+  defp u32_list(binary), do: for(<<row::unsigned-native-32 <- binary>>, do: row)
 
   @doc """
   For each left geometry, the nearest right geometries by planar euclidean distance.
@@ -2307,7 +2326,17 @@ defmodule GeoFrame.GeoSeries do
           {[non_neg_integer()], [non_neg_integer()], [float()]}
   def sindex_nearest(left, right, opts \\ [])
 
-  def sindex_nearest(%__MODULE__{ref: left}, %__MODULE__{ref: right}, opts) when is_list(opts) do
+  def sindex_nearest(%__MODULE__{} = left, %__MODULE__{} = right, opts) when is_list(opts) do
+    {left_rows, right_rows, distances} = sindex_nearest_binaries(left, right, opts)
+
+    {u32_list(left_rows), u32_list(right_rows),
+     distances |> Series.from_binary({:f, 64}) |> Series.to_list()}
+  end
+
+  # The `{left, right, distance}` triples as native-endian binaries (u32, u32, f64).
+  @doc false
+  def sindex_nearest_binaries(%__MODULE__{ref: left}, %__MODULE__{ref: right}, opts)
+      when is_list(opts) do
     GeoFrame.Options.validate!(opts, [:max_distance, :exclusive])
     max_distance = opts |> Keyword.get(:max_distance) |> then(&(&1 && &1 * 1.0))
     exclusive = Keyword.get(opts, :exclusive, false)

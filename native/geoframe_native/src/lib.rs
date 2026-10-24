@@ -6,9 +6,9 @@ use geoframe_core::{
     read_flatgeobuf, read_geojson, read_geojson_str, read_geoparquet_filtered, read_gpkg,
     read_shapefile, shapefile_info, to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson,
     write_geoparquet_multi, write_gpkg, write_shapefile, BufferOptions, FeatherCompression,
-    GeoColumn, GeometryEncoding, GpkgWriteOptions, GridFeature, GridType, LayerInfo, NearestPairs,
-    OffsetJoin, OffsetParams, Origin, ParquetOptions, PrecisionMode, Predicate, QueryPredicate,
-    SetOp, TableRead, UnaryOp, VectorRead, VertexKind, VertexParts,
+    GeoColumn, GeometryEncoding, GpkgWriteOptions, GridFeature, GridType, JoinHow, LayerInfo,
+    NearestPairs, OffsetJoin, OffsetParams, Origin, ParquetOptions, PrecisionMode, Predicate,
+    QueryPredicate, SetOp, TableRead, UnaryOp, VectorRead, VertexKind, VertexParts,
 };
 use rustler::{Binary, Encoder, Env, OwnedBinary, ResourceArc, Term};
 
@@ -134,6 +134,16 @@ fn take(column: Handle, indices: Vec<usize>) -> Result<Handle, String> {
     column.0.take(&indices).map(wrap)
 }
 
+/// `take` with the indices as a native-endian `u32` binary (no list of a million integers).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn take_u32(column: Handle, indices: Binary) -> Result<Handle, String> {
+    let indices: Vec<usize> = u32_values(indices.as_slice())?
+        .into_iter()
+        .map(|i| i as usize)
+        .collect();
+    column.0.take(&indices).map(wrap)
+}
+
 #[rustler::nif(schedule = "DirtyCpu")]
 fn area(column: Handle) -> Vec<Option<Real>> {
     reals(column.0.area())
@@ -209,24 +219,57 @@ fn dwithin(left: Handle, right: Handle, limit: f64) -> Result<Vec<Option<bool>>,
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn sindex_query(
+fn sindex_query<'a>(
+    env: Env<'a>,
     left: Handle,
     right: Handle,
     name: String,
     distance: Option<f64>,
-) -> Result<(Vec<u32>, Vec<u32>), String> {
+) -> Result<(Binary<'a>, Binary<'a>), String> {
     let predicate = QueryPredicate::from_name(&name, distance)?;
-    left.0.query_pairs(&right.0, predicate)
+    let (l, r) = left.0.query_pairs(&right.0, predicate)?;
+    Ok((u32_binary(env, &l), u32_binary(env, &r)))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn sindex_nearest(
+fn sindex_nearest<'a>(
+    env: Env<'a>,
     left: Handle,
     right: Handle,
     max_distance: Option<f64>,
     exclusive: bool,
-) -> Result<NearestPairs, String> {
-    left.0.nearest_pairs(&right.0, max_distance, exclusive)
+) -> Result<(Binary<'a>, Binary<'a>, Binary<'a>), String> {
+    let (l, r, d): NearestPairs = left.0.nearest_pairs(&right.0, max_distance, exclusive)?;
+    Ok((
+        u32_binary(env, &l),
+        u32_binary(env, &r),
+        f64_binary(env, &d),
+    ))
+}
+
+/// Lays out the rows of a spatial join from matched pairs (native-endian `u32` binaries, and
+/// optionally `f64` distances): the sort order of `sjoin` plus the unmatched rows of the
+/// preserved side. Missing partners are `u32::MAX`; their distance is NaN.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn join_rows<'a>(
+    env: Env<'a>,
+    left: Binary,
+    right: Binary,
+    distances: Option<Binary>,
+    how: String,
+    n_left: usize,
+    n_right: usize,
+) -> Result<(Binary<'a>, Binary<'a>, Binary<'a>), String> {
+    let how = JoinHow::from_name(&how).ok_or_else(|| format!("unknown join kind: {how}"))?;
+    let left = u32_values(left.as_slice())?;
+    let right = u32_values(right.as_slice())?;
+    let distances = distances.map(|d| f64_values(d.as_slice())).transpose()?;
+    let rows = geoframe_core::join_rows(&left, &right, distances.as_deref(), how, n_left, n_right)?;
+    Ok((
+        u32_binary(env, &rows.left),
+        u32_binary(env, &rows.right),
+        f64_binary(env, &rows.distances),
+    ))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -694,6 +737,39 @@ fn deck_buffers_nif<'a>(
         .map(|(name, bytes)| (name.to_string(), binary(env, &bytes)))
         .collect();
     (list, skipped)
+}
+
+/// Native-endian `u32` values as a binary (what `Explorer.Series.from_binary(_, {:u, 32})` reads).
+fn u32_binary<'a>(env: Env<'a>, values: &[u32]) -> Binary<'a> {
+    let mut owned = OwnedBinary::new(values.len() * 4);
+    let (slots, _) = owned.as_mut_slice().as_chunks_mut::<4>();
+    for (slot, value) in slots.iter_mut().zip(values) {
+        *slot = value.to_ne_bytes();
+    }
+    Binary::from_owned(owned, env)
+}
+
+fn f64_binary<'a>(env: Env<'a>, values: &[f64]) -> Binary<'a> {
+    let mut owned = OwnedBinary::new(values.len() * 8);
+    let (slots, _) = owned.as_mut_slice().as_chunks_mut::<8>();
+    for (slot, value) in slots.iter_mut().zip(values) {
+        *slot = value.to_ne_bytes();
+    }
+    Binary::from_owned(owned, env)
+}
+
+fn u32_values(bytes: &[u8]) -> Result<Vec<u32>, String> {
+    match bytes.as_chunks::<4>() {
+        (chunks, []) => Ok(chunks.iter().map(|c| u32::from_ne_bytes(*c)).collect()),
+        _ => Err("a u32 binary must be a multiple of 4 bytes".to_string()),
+    }
+}
+
+fn f64_values(bytes: &[u8]) -> Result<Vec<f64>, String> {
+    match bytes.as_chunks::<8>() {
+        (chunks, []) => Ok(chunks.iter().map(|c| f64::from_ne_bytes(*c)).collect()),
+        _ => Err("an f64 binary must be a multiple of 8 bytes".to_string()),
+    }
 }
 
 fn binary<'a>(env: Env<'a>, bytes: &[u8]) -> Binary<'a> {

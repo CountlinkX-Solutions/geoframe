@@ -305,3 +305,123 @@ fn nearest_matches_brute_force_on_a_lattice() {
     }
     close(&nearest(&left, &right, None, false), &expected);
 }
+
+// -- join_rows: the row order of sjoin, computed in Rust (issue #58) ------------------------
+
+mod join_rows {
+    use crate::{join_rows, JoinHow, NO_ROW};
+
+    #[test]
+    fn inner_keeps_the_pairs() {
+        let out = join_rows(&[0, 0, 2], &[1, 2, 2], None, JoinHow::Inner, 3, 3).unwrap();
+        assert_eq!(out.left, vec![0, 0, 2]);
+        assert_eq!(out.right, vec![1, 2, 2]);
+        assert!(out.distances.is_empty());
+    }
+
+    #[test]
+    fn left_inserts_unmatched_left_rows_in_order() {
+        let out = join_rows(&[1, 1, 3], &[0, 2, 1], None, JoinHow::Left, 5, 3).unwrap();
+        assert_eq!(out.left, vec![0, 1, 1, 2, 3, 4]);
+        assert_eq!(out.right, vec![NO_ROW, 0, 2, NO_ROW, 1, NO_ROW]);
+    }
+
+    #[test]
+    fn right_orders_by_right_then_left_and_inserts_unmatched_right_rows() {
+        // Pairs sorted by left; right rows 0 and 3 have no partner.
+        let out = join_rows(&[0, 0, 1, 2], &[2, 1, 2, 1], None, JoinHow::Right, 3, 4).unwrap();
+        assert_eq!(out.right, vec![0, 1, 1, 2, 2, 3]);
+        assert_eq!(out.left, vec![NO_ROW, 0, 2, 0, 1, NO_ROW]);
+    }
+
+    #[test]
+    fn distances_follow_their_pairs_and_unmatched_rows_get_nan() {
+        let d = [1.5, 2.5, 3.5];
+        let out = join_rows(&[1, 1, 3], &[0, 2, 1], Some(&d), JoinHow::Left, 4, 3).unwrap();
+        assert_eq!(out.left, vec![0, 1, 1, 2, 3]);
+        assert_eq!(out.distances[1..3], [1.5, 2.5]);
+        assert_eq!(out.distances[4], 3.5);
+        assert!(out.distances[0].is_nan() && out.distances[3].is_nan());
+
+        let out = join_rows(&[0, 1, 1], &[1, 0, 1], Some(&d), JoinHow::Right, 2, 3).unwrap();
+        // right 0: left 1 (2.5); right 1: left 0 (1.5), left 1 (3.5); right 2: unmatched.
+        assert_eq!(out.right, vec![0, 1, 1, 2]);
+        assert_eq!(out.left, vec![1, 0, 1, NO_ROW]);
+        assert_eq!(out.distances[..3], [2.5, 1.5, 3.5]);
+        assert!(out.distances[3].is_nan());
+    }
+
+    #[test]
+    fn empty_sides() {
+        let out = join_rows(&[], &[], None, JoinHow::Left, 2, 0).unwrap();
+        assert_eq!((out.left, out.right), (vec![0, 1], vec![NO_ROW, NO_ROW]));
+        let out = join_rows(&[], &[], None, JoinHow::Right, 0, 2).unwrap();
+        assert_eq!((out.left, out.right), (vec![NO_ROW, NO_ROW], vec![0, 1]));
+        let out = join_rows(&[], &[], None, JoinHow::Inner, 0, 0).unwrap();
+        assert!(out.left.is_empty());
+    }
+
+    #[test]
+    fn bad_input_is_an_error_not_a_panic() {
+        assert!(join_rows(&[0, 1], &[0], None, JoinHow::Inner, 2, 2).is_err());
+        assert!(join_rows(&[5], &[0], None, JoinHow::Left, 2, 2).is_err());
+        assert!(join_rows(&[0], &[9], None, JoinHow::Right, 2, 2).is_err());
+        assert!(join_rows(&[1, 0], &[0, 0], None, JoinHow::Left, 2, 2).is_err());
+        assert!(join_rows(&[0], &[0], Some(&[1.0, 2.0]), JoinHow::Inner, 1, 1).is_err());
+    }
+
+    #[test]
+    fn matches_a_sort_of_the_triples_on_random_pairs() {
+        let mut state = 12345u64;
+        let mut next = |bound: u32| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % u64::from(bound)) as u32
+        };
+        let (n_left, n_right) = (40u32, 30u32);
+        let mut pairs: Vec<(u32, u32)> = (0..300).map(|_| (next(n_left), next(n_right))).collect();
+        pairs.sort_unstable();
+        pairs.dedup();
+        let (l, r): (Vec<u32>, Vec<u32>) = pairs.iter().copied().unzip();
+        let d: Vec<f64> = pairs.iter().map(|&(a, b)| f64::from(a * 100 + b)).collect();
+
+        for how in [JoinHow::Inner, JoinHow::Left, JoinHow::Right] {
+            let out = join_rows(&l, &r, Some(&d), how, n_left as usize, n_right as usize).unwrap();
+            let mut expected: Vec<(u32, u32)> = pairs.clone();
+            match how {
+                JoinHow::Inner => {}
+                JoinHow::Left => {
+                    for i in 0..n_left {
+                        if !pairs.iter().any(|p| p.0 == i) {
+                            expected.push((i, NO_ROW));
+                        }
+                    }
+                    expected.sort_unstable();
+                }
+                JoinHow::Right => {
+                    for j in 0..n_right {
+                        if !pairs.iter().any(|p| p.1 == j) {
+                            expected.push((NO_ROW, j));
+                        }
+                    }
+                    expected.sort_unstable_by_key(|&(a, b)| (b, a));
+                }
+            }
+            let got: Vec<(u32, u32)> = out
+                .left
+                .iter()
+                .copied()
+                .zip(out.right.iter().copied())
+                .collect();
+            assert_eq!(got, expected, "{how:?}");
+            for (k, &(a, b)) in got.iter().enumerate() {
+                if a == NO_ROW || b == NO_ROW {
+                    assert!(out.distances[k].is_nan());
+                } else {
+                    assert_eq!(out.distances[k], f64::from(a * 100 + b));
+                }
+            }
+        }
+    }
+}
