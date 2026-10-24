@@ -127,7 +127,8 @@ defmodule GeoFrame.Native do
   def read_geojson_text(_text, _crs), do: err()
   def read_parquet(_path, _columns, _bbox), do: err()
 
-  def write_parquet(_ref, _geometry_column, _attributes_ipc, _path, _options), do: err()
+  def write_parquet(_ref, _geometry_column, _attributes_ipc, _path, _options, _secondary),
+    do: err()
 
   def read_feather_file(_path, _columns, _geometry_column), do: err()
 

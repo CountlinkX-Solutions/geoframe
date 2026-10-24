@@ -64,7 +64,7 @@ pub use parity_i::{PrecisionMode, VertexKind, VertexParts};
 pub use parity_j::NO_CLEARANCE;
 pub use parquet_io::{
     geoparquet_metadata, read_geoparquet, read_geoparquet_filtered, write_geoparquet,
-    write_geoparquet_with, GeoParquetRead, ParquetOptions,
+    write_geoparquet_multi, write_geoparquet_with, GeoParquetRead, ParquetOptions,
 };
 pub use polygonize::Polygonized;
 pub use predicates::Predicate;
@@ -112,6 +112,8 @@ mod parity_h_tests;
 mod parity_i_tests;
 #[cfg(test)]
 mod parity_j_tests;
+#[cfg(test)]
+mod parquet_multi_tests;
 #[cfg(test)]
 mod parquet_tests;
 #[cfg(test)]

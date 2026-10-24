@@ -773,5 +773,34 @@ files =
     native: true
   )
 
+# -- Several geometry columns (issue #61) --------------------------------------------------
+
+footprint =
+  GeoSeries.from_wkt!(
+    ["POLYGON ((0 0, 1 0, 1 1, 0 0))", nil, "POLYGON ((5 5, 6 5, 6 6, 5 5))", nil, nil],
+    crs: "EPSG:3857"
+  )
+
+tags = GeoSeries.from_wkt!(for(i <- 1..5, do: "POINT (#{i} #{i})"), crs: nil)
+multi = points |> GeoDataFrame.put_geometry("footprint", footprint) |> GeoDataFrame.put_geometry("tag", tags)
+
+secondary = fn gdf ->
+  for {name, series} <- gdf.secondary_geometries, into: %{} do
+    {name, %{"crs" => GeoSeries.crs(series), "wkt" => GeoSeries.to_wkt(series)}}
+  end
+end
+
+files =
+  for {name, opts, extra} <- [
+        {"multi_wkb.parquet", [], []},
+        {"multi_native.parquet", [geometry_encoding: :geoarrow], [native: true]},
+        {"multi_covering.parquet", [write_covering_bbox: true], [covering: true]}
+      ],
+      reduce: files do
+    acc ->
+      [entry | rest] = write.(acc, name, multi, parquet.(opts), [kind: "parquet"] ++ extra)
+      [Map.put(entry, "secondary", secondary.(multi)) | rest]
+  end
+
 File.write!(Path.join(dir, "expected.json"), Jason.encode!(Enum.reverse(files), pretty: true))
 IO.puts("wrote #{length(files)} files and expected.json to #{dir}")

@@ -35,7 +35,7 @@ Row-changing operations (filter, sort, slice, join) compute row indices once and
 
 | Format | Read | Write | Extensions |
 |--------|------|-------|------------|
-| GeoParquet 1.0/1.1 | `GeoFrame.read_parquet/2` (`bbox:` filter) | `GeoFrame.write_parquet/3` (compression, row groups, native GeoArrow, covering bbox) | `.parquet`, `.geoparquet` |
+| GeoParquet 1.0/1.1 (several geometry columns) | `GeoFrame.read_parquet/2` (`bbox:` filter) | `GeoFrame.write_parquet/3` (compression, row groups, native GeoArrow, covering bbox) | `.parquet`, `.geoparquet` |
 | GeoJSON (RFC 7946) | `GeoFrame.read_geojson/2` | `GeoFrame.write_geojson/3` | `.geojson`, `.json` |
 | FlatGeobuf | `GeoFrame.read_flatgeobuf/2` (optional `bbox:` via the index) | `GeoFrame.write_flatgeobuf/3` | `.fgb` |
 | Feather v2 (Arrow IPC file) | `GeoFrame.read_feather/2` | `GeoFrame.write_feather/3` | `.feather`, `.arrow` |

@@ -135,9 +135,23 @@ def check_frame(file, gdf, entry):
         expected = [e[:19] if isinstance(e, str) and len(e) > 19 and e[10] == "T" else e for e in expected]
         if actual != expected:
             fail(file, f"column {name}: {actual} != {expected}")
-    extra = set(gdf.columns) - set(entry["columns"]) - {"geometry"}
+    secondary = entry.get("secondary", {})
+    extra = set(gdf.columns) - set(entry["columns"]) - {"geometry"} - set(secondary)
     if extra:
         fail(file, f"unexpected columns {sorted(extra)}")
+    # Secondary geometry columns (issue #61) must come back as geometry columns with their CRS.
+    for name, expected in secondary.items():
+        if name not in gdf.columns or str(gdf[name].dtype) != "geometry":
+            fail(file, f"secondary geometry column {name} is not a geometry column in GeoPandas")
+        column = gdf[name]
+        if expected["crs"] is None:
+            if column.crs is not None:
+                fail(file, f"{name}: crs {column.crs!r} != None")
+        elif column.crs is None or not same_crs(column.crs, expected["crs"]):
+            fail(file, f"{name}: crs {column.crs!r} != {expected['crs']!r}")
+        for index, (actual, want) in enumerate(zip(column, expected["wkt"])):
+            if not same_geometry(actual, want):
+                fail(file, f"{name} row {index}: {actual} != {want}")
     if entry.get("zm"):
         check_zm(file, geoms, entry)
 

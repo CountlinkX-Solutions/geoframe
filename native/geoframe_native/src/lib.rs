@@ -5,7 +5,7 @@ use geoframe_core::{
     deck_buffers, from_arrow_ipc, geoparquet_metadata, gpkg_info, gpkg_layers, read_feather,
     read_flatgeobuf, read_geojson, read_geojson_str, read_geoparquet_filtered, read_gpkg,
     read_shapefile, shapefile_info, to_arrow_ipc, write_feather, write_flatgeobuf, write_geojson,
-    write_geoparquet_with, write_gpkg, write_shapefile, BufferOptions, FeatherCompression,
+    write_geoparquet_multi, write_gpkg, write_shapefile, BufferOptions, FeatherCompression,
     GeoColumn, GeometryEncoding, GpkgWriteOptions, GridFeature, GridType, LayerInfo, NearestPairs,
     OffsetJoin, OffsetParams, Origin, ParquetOptions, PrecisionMode, Predicate, QueryPredicate,
     SetOp, TableRead, UnaryOp, VectorRead, VertexKind, VertexParts,
@@ -52,6 +52,9 @@ pub struct GeoColumnResource(GeoColumn);
 impl rustler::Resource for GeoColumnResource {}
 
 type Handle = ResourceArc<GeoColumnResource>;
+
+/// Secondary geometry columns of a table: `{name, column}`.
+type Secondary = Vec<(String, Handle)>;
 
 fn wrap(column: GeoColumn) -> Handle {
     ResourceArc::new(GeoColumnResource(column))
@@ -547,8 +550,9 @@ fn read_geojson_text<'a>(
     read_geojson_str(&text, crs.as_deref()).map(|read| vector_read(env, read))
 }
 
-/// Reads a GeoParquet file. Returns `{geometry, geometry_column, attributes_ipc}` where the
-/// attributes are an Arrow IPC stream (one copy; Explorer has no zero-copy NIF access).
+/// Reads a GeoParquet file. Returns `{geometry, geometry_column, attributes_ipc, secondary}`
+/// where the attributes are an Arrow IPC stream (one copy; Explorer has no zero-copy NIF
+/// access) and `secondary` lists `{name, geometry}` for the other geometry columns.
 /// `bbox` keeps only the rows whose bounding box intersects it.
 #[rustler::nif(schedule = "DirtyIo")]
 fn read_parquet<'a>(
@@ -556,15 +560,21 @@ fn read_parquet<'a>(
     path: String,
     columns: Option<Vec<String>>,
     bbox: Option<(f64, f64, f64, f64)>,
-) -> Result<(Handle, String, Binary<'a>), String> {
+) -> Result<(Handle, String, Binary<'a>, Secondary), String> {
     let bbox = bbox.map(|(a, b, c, d)| [a, b, c, d]);
     let read = read_geoparquet_filtered(&path, columns.as_deref(), bbox)?;
     let ipc = binary(env, &read.attributes_ipc);
-    Ok((wrap(read.geometry), read.geometry_column, ipc))
+    let secondary = read
+        .secondary_geometries
+        .into_iter()
+        .map(|(name, column)| (name, wrap(column)))
+        .collect();
+    Ok((wrap(read.geometry), read.geometry_column, ipc, secondary))
 }
 
 /// `options` is `{compression, compression_level, row_group_size, geometry_encoding,
-/// covering_bbox, schema_version}`.
+/// covering_bbox, schema_version}`; `secondary` lists `{name, geometry}` of the other geometry
+/// columns, written after the primary one.
 #[rustler::nif(schedule = "DirtyIo")]
 fn write_parquet(
     column: Handle,
@@ -572,6 +582,7 @@ fn write_parquet(
     attributes_ipc: Binary,
     path: String,
     options: (String, Option<i32>, Option<usize>, String, bool, String),
+    secondary: Secondary,
 ) -> Result<(), String> {
     let (
         compression,
@@ -589,13 +600,13 @@ fn write_parquet(
         covering_bbox,
         schema_version,
     };
-    write_geoparquet_with(
-        &path,
-        &column.0,
-        &geometry_column,
-        attributes_ipc.as_slice(),
-        &options,
-    )
+    let mut geometries: Vec<(&str, &GeoColumn)> = vec![(geometry_column.as_str(), &column.0)];
+    geometries.extend(
+        secondary
+            .iter()
+            .map(|(name, handle)| (name.as_str(), &handle.0)),
+    );
+    write_geoparquet_multi(&path, &geometries, attributes_ipc.as_slice(), &options)
 }
 
 fn table_read<'a>(env: Env<'a>, read: TableRead) -> (Handle, String, Binary<'a>) {

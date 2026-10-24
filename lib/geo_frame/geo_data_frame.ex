@@ -7,6 +7,20 @@ defmodule GeoFrame.GeoDataFrame do
   is *not* part of the Explorer dataframe; it has a name (`:geometry_column`, default
   `"geometry"`) that is reserved among the attribute names.
 
+  ## Several geometry columns
+
+  Like a GeoPandas frame with more than one `geometry` dtype column, a frame has one *active*
+  geometry (`geometry/1`, the one every spatial operation uses) and any number of *secondary*
+  geometry columns, each a `GeoFrame.GeoSeries` with its own CRS. `put_geometry/3` adds one,
+  `set_geometry/3` makes another column the active one, `pull/2` returns one by name and
+  `geometry_columns/1` lists them (active first). Row operations (`take/2`, `filter_with/2`,
+  `sort_with/2`, `join/3`, `concat_rows/1`, `explode/2`, ...) keep every geometry column
+  aligned; `to_crs/2` and `set_crs/2` act on the active one, as in GeoPandas. GeoParquet reads
+  and writes all of them (`GeoFrame.read_parquet/2`, `GeoFrame.write_parquet/3`). Operations
+  that build a new frame from a computation (`clip/3`, `overlay/3`, `sjoin/3`,
+  `sjoin_nearest/3`, `dissolve/2`) keep the active geometry only. The other formats write the
+  active geometry only.
+
   ## Row alignment
 
   Every operation that changes rows computes the row positions once and applies them to
@@ -35,12 +49,13 @@ defmodule GeoFrame.GeoDataFrame do
   alias GeoFrame.GeoSeries
 
   @enforce_keys [:data, :geometry]
-  defstruct [:data, :geometry, geometry_column: "geometry"]
+  defstruct [:data, :geometry, geometry_column: "geometry", secondary_geometries: []]
 
   @type t :: %__MODULE__{
           data: DataFrame.t(),
           geometry: GeoSeries.t(),
-          geometry_column: String.t()
+          geometry_column: String.t(),
+          secondary_geometries: [{String.t(), GeoSeries.t()}]
         }
 
   @temp_index "__geoframe_row__"
@@ -228,19 +243,119 @@ defmodule GeoFrame.GeoDataFrame do
   @spec geometry(t()) :: GeoSeries.t()
   def geometry(%__MODULE__{geometry: geometry}), do: geometry
 
+  @doc "Names of the geometry columns: the active one first, then the secondary ones."
+  @spec geometry_columns(t()) :: [String.t()]
+  def geometry_columns(%__MODULE__{geometry_column: column, secondary_geometries: secondary}),
+    do: [column | Enum.map(secondary, &elem(&1, 0))]
+
+  @doc """
+  Adds the secondary geometry column `name`, or replaces the one with that name.
+
+  Raises `ArgumentError` when `series` does not have one row per frame row or `name` is an
+  attribute or the active geometry column. A secondary column keeps its own CRS.
+  """
+  @spec put_geometry(t(), String.t() | atom(), GeoSeries.t()) :: t()
+  def put_geometry(%__MODULE__{} = gdf, name, %GeoSeries{} = series) do
+    name = to_string(name)
+    check_geometry_rows!(gdf, series)
+
+    if name == gdf.geometry_column or name in DataFrame.names(gdf.data) do
+      raise ArgumentError,
+            "column #{inspect(name)} already exists and is not a secondary geometry"
+    end
+
+    secondary =
+      if List.keymember?(gdf.secondary_geometries, name, 0),
+        do: List.keyreplace(gdf.secondary_geometries, name, 0, {name, series}),
+        else: gdf.secondary_geometries ++ [{name, series}]
+
+    %{gdf | secondary_geometries: secondary}
+  end
+
+  @doc """
+  Makes another geometry column the active one, like GeoPandas `set_geometry`.
+
+  `column` is the name of a secondary geometry column, or a `GeoFrame.GeoSeries` that becomes
+  a new column named by the `:geometry_column` option (default `"geometry"`, or the active
+  name when that is free). The previous active column stays as a secondary one.
+
+  Options: `:drop` - `true` removes the previous active geometry column (default `false`);
+  `:geometry_column` - the name for a series. Raises `ArgumentError` for a name that is not a
+  geometry column of the frame.
+  """
+  @spec set_geometry(t(), String.t() | atom() | GeoSeries.t(), keyword()) :: t()
+  def set_geometry(gdf, column, opts \\ [])
+
+  def set_geometry(%__MODULE__{} = gdf, %GeoSeries{} = series, opts) do
+    opts = Keyword.validate!(opts, drop: false, geometry_column: nil)
+    name = to_string(opts[:geometry_column] || gdf.geometry_column)
+    check_geometry_rows!(gdf, series)
+
+    if name in DataFrame.names(gdf.data) do
+      raise ArgumentError, "column #{inspect(name)} is an attribute, not a geometry column"
+    end
+
+    secondary = List.keydelete(gdf.secondary_geometries, name, 0)
+    keep_old? = not opts[:drop] and name != gdf.geometry_column
+    old = {gdf.geometry_column, gdf.geometry}
+
+    %{
+      gdf
+      | geometry: series,
+        geometry_column: name,
+        secondary_geometries: if(keep_old?, do: [old | secondary], else: secondary)
+    }
+  end
+
+  def set_geometry(%__MODULE__{} = gdf, column, opts) do
+    opts = Keyword.validate!(opts, drop: false)
+    name = to_string(column)
+
+    cond do
+      name == gdf.geometry_column ->
+        gdf
+
+      List.keymember?(gdf.secondary_geometries, name, 0) ->
+        activate(gdf, name, name, opts[:drop])
+
+      name in DataFrame.names(gdf.data) ->
+        raise ArgumentError, "column #{inspect(name)} is not a geometry column"
+
+      true ->
+        raise ArgumentError, "column #{inspect(name)} not found"
+    end
+  end
+
+  defp check_geometry_rows!(gdf, series) do
+    if GeoSeries.size(series) != n_rows(gdf) do
+      raise ArgumentError,
+            "geometry has #{GeoSeries.size(series)} rows but the frame has #{n_rows(gdf)} rows"
+    end
+  end
+
+  # Moves the secondary column `from` into the active slot under `to`; the old active column
+  # becomes the first secondary one unless `drop?`.
+  defp activate(gdf, from, to, drop?) do
+    {^from, series} = List.keyfind(gdf.secondary_geometries, from, 0)
+    rest = List.keydelete(gdf.secondary_geometries, from, 0)
+    kept = if drop?, do: rest, else: [{gdf.geometry_column, gdf.geometry} | rest]
+    %{gdf | geometry: series, geometry_column: to, secondary_geometries: kept}
+  end
+
   @doc "Number of rows."
   @spec n_rows(t()) :: non_neg_integer()
   def n_rows(%__MODULE__{geometry: geometry}), do: GeoSeries.size(geometry)
 
-  @doc "Attribute column names followed by the geometry column name."
+  @doc "Attribute column names followed by the geometry column names (active first)."
   @spec names(t()) :: [String.t()]
-  def names(%__MODULE__{data: data, geometry_column: column}) do
-    DataFrame.names(data) ++ [column]
+  def names(%__MODULE__{data: data} = gdf) do
+    DataFrame.names(data) ++ geometry_columns(gdf)
   end
 
-  @doc "Number of columns, counting the geometry column."
+  @doc "Number of columns, counting the geometry columns."
   @spec n_columns(t()) :: non_neg_integer()
-  def n_columns(%__MODULE__{data: data}), do: DataFrame.n_columns(data) + 1
+  def n_columns(%__MODULE__{data: data} = gdf),
+    do: DataFrame.n_columns(data) + Kernel.length(geometry_columns(gdf))
 
   @doc "`{rows, columns}`, counting the geometry column."
   @spec shape(t()) :: {non_neg_integer(), non_neg_integer()}
@@ -248,8 +363,8 @@ defmodule GeoFrame.GeoDataFrame do
 
   @doc "Column dtypes by name; the geometry column maps to `:geometry`."
   @spec dtypes(t()) :: %{String.t() => atom() | tuple()}
-  def dtypes(%__MODULE__{data: data, geometry_column: column}) do
-    Map.put(DataFrame.dtypes(data), column, :geometry)
+  def dtypes(%__MODULE__{data: data} = gdf) do
+    Enum.reduce(geometry_columns(gdf), DataFrame.dtypes(data), &Map.put(&2, &1, :geometry))
   end
 
   @doc "The CRS of the geometry, or `nil`."
@@ -287,8 +402,17 @@ defmodule GeoFrame.GeoDataFrame do
   @spec take(t(), [non_neg_integer()]) :: t()
   def take(%__MODULE__{data: data, geometry: geometry} = gdf, indices) when is_list(indices) do
     data = if has_columns?(data), do: DataFrame.slice(data, indices), else: data
-    %{gdf | data: data, geometry: GeoSeries.take(geometry, indices)}
+
+    %{
+      gdf
+      | data: data,
+        geometry: GeoSeries.take(geometry, indices),
+        secondary_geometries: take_secondary(gdf, &GeoSeries.take(&1, indices))
+    }
   end
+
+  defp take_secondary(%__MODULE__{secondary_geometries: secondary}, fun),
+    do: Enum.map(secondary, fn {name, series} -> {name, fun.(series)} end)
 
   @doc "Rows from `offset` for `length` rows, with `Explorer.DataFrame.slice/3` semantics."
   @spec slice(t(), integer(), non_neg_integer()) :: t()
@@ -375,8 +499,8 @@ defmodule GeoFrame.GeoDataFrame do
 
   defp distinct_columns(%__MODULE__{data: data}, ..), do: DataFrame.names(data)
 
-  defp distinct_columns(%__MODULE__{data: data, geometry_column: geo}, columns) do
-    data |> DataFrame.select(without_geometry(columns, geo)) |> DataFrame.names()
+  defp distinct_columns(%__MODULE__{data: data} = gdf, columns) do
+    data |> DataFrame.select(attribute_columns(gdf, columns)) |> DataFrame.names()
   end
 
   @doc """
@@ -449,11 +573,11 @@ defmodule GeoFrame.GeoDataFrame do
   def join(%__MODULE__{} = left, %__MODULE__{data: right}, opts), do: join(left, right, opts)
 
   def join(
-        %__MODULE__{data: data, geometry: geometry, geometry_column: geo} = left,
+        %__MODULE__{data: data, geometry: geometry} = left,
         %DataFrame{} = right,
         opts
       ) do
-    reject_geometry_key!(opts[:on], geo)
+    reject_geometry_key!(opts[:on], geometry_columns(left))
     column = temp_column(DataFrame.names(data) ++ DataFrame.names(right))
     rows = n_rows(left)
     positions = Series.from_list(Enum.to_list(0..(rows - 1)//1), dtype: {:s, 64})
@@ -468,7 +592,13 @@ defmodule GeoFrame.GeoDataFrame do
     attributes = DataFrame.discard(joined, column)
 
     check_free!(attributes, left)
-    %{left | data: attributes, geometry: take_nullable(geometry, indices, rows)}
+
+    %{
+      left
+      | data: attributes,
+        geometry: take_nullable(geometry, indices, rows),
+        secondary_geometries: take_secondary(left, &take_nullable(&1, indices, rows))
+    }
   end
 
   defp reject_geometry_key!(nil, _geo), do: :ok
@@ -483,8 +613,8 @@ defmodule GeoFrame.GeoDataFrame do
       end)
       |> List.flatten()
 
-    if Enum.any?(names, &(to_string(&1) == geo)) do
-      raise ArgumentError, "cannot join on the geometry column #{inspect(geo)}"
+    if bad = Enum.find(names, &(to_string(&1) in geo)) do
+      raise ArgumentError, "cannot join on the geometry column #{inspect(to_string(bad))}"
     end
   end
 
@@ -522,6 +652,7 @@ defmodule GeoFrame.GeoDataFrame do
     end
 
     geometry = frames |> Enum.map(& &1.geometry) |> GeoSeries.concat()
+    secondary = concat_secondary(frames)
 
     data =
       case Enum.filter(frames, &has_columns?(&1.data)) do
@@ -535,7 +666,7 @@ defmodule GeoFrame.GeoDataFrame do
           raise ArgumentError, "cannot concatenate frames with and without attribute columns"
       end
 
-    new(data, geometry, geometry_column: column)
+    %{new(data, geometry, geometry_column: column) | secondary_geometries: secondary}
   end
 
   def concat_rows(other),
@@ -544,6 +675,21 @@ defmodule GeoFrame.GeoDataFrame do
         ArgumentError,
         "concat_rows expects a non-empty list of GeoDataFrames, got: #{inspect(other)}"
       )
+
+  defp concat_secondary([first | _] = frames) do
+    names = Enum.map(first.secondary_geometries, &elem(&1, 0))
+
+    unless Enum.all?(frames, &(Enum.map(&1.secondary_geometries, fn {n, _} -> n end) == names)) do
+      raise ArgumentError,
+            "all frames must have the same geometry columns, got: " <>
+              inspect(Enum.map(frames, &geometry_columns/1))
+    end
+
+    for name <- names do
+      series = frames |> Enum.map(&(&1.secondary_geometries |> List.keyfind(name, 0) |> elem(1)))
+      {name, GeoSeries.concat(series)}
+    end
+  end
 
   @doc """
   Splits multi-part geometries and collections into one row per part, like
@@ -587,7 +733,12 @@ defmodule GeoFrame.GeoDataFrame do
       Enum.map(added, fn {name, values} -> {name, Series.from_list(values, dtype: {:s, 64})} end) ++
         Enum.map(DataFrame.names(taken), &{&1, DataFrame.pull(taken, &1)})
 
-    %{gdf | data: DataFrame.new(columns), geometry: parts}
+    %{
+      gdf
+      | data: DataFrame.new(columns),
+        geometry: parts,
+        secondary_geometries: take_secondary(gdf, &GeoSeries.take(&1, positions))
+    }
   end
 
   @doc "Clips to a mask; see `GeoFrame.Overlay.clip/3`."
@@ -636,31 +787,64 @@ defmodule GeoFrame.GeoDataFrame do
   end
 
   @doc """
-  Selects attribute columns (anything `Explorer.DataFrame.select/2` accepts). The
-  geometry is always kept, and naming it in `columns` is harmless.
+  Selects attribute columns (anything `Explorer.DataFrame.select/2` accepts). The active
+  geometry is always kept, and naming it in `columns` is harmless. A secondary geometry
+  column is kept only when `columns` names it.
   """
   @spec select(t(), term()) :: t()
-  def select(%__MODULE__{data: data, geometry_column: geo} = gdf, columns) do
-    %{gdf | data: DataFrame.select(data, without_geometry(columns, geo))}
+  def select(%__MODULE__{data: data} = gdf, columns) do
+    named = named_columns(columns)
+
+    %{
+      gdf
+      | data: DataFrame.select(data, attribute_columns(gdf, columns)),
+        secondary_geometries:
+          Enum.filter(gdf.secondary_geometries, fn {name, _} -> name in named end)
+    }
   end
 
   @doc """
-  Drops attribute columns (anything `Explorer.DataFrame.discard/2` accepts). The geometry
-  is never discarded, and naming it in `columns` is harmless, like in `select/2`.
+  Drops attribute columns (anything `Explorer.DataFrame.discard/2` accepts), and the
+  secondary geometry columns it names. The active geometry is never discarded, and naming it
+  in `columns` is harmless, like in `select/2`.
   """
   @spec discard(t(), term()) :: t()
-  def discard(%__MODULE__{data: data, geometry_column: geo} = gdf, columns) do
-    %{gdf | data: DataFrame.discard(data, without_geometry(columns, geo))}
+  def discard(%__MODULE__{data: data} = gdf, columns) do
+    named = named_columns(columns)
+
+    %{
+      gdf
+      | data: DataFrame.discard(data, attribute_columns(gdf, columns)),
+        secondary_geometries:
+          Enum.reject(gdf.secondary_geometries, fn {name, _} -> name in named end)
+    }
   end
 
-  # A plain name or list of names loses the geometry's name (the geometry is not an
-  # attribute column); ranges, regexes and the like pass through.
+  # The names in a plain name or list of names; ranges, regexes and the like name nothing.
+  defp named_columns(column) when is_binary(column) or is_atom(column),
+    do: [to_string(column)]
+
+  defp named_columns(columns) when is_list(columns) do
+    if Enum.all?(columns, &(is_binary(&1) or is_atom(&1))),
+      do: Enum.map(columns, &to_string/1),
+      else: []
+  end
+
+  defp named_columns(_other), do: []
+
+  # What goes to Explorer: geometry names are not attribute columns.
+  defp attribute_columns(gdf, columns) do
+    without_geometry(columns, geometry_columns(gdf))
+  end
+
+  # A plain name or list of names loses the geometry names (geometry is not an attribute
+  # column); ranges, regexes and the like pass through.
   defp without_geometry(column, geo) when is_binary(column) or is_atom(column),
     do: without_geometry([column], geo)
 
   defp without_geometry(columns, geo) do
     if is_list(columns) and Enum.all?(columns, &(is_binary(&1) or is_atom(&1))),
-      do: Enum.reject(columns, &(to_string(&1) == geo)),
+      do: Enum.reject(columns, &(to_string(&1) in List.wrap(geo))),
       else: columns
   end
 
@@ -671,8 +855,8 @@ defmodule GeoFrame.GeoDataFrame do
   """
   @spec put(t(), String.t() | atom(), Series.t() | list() | Nx.Tensor.t()) :: t()
   def put(%__MODULE__{data: data} = gdf, name, values) do
-    if to_string(name) == gdf.geometry_column do
-      raise ArgumentError, "column #{inspect(gdf.geometry_column)} is reserved for the geometry"
+    if to_string(name) in geometry_columns(gdf) do
+      raise ArgumentError, "column #{inspect(to_string(name))} is reserved for the geometry"
     end
 
     if has_columns?(data) do
@@ -690,14 +874,18 @@ defmodule GeoFrame.GeoDataFrame do
   end
 
   @doc """
-  An attribute column as a series. The geometry column's name returns the
-  `GeoFrame.GeoSeries` instead.
+  An attribute column as a series. The name of a geometry column (active or secondary)
+  returns its `GeoFrame.GeoSeries` instead.
   """
   @spec pull(t(), String.t() | atom() | integer()) :: Series.t() | GeoSeries.t()
   def pull(%__MODULE__{geometry: geometry, geometry_column: geo} = gdf, column) do
-    if (is_binary(column) or is_atom(column)) and to_string(column) == geo,
-      do: geometry,
-      else: DataFrame.pull(gdf.data, column)
+    name = if is_binary(column) or is_atom(column), do: to_string(column)
+
+    case name && List.keyfind(gdf.secondary_geometries, name, 0) do
+      {^name, series} -> series
+      _ when name == geo -> geometry
+      _ -> DataFrame.pull(gdf.data, column)
+    end
   end
 
   @doc """
@@ -706,15 +894,53 @@ defmodule GeoFrame.GeoDataFrame do
   """
   @spec rename(t(), term()) :: t()
   def rename(%__MODULE__{data: data} = gdf, renames) do
-    check_free!(DataFrame.rename(data, renames), gdf)
+    {geometry_renames, attribute_renames} = split_renames(gdf, renames)
+
+    gdf
+    |> rename_geometries(geometry_renames)
+    |> then(fn renamed -> check_free!(DataFrame.rename(data, attribute_renames), renamed) end)
   end
 
-  defp check_free!(data, %__MODULE__{geometry_column: geo} = gdf) do
-    if geo in DataFrame.names(data) do
-      raise ArgumentError, "column #{inspect(geo)} is reserved for the geometry"
+  # Renames of secondary geometry columns, given as a map or a list of pairs, are applied to
+  # the geometry; everything else goes to Explorer.
+  defp split_renames(gdf, renames) when is_map(renames) or is_list(renames) do
+    pairs = Enum.to_list(renames)
+
+    if Enum.all?(pairs, &match?({_, _}, &1)) do
+      {geometry, attributes} =
+        Enum.split_with(pairs, fn {old, _new} ->
+          List.keymember?(gdf.secondary_geometries, to_string(old), 0)
+        end)
+
+      {Map.new(geometry, fn {old, new} -> {to_string(old), to_string(new)} end),
+       if(is_map(renames), do: Map.new(attributes), else: attributes)}
+    else
+      {%{}, renames}
+    end
+  end
+
+  defp split_renames(_gdf, renames), do: {%{}, renames}
+
+  defp rename_geometries(gdf, renames) when map_size(renames) == 0, do: gdf
+
+  defp rename_geometries(gdf, renames) do
+    secondary =
+      Enum.map(gdf.secondary_geometries, fn {name, s} -> {Map.get(renames, name, name), s} end)
+
+    %{gdf | secondary_geometries: secondary}
+  end
+
+  defp check_free!(data, %__MODULE__{} = gdf) do
+    names = geometry_columns(gdf)
+
+    if Enum.uniq(names) != names do
+      raise ArgumentError, "two geometry columns have the same name: #{inspect(names)}"
     end
 
-    %{gdf | data: data}
+    case Enum.find(names, &(&1 in DataFrame.names(data))) do
+      nil -> %{gdf | data: data}
+      name -> raise ArgumentError, "column #{inspect(name)} is reserved for the geometry"
+    end
   end
 
   # -- spatial measures -----------------------------------------------------------------
@@ -740,26 +966,29 @@ defmodule GeoFrame.GeoDataFrame do
   # -- conversion -----------------------------------------------------------------------
 
   @doc """
-  Converts to an `Explorer.DataFrame` with the geometry as the last column.
+  Converts to an `Explorer.DataFrame` with the geometry columns last (active first).
 
   Options: `:encoding` - `:wkb` (default, binary column) or `:wkt` (string column).
   """
   @spec to_explorer(t(), keyword()) :: DataFrame.t()
-  def to_explorer(
-        %__MODULE__{data: data, geometry: geometry, geometry_column: column},
-        opts \\ []
-      ) do
-    {values, dtype} =
-      case Keyword.get(opts, :encoding, :wkb) do
-        :wkb -> {GeoSeries.to_wkb(geometry), :binary}
-        :wkt -> {GeoSeries.to_wkt(geometry), :string}
-      end
+  def to_explorer(%__MODULE__{data: data, geometry: geometry} = gdf, opts \\ []) do
+    encode = fn geometry ->
+      {values, dtype} =
+        case Keyword.get(opts, :encoding, :wkb) do
+          :wkb -> {GeoSeries.to_wkb(geometry), :binary}
+          :wkt -> {GeoSeries.to_wkt(geometry), :string}
+        end
 
-    series = Series.from_list(values, dtype: dtype)
+      Series.from_list(values, dtype: dtype)
+    end
 
-    if has_columns?(data),
-      do: DataFrame.put(data, column, series),
-      else: DataFrame.new([{column, series}])
+    columns = [{gdf.geometry_column, geometry} | gdf.secondary_geometries]
+
+    Enum.reduce(columns, data, fn {name, series}, acc ->
+      if has_columns?(acc),
+        do: DataFrame.put(acc, name, encode.(series)),
+        else: DataFrame.new([{name, encode.(series)}])
+    end)
   end
 
   @doc false
@@ -836,7 +1065,10 @@ defmodule GeoFrame.GeoDataFrame do
       attributes =
         Enum.map(DataFrame.names(data), &(data |> DataFrame.pull(&1) |> Series.to_list()))
 
-      columns = attributes ++ [GeoSeries.to_wkt(geometry)]
+      secondary =
+        Enum.map(gdf.secondary_geometries, fn {_name, series} -> GeoSeries.to_wkt(series) end)
+
+      columns = attributes ++ [GeoSeries.to_wkt(geometry) | secondary]
       {:columns, %{columns: GeoDataFrame.names(gdf), count: GeoDataFrame.n_rows(gdf)}, columns}
     end
   end
