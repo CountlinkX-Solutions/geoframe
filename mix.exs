@@ -17,7 +17,43 @@ defmodule GeoFrame.MixProject do
       name: "GeoFrame",
       source_url: @source_url,
       package: package(),
-      docs: [main: "readme", extras: ["README.md"]]
+      docs: docs()
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_ref: "main",
+      extras: [
+        "README.md",
+        "docs/parity.md": [title: "GeoPandas parity"],
+        "notebooks/tour.livemd": [title: "Notebook: tour"],
+        "notebooks/deck.livemd": [title: "Notebook: deck.gl widget"],
+        "notebooks/spike.livemd": [title: "Notebook: spike"],
+        LICENSE: [title: "License"],
+        NOTICE: [title: "Notice"]
+      ],
+      groups_for_extras: [
+        Reference: ["docs/parity.md"],
+        Notebooks: ~r{notebooks/},
+        Legal: ["LICENSE", "NOTICE"]
+      ],
+      groups_for_modules: [
+        Core: [GeoFrame, GeoFrame.GeoDataFrame, GeoFrame.GeoSeries],
+        "Spatial operations": [GeoFrame.SpatialJoin, GeoFrame.Overlay, GeoFrame.Dissolve],
+        "CRS and datum grids": [GeoFrame.CRS, GeoFrame.Grids],
+        Livebook: [
+          GeoFrame.Kino,
+          GeoFrame.Kino.Deck,
+          GeoFrame.Kino.ReadFileCell,
+          GeoFrame.Kino.SpatialJoinCell
+        ],
+        PostGIS: [GeoFrame.PostGIS, GeoFrame.Postgrex.Extension],
+        Testing: [GeoFrame.Testing]
+      ],
+      # Defined at compile time by Postgrex.Types.define/3, so it has no docs page.
+      skip_undefined_reference_warnings_on: ["GeoFrame.Postgrex.Extension"]
     ]
   end
 
@@ -59,7 +95,8 @@ defmodule GeoFrame.MixProject do
       {:kino_maplibre, "~> 0.1.13", optional: true},
       {:stream_data, "~> 1.4", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:ex_doc, "~> 0.40", only: :dev, runtime: false}
+      # Also in :test so CI can run `mix docs` in its single MIX_ENV (and reuse the test build).
+      {:ex_doc, "~> 0.40", only: [:dev, :test], runtime: false}
     ]
   end
 end

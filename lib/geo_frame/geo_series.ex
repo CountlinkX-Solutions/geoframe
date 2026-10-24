@@ -7,9 +7,18 @@ defmodule GeoFrame.GeoSeries do
   metadata). Constructors parse WKT/WKB into that column and outputs serialise it back, so
   chained operations stay in native memory.
 
-  Measures are planar (no geodesic maths), return `Explorer.Series`, and propagate nulls:
-  `nil` rows, and rows that cannot be expressed as a `geo` geometry (such as `POINT EMPTY`),
-  yield `nil`.
+  Geometries can be XY, XYZ, XYM or XYZM (`has_z/1`, `force_2d/1`, ...). Measures return
+  `Explorer.Series` and are planar unless you ask for `method: :geodesic` (or call
+  `area_geodesic/1`, `length_geodesic/1`, `distance/3` with `method:`), which measures on the
+  WGS 84 ellipsoid. A measure that overflows or is undefined is `:infinity`, `:neg_infinity` or
+  `:nan` in the series, as GeoPandas gives `inf`/`nan`. Nulls propagate: `nil` rows, and rows
+  that cannot be expressed as a `geo` geometry (such as `POINT EMPTY`), yield `nil`.
+
+  The CRS is a label such as `"EPSG:4326"` (`crs/1`, `set_crs/2`); `to_crs/2` reprojects with
+  `proj4rs` and accepts EPSG codes as well as PROJJSON and WKT definitions (see
+  `GeoFrame.Grids` for datum grids). Binary operations, joins and overlays raise when the CRS
+  of the two sides differ. The module follows GeoPandas 1.2 / Shapely 2.2; the known
+  differences are listed in `docs/parity.md` ("GeoPandas parity" in these docs).
 
   ## Example
 

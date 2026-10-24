@@ -5,7 +5,10 @@ if Code.ensure_loaded?(Kino) do
 
     This module is compiled only when `:kino` is available. Rendering a frame (the last
     expression of a cell) shows three tabs: **Map**, **Table** and **Inspect**; a series shows
-    **Map** and **Inspect**.
+    **Map** and **Inspect**. For large inputs `deck/2` builds a deck.gl widget
+    (`GeoFrame.Kino.Deck`), and two Smart Cells, `GeoFrame.Kino.ReadFileCell` ("Read spatial
+    file") and `GeoFrame.Kino.SpatialJoinCell` ("Spatial join"), are registered when the
+    `:geoframe` application starts with Kino present.
 
     ## Map
 
