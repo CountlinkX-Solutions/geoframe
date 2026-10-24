@@ -18,6 +18,10 @@ dependencies = [
   "geopandas==1.2.0",
   "shapely==2.2.0",
   "pyproj==3.8.0",
+  # GeoDataFrame.explore() draws the GeoPandas maps (folium/Leaflet) shown next to the deck.gl ones.
+  "folium==0.20.0",
+  "mapclassify==2.11.0",
+  "matplotlib==3.11.2",
 ]
 ```
 
@@ -34,6 +38,15 @@ table, and some sections add a deck.gl map), the GeoPandas cell, and a compariso
 PASS/FAIL per metric. Counts and names must be identical; areas and lengths must agree within
 a relative `1e-6` (the tolerances live in `examples/geopandas/tolerances.json`, with the reason for
 every looser one). The last section summarizes everything.
+
+Five sections also draw their result on a map twice, so you can compare the two renderings by eye:
+the deck.gl map of `GeoFrame.Kino.deck/2` right after the GeoFrame cell, and the GeoPandas map
+(`GeoDataFrame.explore()`, which builds a [folium](https://python-visualization.github.io/folium/)
+/ Leaflet map) at the end of the GeoPandas cell. Both use the same column, colours, tooltip,
+opacity and Carto Positron basemap. They are different engines (WebGL in one, SVG in the other),
+so expect a legend or colour bar on the Leaflet side only, a zoom that is not exactly the same, and
+slightly different anti-aliasing. Livebook shows a Python cell's value as text, so the Leaflet map
+is returned as an HTML string and an Elixir cell displays it with `Kino.HTML`.
 
 The Python code is the same as `examples/geopandas/compare.py`, and the GeoFrame cells are what
 `scripts/compare_geopandas.exs` runs, so `scripts/compare_geopandas.sh` repeats this comparison
@@ -107,6 +120,7 @@ end
 The same data in GeoPandas.
 
 ```python
+import functools
 import json
 import os
 import tempfile
@@ -141,8 +155,73 @@ cities = gpd.read_file(fetch("ne_10m_populated_places_simple.geojson"))
 rivers = gpd.read_file(fetch("ne_50m_rivers_lake_centerlines.geojson"))
 countries_eq = countries.to_crs(EQUAL_AREA)
 big_cities = cities[cities["pop_max"] > 1_000_000]
+
+# notebook-only: GeoPandas maps. Livebook shows the value of a Python cell as its `repr`, so a
+# folium map would print as text. The helper returns the map as an <iframe> string and an Elixir
+# cell hands it to `Kino.HTML.new/1`.
+import html
+
+import folium
+from branca.element import MacroElement, Template
+
+# Tableau 10, the palette of the deck.gl maps (`color: {column, :categorical}`).
+TABLEAU_10 = [
+    "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f",
+    "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ac",
+]  # fmt: skip
+
+
+# The basemap of the deck.gl maps, Carto Positron, drawn in Leaflet through MapLibre GL (the same
+# pinned version). Carto's raster tiles need an API key now, its vector style does not.
+MAPLIBRE = "https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl"
+MAPLIBRE_LEAFLET = "https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-leaflet@0.1.4"
+POSITRON_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+
+
+class CartoPositron(MacroElement):
+    _template = Template(
+        "{% macro script(this, kwargs) %}"
+        f'L.maplibreGL({{style: "{POSITRON_STYLE}"}}).addTo({{{{ this._parent.get_name() }}}});'
+        "{% endmacro %}"
+    )
+
+    def render(self, **kwargs):
+        # Rendering the map has just added Leaflet to the header, and MapLibre's plugin needs it.
+        header = self.get_root().header
+        header.add_child(folium.CssLink(f"{MAPLIBRE}.css"), name="maplibre_css")
+        header.add_child(folium.JavascriptLink(f"{MAPLIBRE}.js"), name="maplibre_js")
+        plugin = folium.JavascriptLink(f"{MAPLIBRE_LEAFLET}/leaflet-maplibre-gl.js")
+        header.add_child(plugin, name="maplibre_leaflet_js")
+        super().render(**kwargs)
+
+
+def explore_html(frame, column, tooltip, categorical=False, opacity=0.8, legend=True):
+    """`frame.explore()` on the Carto Positron basemap, as an HTML string that fits a notebook."""
+    if categorical:
+        # One palette colour per distinct value, in order of appearance, as the deck.gl map does.
+        colours = {"cmap": TABLEAU_10, "categories": list(frame[column].dropna().unique())}
+    else:
+        colours = {"cmap": "viridis"}
+    fmap = frame.explore(
+        column=column,
+        tooltip=tooltip,
+        tiles=None,
+        legend=legend,
+        legend_kwds={} if categorical else {"max_labels": 5},
+        style_kwds={"fillOpacity": opacity, "opacity": opacity, "weight": 2},
+        **colours,
+    )
+    CartoPositron().add_to(fmap)
+    page = html.escape(fmap.get_root().render(), quote=True)
+    return f'<iframe srcdoc="{page}" style="width:100%;height:480px;border:0"></iframe>'
 ```
 
+The Elixir side of it, used by every map below:
+
+```elixir
+# notebook-only
+gf_show_map = fn gp_map -> gp_map |> Pythonx.decode() |> Kino.HTML.new() end
+```
 
 ## 1. Buffer and dissolve: land within 100 km of a big city
 
@@ -188,11 +267,17 @@ GeoFrame.Kino.deck(gf_covered, color: {"area_km2", :viridis}, opacity: 0.7, tool
 GeoPandas:
 
 ```python
-def buffer_dissolve():
+@functools.cache
+def covered_areas():
     buffers = big_cities.to_crs(EQUAL_AREA)[["adm0name", "geometry"]]
     buffers = buffers.set_geometry(buffers.buffer(100_000))
     covered = buffers.dissolve(by="adm0name").reset_index()
     covered["area_km2"] = covered.area / 1e6
+    return covered
+
+
+def buffer_dissolve():
+    covered = covered_areas()
     top = covered.sort_values(["area_km2", "adm0name"], ascending=[False, True]).head(10)
     return {
         "n_countries": len(covered),
@@ -203,14 +288,23 @@ def buffer_dissolve():
 
 
 gp_buffer_dissolve = buffer_dissolve()
+
+# notebook-only: the frame of the GeoFrame map above, drawn by GeoPandas.
+gp_covered_map = explore_html(covered_areas(), "area_km2", ["adm0name", "area_km2"], opacity=0.7)
 ```
+
+```elixir
+# notebook-only
+gf_show_map.(gp_covered_map)
+```
+
+**Maps.** The deck.gl map (GeoFrame) comes first, the Leaflet map (GeoPandas `explore`) second. Both maps colour every country by `area_km2` on viridis, between the column's minimum and maximum, at 70% opacity, with the country and its area in the tooltip. Leaflet adds a colour bar, which deck.gl does not draw. Shapes can look different at the edges: deck.gl draws the triangulated polygons on the GPU, Leaflet draws SVG paths.
 
 ```elixir
 # notebook-only
 GeoPandasCompare.rows(%{"buffer_dissolve" => gf_buffer_dissolve}, %{"buffer_dissolve" => Pythonx.decode(gp_buffer_dissolve)})
 |> GeoPandasCompare.dataframe()
 ```
-
 
 ## 2. Overlay: how much of each country lies near a major river
 
@@ -262,13 +356,19 @@ GeoFrame.Kino.deck(gf_pieces, color: {"ADM0_A3", :categorical}, opacity: 0.6, to
 GeoPandas:
 
 ```python
-def river_corridor():
+@functools.cache
+def corridor_pieces():
     major = rivers[rivers["scalerank"] <= 4].to_crs(EQUAL_AREA)
     corridor = gpd.GeoDataFrame(geometry=[major.buffer(50_000).union_all()], crs=EQUAL_AREA)
     pieces = gpd.overlay(
         countries_eq[["ADM0_A3", "geometry"]], corridor, how="intersection", keep_geom_type=True
     )
     pieces["inside_km2"] = pieces.area / 1e6
+    return pieces
+
+
+def river_corridor():
+    pieces = corridor_pieces()
     pieces = pieces.merge(
         countries_eq.assign(area_km2=countries_eq.area / 1e6)[["ADM0_A3", "area_km2"]],
         on="ADM0_A3",
@@ -285,14 +385,23 @@ def river_corridor():
 
 
 gp_river_corridor = river_corridor()
+
+# notebook-only: the frame of the GeoFrame map above, drawn by GeoPandas.
+gp_pieces_map = explore_html(corridor_pieces(), "ADM0_A3", ["ADM0_A3"], categorical=True, opacity=0.6, legend=False)
 ```
+
+```elixir
+# notebook-only
+gf_show_map.(gp_pieces_map)
+```
+
+**Maps.** The deck.gl map (GeoFrame) comes first, the Leaflet map (GeoPandas `explore`) second. Both maps give every country its own colour from the Tableau 10 palette (it repeats after ten) at 60% opacity, with the country code in the tooltip. The Leaflet legend is left out because it would list every country. Shapes can look different at the edges: deck.gl draws the triangulated polygons on the GPU, Leaflet draws SVG paths.
 
 ```elixir
 # notebook-only
 GeoPandasCompare.rows(%{"river_corridor" => gf_river_corridor}, %{"river_corridor" => Pythonx.decode(gp_river_corridor)})
 |> GeoPandasCompare.dataframe()
 ```
-
 
 ## 3. Spatial join and group by: cities per country and density
 
@@ -380,7 +489,6 @@ GeoPandasCompare.rows(%{"cities_per_country" => gf_cities_per_country}, %{"citie
 |> GeoPandasCompare.dataframe()
 ```
 
-
 ## 4. Nearest join: how far is each big city from a river?
 
 `sjoin_nearest` pairs every city of more than a million people with the closest river line and
@@ -454,7 +562,6 @@ GeoPandasCompare.rows(%{"nearest_river" => gf_nearest_river}, %{"nearest_river" 
 |> GeoPandasCompare.dataframe()
 ```
 
-
 ## 5. Cutting lines with polygons: river length per country in South America
 
 `overlay` with `how: :intersection` cuts the river lines at the country borders, one piece per
@@ -504,12 +611,18 @@ GeoFrame.Kino.deck(gf_river_pieces, color: {"ADM0_A3", :categorical}, width: 2, 
 GeoPandas:
 
 ```python
-def river_length_south_america():
+@functools.cache
+def river_pieces():
     south_america = countries[countries["CONTINENT"] == "South America"]
     south_america = south_america[["ADM0_A3", "geometry"]].to_crs(SOUTH_AMERICA_ALBERS)
-    streams = rivers.cx[-95:-30, -60:15][["geometry"]].to_crs(SOUTH_AMERICA_ALBERS)
+    streams = rivers.cx[-95:-30, -60:15][["name", "geometry"]].to_crs(SOUTH_AMERICA_ALBERS)
     pieces = gpd.overlay(streams, south_america, how="intersection", keep_geom_type=True)
     pieces["km"] = pieces.length / 1000
+    return pieces
+
+
+def river_length_south_america():
+    pieces = river_pieces()
     per_country = pieces.groupby("ADM0_A3")["km"].sum().reset_index()
     top = per_country.sort_values(["km", "ADM0_A3"], ascending=[False, True]).head(5)
     return {
@@ -521,14 +634,23 @@ def river_length_south_america():
 
 
 gp_river_length_south_america = river_length_south_america()
+
+# notebook-only: the frame of the GeoFrame map above, drawn by GeoPandas.
+gp_river_pieces_map = explore_html(river_pieces(), "ADM0_A3", ["name", "ADM0_A3"], categorical=True, legend=False)
 ```
+
+```elixir
+# notebook-only
+gf_show_map.(gp_river_pieces_map)
+```
+
+**Maps.** The deck.gl map (GeoFrame) comes first, the Leaflet map (GeoPandas `explore`) second. Both maps colour every river piece by the country it was cut in (Tableau 10, repeating after ten), 2 px wide, with the river name and country code in the tooltip. The Leaflet legend is left out because it would list every country. Shapes can look different at the edges: deck.gl draws the triangulated polygons on the GPU, Leaflet draws SVG paths.
 
 ```elixir
 # notebook-only
 GeoPandasCompare.rows(%{"river_length_south_america" => gf_river_length_south_america}, %{"river_length_south_america" => Pythonx.decode(gp_river_length_south_america)})
 |> GeoPandasCompare.dataframe()
 ```
-
 
 ## 6. Dissolve by continent: area, centroid, convex hull and simplification
 
@@ -596,8 +718,13 @@ GeoFrame.Kino.deck(gf_merged, color: {"CONTINENT", :categorical}, opacity: 0.8, 
 GeoPandas:
 
 ```python
+@functools.cache
+def merged_continents():
+    return countries_eq[["CONTINENT", "geometry"]].dissolve(by="CONTINENT").sort_index()
+
+
 def continents():
-    merged = countries_eq[["CONTINENT", "geometry"]].dissolve(by="CONTINENT").sort_index()
+    merged = merged_continents()
     centre = merged.centroid
     # Simplification is measured on the countries, so that it does not depend on the union.
     parts = countries_eq[["CONTINENT"]].assign(
@@ -620,14 +747,23 @@ def continents():
 
 
 gp_continents = continents()
+
+# notebook-only: the frame of the GeoFrame map above, drawn by GeoPandas.
+gp_merged_map = explore_html(merged_continents().reset_index(), "CONTINENT", ["CONTINENT"], categorical=True, opacity=0.8)
 ```
+
+```elixir
+# notebook-only
+gf_show_map.(gp_merged_map)
+```
+
+**Maps.** The deck.gl map (GeoFrame) comes first, the Leaflet map (GeoPandas `explore`) second. Both maps colour every continent from the Tableau 10 palette at 80% opacity, with the continent name in the tooltip. Colours follow the order of the rows, and GeoFrame's `dissolve` may order the groups differently, so a continent can have another colour in each map. Leaflet adds a legend. Shapes can look different at the edges: deck.gl draws the triangulated polygons on the GPU, Leaflet draws SVG paths.
 
 ```elixir
 # notebook-only
 GeoPandasCompare.rows(%{"continents" => gf_continents}, %{"continents" => Pythonx.decode(gp_continents)})
 |> GeoPandasCompare.dataframe()
 ```
-
 
 ## 7. Geodesic distances between capitals
 
@@ -708,7 +844,6 @@ GeoPandasCompare.rows(%{"capitals_geodesic" => gf_capitals_geodesic}, %{"capital
 |> GeoPandasCompare.dataframe()
 ```
 
-
 ## 8. Predicates: neighbours and the equator
 
 `touches` selects the countries that share a border with Germany and with Brazil (the border
@@ -763,7 +898,6 @@ gp_neighbours = neighbours()
 GeoPandasCompare.rows(%{"neighbours" => gf_neighbours}, %{"neighbours" => Pythonx.decode(gp_neighbours)})
 |> GeoPandasCompare.dataframe()
 ```
-
 
 ## 9. Join predicates, representative points and validity
 
@@ -837,7 +971,6 @@ GeoPandasCompare.rows(%{"predicates" => gf_predicates}, %{"predicates" => Python
 |> GeoPandasCompare.dataframe()
 ```
 
-
 ## 10. Voronoi cells of the South American capitals
 
 A Voronoi diagram of the capitals partitions the plane into the area closest to each one. The
@@ -896,7 +1029,8 @@ GeoFrame.Kino.deck(gf_owned, color: {"area_km2", :viridis}, opacity: 0.7, toolti
 GeoPandas:
 
 ```python
-def voronoi():
+@functools.cache
+def owned_land():
     south_america = countries_eq[countries_eq["CONTINENT"] == "South America"]
     land = south_america.union_all()
     capitals = cities[(cities["adm0cap"] == 1) & (cities["adm0_a3"].isin(south_america["ADM0_A3"]))]
@@ -904,8 +1038,13 @@ def voronoi():
     diagram = capitals.geometry.voronoi_polygons(extend_to=shapely.box(*land.bounds))
     cells = gpd.GeoDataFrame(geometry=diagram.reset_index(drop=True), crs=EQUAL_AREA)
     owned = gpd.sjoin(cells, capitals[["name", "geometry"]], predicate="contains")
-    owned["area_km2"] = owned.geometry.intersection(land).area / 1e6
-    owned = owned.sort_values("name")
+    owned = owned.set_geometry(owned.geometry.intersection(land))
+    owned["area_km2"] = owned.area / 1e6
+    return owned.sort_values("name")
+
+
+def voronoi():
+    owned = owned_land()
     return {
         "capitals": owned["name"].tolist(),
         "cell_area_km2": owned["area_km2"].tolist(),
@@ -914,14 +1053,23 @@ def voronoi():
 
 
 gp_voronoi = voronoi()
+
+# notebook-only: the frame of the GeoFrame map above, drawn by GeoPandas.
+gp_owned_map = explore_html(owned_land(), "area_km2", ["name", "area_km2"], opacity=0.7)
 ```
+
+```elixir
+# notebook-only
+gf_show_map.(gp_owned_map)
+```
+
+**Maps.** The deck.gl map (GeoFrame) comes first, the Leaflet map (GeoPandas `explore`) second. Both maps colour every cell, already clipped to the land, by `area_km2` on viridis at 70% opacity, with the capital and the area in the tooltip. Leaflet adds a colour bar, which deck.gl does not draw. Shapes can look different at the edges: deck.gl draws the triangulated polygons on the GPU, Leaflet draws SVG paths.
 
 ```elixir
 # notebook-only
 GeoPandasCompare.rows(%{"voronoi" => gf_voronoi}, %{"voronoi" => Pythonx.decode(gp_voronoi)})
 |> GeoPandasCompare.dataframe()
 ```
-
 
 ## Summary
 
