@@ -10,6 +10,10 @@ defmodule GeoFrame.Kino.SpatialJoinCellTest do
 
   setup :configure_livebook_bridge
 
+  # Generous so a loaded machine never turns a slow reply into a failure; assert_receive
+  # returns as soon as the message arrives, so the happy path pays nothing.
+  @timeout 5_000
+
   # The generated source on unwrapped lines, so long paths do not hide the structure.
   defp source(module, attrs), do: attrs |> module.to_source() |> unwrap()
 
@@ -154,7 +158,7 @@ defmodule GeoFrame.Kino.SpatialJoinCellTest do
   describe "SpatialJoinCell as a smart cell" do
     test "scan_binding reports only GeoDataFrame variables, sorted" do
       {kino, _} = start_smart_cell!(SpatialJoinCell, %{})
-      connect(kino)
+      connect(kino, nil, @timeout)
 
       binding = [
         zones: gdf_points(["POINT (1 1)"]),
@@ -166,16 +170,16 @@ defmodule GeoFrame.Kino.SpatialJoinCellTest do
 
       SpatialJoinCell.scan_binding(kino.pid, binding, __ENV__)
 
-      assert_broadcast_event(kino, "variables", %{variables: ["points", "zones"]})
+      assert_broadcast_event(kino, "variables", %{variables: ["points", "zones"]}, @timeout)
     end
 
     test "connect returns the known variables" do
       {kino, _} = start_smart_cell!(SpatialJoinCell, join_attrs())
-      assert connect(kino).variables == []
+      assert connect(kino, nil, @timeout).variables == []
 
       SpatialJoinCell.scan_binding(kino.pid, [points: gdf_points(["POINT (1 1)"])], __ENV__)
-      assert_broadcast_event(kino, "variables", %{variables: ["points"]})
-      assert connect(kino).variables == ["points"]
+      assert_broadcast_event(kino, "variables", %{variables: ["points"]}, @timeout)
+      assert connect(kino, nil, @timeout).variables == ["points"]
     end
 
     test "empty left and right default to the first variables found" do
@@ -184,7 +188,7 @@ defmodule GeoFrame.Kino.SpatialJoinCellTest do
       binding = [b: gdf_points(["POINT (1 1)"]), a: gdf_points(["POINT (2 2)"])]
       SpatialJoinCell.scan_binding(kino.pid, binding, __ENV__)
 
-      assert_smart_cell_update(kino, %{"left" => "a", "right" => "b"}, source)
+      assert_smart_cell_update(kino, %{"left" => "a", "right" => "b"}, source, @timeout)
       assert source =~ "GeoFrame.sjoin(a, b"
     end
 
@@ -192,8 +196,8 @@ defmodule GeoFrame.Kino.SpatialJoinCellTest do
       {kino, _} = start_smart_cell!(SpatialJoinCell, join_attrs())
       binding = [points: gdf_points(["POINT (1 1)"]), zones: gdf_points(["POINT (2 2)"])]
       SpatialJoinCell.scan_binding(kino.pid, binding, __ENV__)
-      assert_broadcast_event(kino, "variables", %{variables: ["points", "zones"]})
-      assert connect(kino).fields["left"] == "points"
+      assert_broadcast_event(kino, "variables", %{variables: ["points", "zones"]}, @timeout)
+      assert connect(kino, nil, @timeout).fields["left"] == "points"
     end
 
     test "field updates regenerate the source" do
@@ -201,17 +205,17 @@ defmodule GeoFrame.Kino.SpatialJoinCellTest do
       assert source =~ "GeoFrame.sjoin(points, zones"
 
       push_event(kino, "update_field", %{"field" => "mode", "value" => "nearest"})
-      assert_smart_cell_update(kino, %{"mode" => "nearest"}, source)
+      assert_smart_cell_update(kino, %{"mode" => "nearest"}, source, @timeout)
       assert source =~ "GeoFrame.sjoin_nearest(points, zones"
 
       push_event(kino, "update_field", %{"field" => "show_map", "value" => true})
-      assert_smart_cell_update(kino, %{"show_map" => true}, source)
+      assert_smart_cell_update(kino, %{"show_map" => true}, source, @timeout)
       assert source =~ "GeoFrame.Kino.deck(joined)"
     end
 
     test "default attrs allocate a result variable" do
       {kino, _} = start_smart_cell!(SpatialJoinCell, %{})
-      assert connect(kino).fields["result"] =~ ~r/^joined\d*$/
+      assert connect(kino, nil, @timeout).fields["result"] =~ ~r/^joined\d*$/
     end
   end
 
