@@ -216,30 +216,137 @@ impl GeoColumn {
         Ok(moved.set_crs(Some(&dst.label)))
     }
 
-    /// The WGS 84 UTM CRS (`EPSG:326xx` north, `EPSG:327xx` south) whose zone contains the
-    /// centre of the total bounds, like GeoPandas `estimate_utm_crs`. Fails without a CRS,
-    /// without bounds, or outside the UTM latitude range (80 S to 84 N).
-    pub fn estimate_utm_crs(&self) -> Result<String, String> {
+    /// The UTM CRS whose area of use holds the centre of the total bounds, like GeoPandas
+    /// `estimate_utm_crs` (`pyproj.database.query_utm_crs_info` with the centre as area of
+    /// interest, first match by EPSG code). `datum_name` is the datum in the CRS name
+    /// (default `"WGS 84"`; `"NAD83"`, `"NAD27"`, `"ETRS89"`, ...), compared without spaces.
+    ///
+    /// A geographic CRS uses the centre of its raw bounds. Any other CRS has its bounds
+    /// converted to lon/lat first (edges densified, poles and the antimeridian handled like
+    /// PROJ's `transform_bounds`) and the centre of that box is used. The Norway and Svalbard
+    /// exceptions of the MGRS grid are not applied, because pyproj does not apply them either.
+    /// Fails without a CRS, without bounds, or when no UTM CRS of that datum covers the centre
+    /// (WGS 84: outside 80 S to 84 N).
+    pub fn estimate_utm_crs(&self, datum_name: Option<&str>) -> Result<String, String> {
         let source = self.crs().ok_or_else(|| {
             "cannot estimate a UTM CRS for naive geometries; set_crs first".to_string()
         })?;
-        let [minx, miny, maxx, maxy] = self
+        let bounds = self
             .total_bounds()
             .ok_or_else(|| "cannot estimate a UTM CRS: no non-empty geometries".to_string())?;
-        let centre = Coord {
-            x: (minx + maxx) / 2.0,
-            y: (miny + maxy) / 2.0,
+        let src = resolve(&source)?;
+        let [minx, miny, maxx, maxy] = if src.proj.is_latlong() {
+            bounds
+        } else {
+            bounds_to_lonlat(&src.proj, &resolve("OGC:CRS84")?.proj, bounds)?
         };
-        let (src, wgs84) = (resolve(&source)?, resolve("OGC:CRS84")?);
-        let lonlat = transform_coord(&src.proj, &wgs84.proj, centre)?;
-        if !(-80.0..=84.0).contains(&lonlat.y) {
-            return Err(format!(
-                "latitude {} is outside the UTM range (-80 to 84)",
-                lonlat.y
-            ));
-        }
-        let zone = (((lonlat.x + 180.0) / 6.0).floor() as i64).rem_euclid(60) + 1;
-        let base = if lonlat.y >= 0.0 { 32600 } else { 32700 };
-        Ok(format!("EPSG:{}", base + zone))
+        let lon = if minx > maxx {
+            // Crossed the antimeridian: shift maxx to [0, 360), centre, shift back.
+            (((minx + maxx + 360.0) / 2.0 + 180.0).rem_euclid(360.0)) - 180.0
+        } else {
+            (minx + maxx) / 2.0
+        };
+        let lat = (miny + maxy) / 2.0;
+        // Round-off from the inverse projection (1e-16 degrees below the equator, say) must not
+        // move a centre across a zone edge or the equator.
+        let snap = |v: f64| (v * 1e9).round() / 1e9;
+        let (lon, lat) = (snap(lon), snap(lat));
+        let datum = datum_name.unwrap_or("WGS 84");
+        crate::utm::utm_crs_code(datum, lon, lat)
+            .map(|code| format!("EPSG:{code}"))
+            .ok_or_else(|| {
+                format!(
+                    "Unable to determine UTM CRS: no UTM CRS with datum {datum:?} covers \
+                     lon {lon}, lat {lat}"
+                )
+            })
     }
+}
+
+/// Number of points added along each edge when converting bounds (pyproj's default).
+const DENSIFY_POINTS: usize = 21;
+
+/// The lon/lat bounds `[west, south, east, north]` of a box in `src` (west > east when the box
+/// crosses the antimeridian), like `Transformer.transform_bounds` with the default
+/// densification: the box edges are sampled, a pole inside the box widens it to every
+/// longitude, and a jump of more than 180 degrees between neighbouring samples marks an
+/// antimeridian crossing.
+fn bounds_to_lonlat(src: &Proj, lonlat: &Proj, b: [f64; 4]) -> Result<[f64; 4], String> {
+    let [minx, miny, maxx, maxy] = b;
+    let steps = DENSIFY_POINTS + 1;
+    let mut ring = Vec::with_capacity(4 * steps);
+    for i in 0..steps {
+        let t = i as f64 / steps as f64;
+        ring.push(Coord {
+            x: minx + t * (maxx - minx),
+            y: miny,
+        });
+    }
+    for i in 0..steps {
+        let t = i as f64 / steps as f64;
+        ring.push(Coord {
+            x: maxx,
+            y: miny + t * (maxy - miny),
+        });
+    }
+    for i in 0..steps {
+        let t = i as f64 / steps as f64;
+        ring.push(Coord {
+            x: maxx - t * (maxx - minx),
+            y: maxy,
+        });
+    }
+    for i in 0..steps {
+        let t = i as f64 / steps as f64;
+        ring.push(Coord {
+            x: minx,
+            y: maxy - t * (maxy - miny),
+        });
+    }
+    let moved: Vec<Coord<f64>> = ring
+        .into_iter()
+        .filter_map(|c| transform_coord(src, lonlat, c).ok())
+        .collect();
+    if moved.is_empty() {
+        return Err("cannot estimate a UTM CRS: the bounds cannot be converted to lon/lat".into());
+    }
+    let (mut west, mut east) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut south, mut north) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut west_positive, mut east_negative) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut crosses = false;
+    for (i, c) in moved.iter().enumerate() {
+        west = west.min(c.x);
+        east = east.max(c.x);
+        south = south.min(c.y);
+        north = north.max(c.y);
+        if c.x >= 0.0 {
+            west_positive = west_positive.min(c.x);
+        } else {
+            east_negative = east_negative.max(c.x);
+        }
+        let prev = moved[(i + moved.len() - 1) % moved.len()];
+        if (c.x - prev.x).abs() > 180.0 {
+            crosses = true;
+        }
+    }
+    let inside = |pole_lat: f64| {
+        transform_coord(
+            lonlat,
+            src,
+            Coord {
+                x: 0.0,
+                y: pole_lat,
+            },
+        )
+        .is_ok_and(|p| p.x >= minx && p.x <= maxx && p.y >= miny && p.y <= maxy)
+    };
+    Ok(if inside(90.0) {
+        [-180.0, south, 180.0, 90.0]
+    } else if inside(-90.0) {
+        [-180.0, -90.0, 180.0, north]
+    } else if crosses {
+        [west_positive, south, east_negative, north]
+    } else {
+        [west, south, east, north]
+    })
 }

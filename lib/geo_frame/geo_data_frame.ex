@@ -394,9 +394,10 @@ defmodule GeoFrame.GeoDataFrame do
   # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
   def is_geographic(%__MODULE__{geometry: geometry}), do: GeoSeries.is_geographic(geometry)
 
-  @doc "The UTM CRS for the geometry's extent. See `GeoFrame.GeoSeries.estimate_utm_crs/1`."
-  @spec estimate_utm_crs(t()) :: String.t()
-  def estimate_utm_crs(%__MODULE__{geometry: geometry}), do: GeoSeries.estimate_utm_crs(geometry)
+  @doc "The UTM CRS for the geometry's extent. See `GeoFrame.GeoSeries.estimate_utm_crs/2`."
+  @spec estimate_utm_crs(t(), keyword()) :: String.t()
+  def estimate_utm_crs(%__MODULE__{geometry: geometry}, opts \\ []),
+    do: GeoSeries.estimate_utm_crs(geometry, opts)
 
   # -- row-changing operations ----------------------------------------------------------
 

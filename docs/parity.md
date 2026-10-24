@@ -280,7 +280,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `crs` | CRS in metadata | `crs/1` (Series + GDF) | ✅ | |
 | `set_crs` | `set_crs` yes | `set_crs/2` (Series + GDF) | 🟡 | relabel only; no `allow_override`, no integer EPSG input (string/nil only) |
 | `to_crs` | `to_crs` yes (PROJ) | `to_crs/2` | 🟡 | proj4rs (no datum-grid shifts, no pipeline); accepts string or integer; Z kept (unchanged between non-geocentric CRSs, transformed to or from a geocentric one such as `EPSG:4978`), M dropped; see [Z and M](#z-and-m) |
-| `estimate_utm_crs` | — | `estimate_utm_crs/1` | ✅ | 80S-84N |
+| `estimate_utm_crs` | `estimate_utm_crs(datum_name="WGS 84")` | `estimate_utm_crs/2` (`datum_name:`) | ✅ | the first EPSG UTM CRS of the datum, by code, whose area of use contains the centre of the bounds: the answer of `pyproj.database.query_utm_crs_info` (table generated from the PROJ database, any datum with UTM CRSs: WGS 84 80S-84N, NAD83, NAD27, ETRS89, ...). Geographic input is centred on its raw bounds, any other CRS on its lon/lat bounds (densified edges, pole and antimeridian handling as `transform_bounds`). Norway (32V) and Svalbard (32X/34X/36X) exceptions are **not** applied, because pyproj and GeoPandas do not apply them (`5 E, 60 N` is 32631, not 32632); zone edges belong to both zones and the lower code wins. 7 034 grid, edge, pole, antimeridian, projected-CRS and datum cases agree with GeoPandas 1.2 (issue #62) |
 | `crs` mismatch behaviour | — | raises | ✅ | stricter than GeoPandas (which warns) |
 | `Series.crs` setter from pyproj CRS objects | — | — | ⛔ | no pyproj object model |
 

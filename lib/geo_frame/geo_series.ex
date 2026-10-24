@@ -719,13 +719,43 @@ defmodule GeoFrame.GeoSeries do
   end
 
   @doc """
-  The WGS 84 UTM CRS (`"EPSG:326xx"` north, `"EPSG:327xx"` south) whose zone contains the
-  centre of the series' total bounds, like GeoPandas `estimate_utm_crs`.
+  The UTM CRS to use for this series, as GeoPandas `estimate_utm_crs`: the first EPSG UTM CRS of
+  the datum, by code, whose area of use contains the centre of the total bounds (the answer of
+  `pyproj.database.query_utm_crs_info/2`). Returns an `"EPSG:<code>"` string.
 
-  Raises for a series without a CRS, without bounds, or outside 80 S to 84 N.
+  A geographic series is centred on its raw bounds. For any other CRS the bounds are first
+  converted to lon/lat (edges densified, a pole inside the box or a box crossing the
+  antimeridian handled as PROJ's `transform_bounds` does) and the centre of that box is used.
+
+  The zone exceptions of Norway (32V) and Svalbard (32X, 34X, 36X) are **not** applied: pyproj
+  and GeoPandas do not apply them either (EPSG defines plain 6-degree zones), so `5 E, 60 N` is
+  `"EPSG:32631"`. A point on a zone edge belongs to both zones and the lower code wins.
+
+  Options:
+
+    * `:datum_name` - the datum in the CRS name, `"WGS 84"` by default; `"NAD83"`, `"NAD27"`,
+      `"ETRS89"`, `"SIRGAS 2000"`, ... Spaces are ignored, case is not. A datum with no UTM CRS
+      over the centre (WGS 84 covers 80 S to 84 N; `"ETRS89"` only 6 W to 36 E, northern
+      Europe) raises, as GeoPandas does.
+
+  Raises `ArgumentError` for a series without a CRS or bounds, or without a UTM CRS for the
+  datum at the centre.
+
+  ## Examples
+
+      iex> GeoFrame.GeoSeries.from_wkt!(["POINT (-80.2 25.7)"], crs: "EPSG:4326")
+      ...> |> GeoFrame.GeoSeries.estimate_utm_crs()
+      "EPSG:32617"
+
+      iex> GeoFrame.GeoSeries.from_wkt!(["POINT (-80.2 25.7)"], crs: "EPSG:4326")
+      ...> |> GeoFrame.GeoSeries.estimate_utm_crs(datum_name: "NAD83")
+      "EPSG:26917"
   """
-  @spec estimate_utm_crs(t()) :: String.t()
-  def estimate_utm_crs(%__MODULE__{ref: ref}), do: ref |> Native.estimate_utm_crs() |> unwrap!()
+  @spec estimate_utm_crs(t(), keyword()) :: String.t()
+  def estimate_utm_crs(%__MODULE__{ref: ref}, opts \\ []) do
+    GeoFrame.Options.validate!(opts, [:datum_name])
+    ref |> Native.estimate_utm_crs(Keyword.get(opts, :datum_name)) |> unwrap!()
+  end
 
   defp crs_label(code) when is_integer(code), do: "EPSG:#{code}"
   defp crs_label(label) when is_binary(label), do: label

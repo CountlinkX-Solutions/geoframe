@@ -37,6 +37,8 @@ mod set_ops;
 mod shapefile_io;
 mod sindex;
 mod unary;
+mod utm;
+mod utm_crs;
 mod wkt1_projjson;
 mod wkt2_projjson;
 mod zm;

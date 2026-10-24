@@ -382,8 +382,8 @@ fn to_crs(column: Handle, target: String) -> Result<Handle, String> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn estimate_utm_crs(column: Handle) -> Result<String, String> {
-    column.0.estimate_utm_crs()
+fn estimate_utm_crs(column: Handle, datum_name: Option<String>) -> Result<String, String> {
+    column.0.estimate_utm_crs(datum_name.as_deref())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
