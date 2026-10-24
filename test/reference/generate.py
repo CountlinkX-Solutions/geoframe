@@ -220,6 +220,25 @@ Z3_CORPUS = {
 }
 CORPUS.update(Z3_CORPUS)
 
+# Issue #87: discrete Hausdorff distance between polygons measures to the boundary (linework).
+H_CORPUS = {
+    "h_sq": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))",
+    "h_notch": "POLYGON ((0 0, 10 0, 10 10, 5 5, 0 10, 0 0))",
+    "h_hole": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (3 3, 7 3, 7 7, 3 7, 3 3))",
+    "h_hole_off": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (1 1, 3 1, 3 2, 1 1))",
+    "h_inner": "POLYGON ((4 4, 6 4, 6 6, 4 6, 4 4))",
+    "h_tri": "POLYGON ((0 0, 10 0, 5 2, 0 0))",
+    "h_far": "POLYGON ((20 0, 30 0, 30 10, 20 10, 20 0))",
+    "h_star": "POLYGON ((5 -3, 7 3, 13 5, 7 7, 5 13, 3 7, -3 5, 3 3, 5 -3))",
+    "h_mp": "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((20 0, 30 0, 30 10, 20 10, 20 0)))",
+    "h_mp_island": "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0), (3 3, 7 3, 7 7, 3 7, 3 3)), ((4 4, 6 4, 6 6, 4 6, 4 4)))",
+    "h_pt": "POINT (5 5)",
+    "h_mpt": "MULTIPOINT ((1 1), (20 20))",
+    "h_line": "LINESTRING (2 -4, 14 12)",
+    "h_coll": "GEOMETRYCOLLECTION (POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0)), POINT (30 30))",
+}
+CORPUS.update(H_CORPUS)
+
 
 def geom(cid):
     w = CORPUS[cid]
@@ -339,7 +358,7 @@ def singles(ids):
 NON_EMPTY_2D = [
     k for k, w in CORPUS.items()
     if w is not None and "EMPTY" not in w
-    and not k.startswith(("g_", "e_", "i_", "j_", "z_", "z2_", "z3_"))
+    and not k.startswith(("g_", "e_", "i_", "j_", "z_", "z2_", "z3_", "h_"))
 ]
 EMPTIES = ["pt_empty", "line_empty", "poly_empty", "coll_empty", "null"]
 GEO = [k for k in CORPUS if k.startswith("g_")]
@@ -366,6 +385,7 @@ def build_measures():
     w.add_set("all_nonnull", singles([i for i in allv if i != "null"]))
     w.add_set("dist", pairs(["pt1", "pt2", "line_h", "line_diag", "sq", "sq_hole", "sq_far", "mpoly", "coll"]) + NULLISH_PAIRS)
     w.add_set("hd", pairs(["pt1", "line_h", "line_diag", "line_cross", "sq", "tri", "sq_far", "ell", "mpoly"]))
+    w.add_set("hd_poly", pairs(sorted(H_CORPUS)))
     w.add_set("fd", pairs(["line_h", "line_diag", "line_cross", "line_closed", "line_self", "line_dup"]))
     w.group("area", "float", "all", lambda a, b: a.area)
     w.group("length", "float", "all", lambda a, b: a.length)
@@ -381,6 +401,12 @@ def build_measures():
     w.group("hausdorff_distance", "float", "hd", lambda a, b: a.hausdorff_distance(b, align=False))
     w.group("hausdorff_distance", "float", "hd", lambda a, b: a.hausdorff_distance(b, densify=0.25, align=False),
             label="hausdorff_distance(densify=0.25)", args={"densify": 0.25})
+    w.group("hausdorff_distance", "float", "hd_poly", lambda a, b: a.hausdorff_distance(b, align=False),
+            label="hausdorff_distance(polygons)")
+    for densify in (0.25, 0.5):
+        w.group("hausdorff_distance", "float", "hd_poly",
+                lambda a, b, d=densify: a.hausdorff_distance(b, densify=d, align=False),
+                label=f"hausdorff_distance(polygons, densify={densify})", args={"densify": densify})
     w.group("frechet_distance", "float", "fd", lambda a, b: a.frechet_distance(b, align=False))
     w.group("frechet_distance", "float", "fd", lambda a, b: a.frechet_distance(b, densify=0.5, align=False),
             label="frechet_distance(densify=0.5)", args={"densify": 0.5})
