@@ -1557,7 +1557,28 @@ def overlay_frames():
         [("P1", 1, 1.0, "POINT (0 0)"), ("P2", 2, 2.0, "POINT (1 1)"), ("P3", 3, 3.0, "POINT (2 2)")],
         [("Q1", 10, 0.5, "POINT (1 1)"), ("Q2", 20, 1.5, "POINT (9 9)")],
     )
-    return {"poly": poly, "poly2": poly2, "lines": lines, "points": points}
+    # Null geometries (issue #63): rows with a missing geometry on either side or both, between
+    # and after real ones (geopandas.overlay itself fails with keep_geom_type when the first row
+    # of df1 is null, because it reads the geometry type of that row).
+    nulls_left = (
+        [("A", 1, 1.0, sq(0, 0, 4, 4)), ("N", 2, 2.0, None), ("C", 3, 3.0, sq(0, 6, 4, 4)),
+         ("M", 4, 4.0, None)],
+        [("X", 10, 0.5, sq(2, 2, 6, 6)), ("Y", 20, 1.5, sq(12, 12, 2, 2)),
+         ("Z", 30, 2.5, sq(-2, -2, 3, 3))],
+    )
+    nulls_right = (
+        [("A", 1, 1.0, sq(0, 0, 4, 4)), ("B", 2, 2.0, sq(6, 0, 4, 4)), ("C", 3, 3.0, sq(0, 6, 4, 4))],
+        [("N", 10, 0.5, None), ("X", 20, 1.5, sq(2, 2, 6, 6)), ("M", 30, 2.5, None),
+         ("Z", 40, 3.5, sq(-2, -2, 3, 3))],
+    )
+    nulls_both = (
+        [("A", 1, 1.0, sq(0, 0, 4, 4)), ("N", 2, 2.0, None), ("B", 3, 3.0, sq(6, 0, 4, 4)),
+         ("M", 4, 4.0, None)],
+        [("X", 10, 0.5, sq(2, 2, 6, 6)), ("O", 20, 1.5, None), ("Z", 30, 2.5, sq(-2, -2, 3, 3))],
+    )
+    return {"poly": poly, "poly2": poly2, "lines": lines, "points": points,
+            "poly_null_left": nulls_left, "poly_null_right": nulls_right,
+            "poly_null_both": nulls_both}
 
 
 def overlay_gdf(rows, idname):
@@ -1565,7 +1586,7 @@ def overlay_gdf(rows, idname):
 
     df = pd.DataFrame({idname: [r[0] for r in rows], "k": [r[1] for r in rows],
                        "v" if idname in ("lid",) else "w": [r[2] for r in rows]})
-    return gpd.GeoDataFrame(df, geometry=[swkt.loads(r[3]) for r in rows])
+    return gpd.GeoDataFrame(df, geometry=[None if r[3] is None else swkt.loads(r[3]) for r in rows])
 
 
 def build_overlay():
