@@ -118,6 +118,146 @@ fn simplify_drops_collinear_vertices_in_both_modes() {
     assert_eq!(vw.count_coordinates(), vec![Some(2)]);
 }
 
+/// `simplify(preserve_topology=false)` is GEOS's Douglas-Peucker: it does not keep four vertices
+/// per ring, so a ring that collapses is removed (issue #89). Expected answers are
+/// `shapely.simplify(g, tol, preserve_topology=False)`.
+#[test]
+fn rdp_removes_collapsed_rings_like_geos() {
+    let cases: [(&str, f64, &str); 14] = [
+        ("POLYGON ((0 0, 0.1 0, 0.05 0.1, 0 0))", 1.0, "POLYGON EMPTY"),
+        (
+            "POLYGON ((0 0, 0.1 0, 0.1 0.1, 0 0.1, 0 0))",
+            1.0,
+            "POLYGON EMPTY",
+        ),
+        (
+            "POLYGON ((0 0, 0.1 0, 0.1 0.1, 0 0.1, 0 0))",
+            0.01,
+            "POLYGON ((0 0, 0.1 0, 0.1 0.1, 0 0.1, 0 0))",
+        ),
+        ("POLYGON ((0 0, 10 0.1, 20 0, 10 -0.1, 0 0))", 1.0, "POLYGON EMPTY"),
+        // a collapsed hole disappears, a surviving one stays
+        (
+            "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (4 4, 4.1 4, 4.1 4.1, 4 4.1, 4 4))",
+            1.0,
+            "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))",
+        ),
+        (
+            "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 3 2, 3 3, 2 3, 2 2), (5 5, 5.1 5, 5.1 5.1, 5 5.1, 5 5))",
+            1.0,
+            "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))",
+        ),
+        (
+            "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 8 2, 8 8, 2 8, 2 2))",
+            1.0,
+            "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 8 2, 8 8, 2 8, 2 2))",
+        ),
+        // a shell that collapses takes its holes with it
+        (
+            "POLYGON ((0 0, 0.5 0, 0.5 0.5, 0 0.5, 0 0), (0.1 0.1, 0.2 0.1, 0.2 0.2, 0.1 0.2, 0.1 0.1))",
+            1.0,
+            "POLYGON EMPTY",
+        ),
+        // multipolygon parts that collapse drop; one survivor is a polygon, none is empty
+        (
+            "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((20 20, 20.1 20, 20.1 20.1, 20 20.1, 20 20)))",
+            1.0,
+            "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))",
+        ),
+        (
+            "MULTIPOLYGON (((0 0, 4 0, 4 4, 0 4, 0 0)), ((20 20, 20.1 20, 20.1 20.1, 20 20.1, 20 20)), ((10 0, 14 0, 14 4, 10 4, 10 0)))",
+            1.0,
+            "MULTIPOLYGON (((0 0, 4 0, 4 4, 0 4, 0 0)), ((10 0, 14 0, 14 4, 10 4, 10 0)))",
+        ),
+        (
+            "MULTIPOLYGON (((0 0, 0.1 0, 0.1 0.1, 0 0.1, 0 0)), ((20 20, 20.1 20, 20.1 20.1, 20 20.1, 20 20)))",
+            1.0,
+            "MULTIPOLYGON EMPTY",
+        ),
+        // lines collapse to their two end points; a closed one to a point pair
+        (
+            "LINESTRING (0 0, 0.3 0.1, 0.6 -0.1, 1 0)",
+            1.0,
+            "LINESTRING (0 0, 1 0)",
+        ),
+        (
+            "LINESTRING (0 0, 0.5 0.5, 1 0, 0 0)",
+            1.0,
+            "LINESTRING (0 0, 0 0)",
+        ),
+        (
+            "GEOMETRYCOLLECTION (POLYGON ((0 0, 0.1 0, 0.05 0.1, 0 0)), LINESTRING (0 0, 0.3 0.1, 1 0), POINT (1 1))",
+            1.0,
+            "GEOMETRYCOLLECTION (LINESTRING (0 0, 1 0), POINT (1 1))",
+        ),
+    ];
+    for (input, tolerance, expected) in cases {
+        let got = one(input).simplify(tolerance, false).unwrap();
+        let want = one(expected);
+        assert_eq!(got.to_wkt().unwrap(), want.to_wkt().unwrap(), "{input}");
+    }
+}
+
+/// GEOS also drops the start vertex of a ring when it lies within the tolerance of the chord
+/// between its neighbours, and closes the ring on the next vertex.
+#[test]
+fn rdp_removes_the_ring_start_vertex_when_it_is_redundant() {
+    let cases: [(&str, f64, &str); 6] = [
+        // start on a straight edge of a triangle
+        (
+            "POLYGON ((2.5 5, 0 0, 10 0, 5 10, 2.5 5))",
+            0.5,
+            "POLYGON ((0 0, 10 0, 5 10, 0 0))",
+        ),
+        // start in the middle of an edge of a square: the ring now closes on the next corner
+        (
+            "POLYGON ((5 0, 10 0, 10 10, 0 10, 0 0, 5 0))",
+            0.5,
+            "POLYGON ((10 0, 10 10, 0 10, 0 0, 10 0))",
+        ),
+        (
+            "POLYGON ((5 0, 10 0, 10 10, 0 10, 0 0, 5 0))",
+            0.0,
+            "POLYGON ((10 0, 10 10, 0 10, 0 0, 10 0))",
+        ),
+        // a start vertex that is a corner stays
+        (
+            "POLYGON ((0 0, 5 0.1, 10 0, 10 10, 0 10, 0 0))",
+            0.5,
+            "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))",
+        ),
+        // holes too
+        (
+            "POLYGON ((0 0, 20 0, 20 20, 0 20, 0 0), (5 7, 5 5, 10 5, 10 10, 5 10, 5 7))",
+            0.5,
+            "POLYGON ((0 0, 20 0, 20 20, 0 20, 0 0), (5 5, 10 5, 10 10, 5 10, 5 5))",
+        ),
+        // a closed line string keeps its end points
+        (
+            "LINESTRING (5 0, 10 0, 10 10, 0 10, 0 0, 5 0)",
+            0.5,
+            "LINESTRING (5 0, 10 0, 10 10, 0 10, 0 0, 5 0)",
+        ),
+    ];
+    for (input, tolerance, expected) in cases {
+        let got = one(input).simplify(tolerance, false).unwrap();
+        let want = one(expected);
+        assert_eq!(got.to_wkt().unwrap(), want.to_wkt().unwrap(), "{input}");
+    }
+}
+
+#[test]
+fn rdp_zero_tolerance_drops_collinear_vertices() {
+    // GEOS: a vertex at distance 0 is within tolerance 0.
+    let out = one("LINESTRING (0 0, 1 1, 2 2, 3 0)")
+        .simplify(0.0, false)
+        .unwrap();
+    assert_eq!(
+        out.to_wkt().unwrap(),
+        one("LINESTRING (0 0, 2 2, 3 0)").to_wkt().unwrap()
+    );
+}
+
 #[test]
 fn simplify_leaves_points_and_nulls() {
     let src = col(&[Some("POINT (1 2)"), None]);

@@ -101,11 +101,24 @@ def comparable_crs(crs, entry):
     return crs
 
 
+def same_crs(actual, expected):
+    """Equal CRS, or the same EPSG code when only naming differs.
+
+    GeoFrame writes PROJJSON translated from WKT1 tables, with projected axes as easting,
+    northing (how GeoParquet stores coordinates) and a plain datum where EPSG now lists an
+    ensemble (ETRS89). pyproj then needs a lower confidence to identify the code (EPSG:3035,
+    EPSG:3031) although the definition and the `id` agree."""
+    wanted = CRS.from_user_input(expected)
+    if actual.equals(wanted, ignore_axis_order=True):
+        return True
+    return wanted.to_epsg() is not None and actual.to_epsg(min_confidence=20) == wanted.to_epsg()
+
+
 def check_frame(file, gdf, entry):
     if entry["crs"] is None:
         if gdf.crs is not None:
             fail(file, f"crs {gdf.crs!r} != None")
-    elif gdf.crs is None or comparable_crs(gdf.crs, entry) != CRS.from_user_input(entry["crs"]):
+    elif gdf.crs is None or not same_crs(comparable_crs(gdf.crs, entry), entry["crs"]):
         fail(file, f"crs {gdf.crs!r} != {entry['crs']!r}")
     geoms = list(gdf.geometry)
     if len(geoms) != len(entry["wkt"]):

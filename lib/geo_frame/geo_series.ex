@@ -660,9 +660,14 @@ defmodule GeoFrame.GeoSeries do
 
     * `true` - Visvalingam-Whyatt with topology checks (`geo`'s `SimplifyVwPreserve`):
       `tolerance` is a minimum triangle **area** and rings never self-intersect or collapse.
-    * `false` - Ramer-Douglas-Peucker (`geo`'s `Simplify`): `tolerance` is a maximum
-      **distance** from the original, like Shapely's `preserve_topology=False`; output can
-      be invalid.
+    * `false` - Ramer-Douglas-Peucker as GEOS does it (Shapely's `preserve_topology=False`):
+      `tolerance` is a maximum **distance** from the original. A ring that collapses to fewer
+      than four vertices is removed: a hole disappears, a polygon whose shell collapses
+      becomes empty, multipolygon parts and collection members drop, and a multi geometry
+      with one part left is that part. A ring's start vertex is dropped when it lies within the
+      tolerance of the chord between its neighbours. Lines keep their two end points at least. The output
+      can be invalid; GEOS repairs such a result with `buffer(0)` (a self-crossing ring,
+      parts that touch along an edge) and this library does not, so those inputs differ.
 
   Shapely's topology-preserving mode is a distance-based Douglas-Peucker variant, so the
   same `tolerance` yields different vertices here in the default mode.

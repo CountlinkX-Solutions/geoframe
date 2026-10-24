@@ -220,6 +220,73 @@ Z3_CORPUS = {
 }
 CORPUS.update(Z3_CORPUS)
 
+# Issue #87: discrete Hausdorff distance between polygons measures to the boundary (linework).
+H_CORPUS = {
+    "h_sq": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))",
+    "h_notch": "POLYGON ((0 0, 10 0, 10 10, 5 5, 0 10, 0 0))",
+    "h_hole": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (3 3, 7 3, 7 7, 3 7, 3 3))",
+    "h_hole_off": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (1 1, 3 1, 3 2, 1 1))",
+    "h_inner": "POLYGON ((4 4, 6 4, 6 6, 4 6, 4 4))",
+    "h_tri": "POLYGON ((0 0, 10 0, 5 2, 0 0))",
+    "h_far": "POLYGON ((20 0, 30 0, 30 10, 20 10, 20 0))",
+    "h_star": "POLYGON ((5 -3, 7 3, 13 5, 7 7, 5 13, 3 7, -3 5, 3 3, 5 -3))",
+    "h_mp": "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((20 0, 30 0, 30 10, 20 10, 20 0)))",
+    "h_mp_island": "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0), (3 3, 7 3, 7 7, 3 7, 3 3)), ((4 4, 6 4, 6 6, 4 6, 4 4)))",
+    "h_pt": "POINT (5 5)",
+    "h_mpt": "MULTIPOINT ((1 1), (20 20))",
+    "h_line": "LINESTRING (2 -4, 14 12)",
+    "h_coll": "GEOMETRYCOLLECTION (POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0)), POINT (30 30))",
+}
+CORPUS.update(H_CORPUS)
+
+# Issue #89: simplify(preserve_topology=False) is GEOS Douglas-Peucker, which removes the rings
+# that collapse (geo's version keeps four vertices per ring).
+S_CORPUS = {
+    "s_tri": "POLYGON ((0 0, 0.1 0, 0.05 0.1, 0 0))",
+    "s_sq": "POLYGON ((0 0, 0.1 0, 0.1 0.1, 0 0.1, 0 0))",
+    "s_unit_sq": "POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))",
+    "s_sliver": "POLYGON ((0 0, 10 0.1, 20 0, 10 -0.1, 0 0))",
+    "s_sliver_open": "POLYGON ((0 0, 10 0.1, 20 0, 10 0.05, 0 0))",
+    "s_bumpy": "POLYGON ((0 0, 5 0.01, 10 0, 10 10, 0 10, 0 0))",
+    "s_mp_island": "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((20 20, 20.1 20, 20.1 20.1, 20 20.1, 20 20)))",
+    "s_mp_islands": "MULTIPOLYGON (((0 0, 4 0, 4 4, 0 4, 0 0)), ((20 20, 20.1 20, 20.1 20.1, 20 20.1, 20 20)), ((10 0, 14 0, 14 4, 10 4, 10 0)))",
+    "s_mp_tiny": "MULTIPOLYGON (((0 0, 0.1 0, 0.1 0.1, 0 0.1, 0 0)), ((20 20, 20.1 20, 20.1 20.1, 20 20.1, 20 20)))",
+    "s_mp_one": "MULTIPOLYGON (((0 0, 4 0, 4 4, 0 4, 0 0)))",
+    "s_mp_hole": "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0), (4 4, 4.1 4, 4.1 4.1, 4 4.1, 4 4)), ((20 20, 20.1 20, 20.1 20.1, 20 20.1, 20 20)))",
+    "s_hole_tiny": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (4 4, 4.1 4, 4.1 4.1, 4 4.1, 4 4))",
+    "s_hole_tiny_tri": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (4 4, 4.2 4, 4.1 4.2, 4 4))",
+    "s_hole_ok": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 8 2, 8 8, 2 8, 2 2))",
+    "s_hole_mixed": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 3 2, 3 3, 2 3, 2 2), (5 5, 5.1 5, 5.1 5.1, 5 5.1, 5 5))",
+    "s_shell_hole": "POLYGON ((0 0, 0.5 0, 0.5 0.5, 0 0.5, 0 0), (0.1 0.1, 0.2 0.1, 0.2 0.2, 0.1 0.2, 0.1 0.1))",
+    "s_to_quad": "POLYGON ((0 0, 10 0.2, 20 0, 20 20, 10 20.2, 0 20, 0 0))",
+    "s_line_collapse": "LINESTRING (0 0, 0.3 0.1, 0.6 -0.1, 1 0)",
+    "s_line_closed_small": "LINESTRING (0 0, 0.5 0.5, 1 0, 0 0)",
+    "s_line_closed_big": "LINESTRING (0 0, 5 5, 10 0, 0 0)",
+    "s_line_collinear": "LINESTRING (0 0, 1 1, 2 2, 3 0)",
+    "s_line_two": "LINESTRING (0 0, 1 1)",
+    "s_line_dup": "LINESTRING (0 0, 0 0)",
+    "s_mls": "MULTILINESTRING ((0 0, 0.3 0.1, 1 0), (5 5, 8 8.01, 10 10))",
+    "s_mls_one": "MULTILINESTRING ((0 0, 0.3 0.1, 1 0))",
+    "s_coll": "GEOMETRYCOLLECTION (POLYGON ((0 0, 0.1 0, 0.05 0.1, 0 0)), LINESTRING (0 0, 0.3 0.1, 1 0), POINT (1 1))",
+    "s_coll_polys": "GEOMETRYCOLLECTION (POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0)), POLYGON ((20 20, 20.1 20, 20.1 20.1, 20 20.1, 20 20)))",
+    "s_coll_all_tiny": "GEOMETRYCOLLECTION (POLYGON ((0 0, 0.1 0, 0.1 0.1, 0 0.1, 0 0)))",
+    "s_mpt_one": "MULTIPOINT ((1 1))",
+    "s_pt": "POINT (1 1)",
+    # GEOS also drops a redundant ring start vertex.
+    "s_start_tri": "POLYGON ((2.5 5, 0 0, 10 0, 5 10, 2.5 5))",
+    "s_start_edge": "POLYGON ((5 0, 10 0, 10 10, 0 10, 0 0, 5 0))",
+    "s_start_bump": "POLYGON ((6 0.01, 10 0, 10 10, 0 10, 0 0, 5 0, 6 0.01))",
+    "s_start_corner": "POLYGON ((0 0, 5 0.1, 10 0, 10 10, 0 10, 0 0))",
+    "s_start_hole": "POLYGON ((0 0, 20 0, 20 20, 0 20, 0 0), (5 7, 5 5, 10 5, 10 10, 5 10, 5 7))",
+    "s_start_degenerate": "POLYGON ((5 0, 0 0, 10 0, 5 0))",
+    "s_start_line": "LINESTRING (5 0, 10 0, 10 10, 0 10, 0 0, 5 0)",
+    # Douglas-Peucker output that is invalid: GEOS repairs it with buffer(0), GeoFrame does not.
+    "s_cross": "POLYGON ((0 0, 10 0, 10 10, 5 -3, 0 10, 0 0))",
+    "s_touching": "MULTIPOLYGON (((0 0, 4 0, 4 4, 0 4, 0 0)), ((4 0, 8 0, 8 4, 4 4, 4 0)))",
+    "s_bowtie_ring": "POLYGON ((0 0, 10 0, 0 10, 10 10, 0 0))",
+}
+CORPUS.update(S_CORPUS)
+
 
 def geom(cid):
     w = CORPUS[cid]
@@ -339,7 +406,7 @@ def singles(ids):
 NON_EMPTY_2D = [
     k for k, w in CORPUS.items()
     if w is not None and "EMPTY" not in w
-    and not k.startswith(("g_", "e_", "i_", "j_", "z_", "z2_", "z3_"))
+    and not k.startswith(("g_", "e_", "i_", "j_", "z_", "z2_", "z3_", "h_", "s_"))
 ]
 EMPTIES = ["pt_empty", "line_empty", "poly_empty", "coll_empty", "null"]
 GEO = [k for k in CORPUS if k.startswith("g_")]
@@ -366,6 +433,7 @@ def build_measures():
     w.add_set("all_nonnull", singles([i for i in allv if i != "null"]))
     w.add_set("dist", pairs(["pt1", "pt2", "line_h", "line_diag", "sq", "sq_hole", "sq_far", "mpoly", "coll"]) + NULLISH_PAIRS)
     w.add_set("hd", pairs(["pt1", "line_h", "line_diag", "line_cross", "sq", "tri", "sq_far", "ell", "mpoly"]))
+    w.add_set("hd_poly", pairs(sorted(H_CORPUS)))
     w.add_set("fd", pairs(["line_h", "line_diag", "line_cross", "line_closed", "line_self", "line_dup"]))
     w.group("area", "float", "all", lambda a, b: a.area)
     w.group("length", "float", "all", lambda a, b: a.length)
@@ -381,6 +449,12 @@ def build_measures():
     w.group("hausdorff_distance", "float", "hd", lambda a, b: a.hausdorff_distance(b, align=False))
     w.group("hausdorff_distance", "float", "hd", lambda a, b: a.hausdorff_distance(b, densify=0.25, align=False),
             label="hausdorff_distance(densify=0.25)", args={"densify": 0.25})
+    w.group("hausdorff_distance", "float", "hd_poly", lambda a, b: a.hausdorff_distance(b, align=False),
+            label="hausdorff_distance(polygons)")
+    for densify in (0.25, 0.5):
+        w.group("hausdorff_distance", "float", "hd_poly",
+                lambda a, b, d=densify: a.hausdorff_distance(b, densify=d, align=False),
+                label=f"hausdorff_distance(polygons, densify={densify})", args={"densify": densify})
     w.group("frechet_distance", "float", "fd", lambda a, b: a.frechet_distance(b, align=False))
     w.group("frechet_distance", "float", "fd", lambda a, b: a.frechet_distance(b, densify=0.5, align=False),
             label="frechet_distance(densify=0.5)", args={"densify": 0.5})
@@ -464,9 +538,15 @@ def build_constructive():
             label="buffer(1.0, square, bevel)", args={"distance": 1.0, "cap_style": "square", "join_style": "bevel"})
     w.group("buffer", "geom", "buf", lambda a, b: a.buffer(1.0, quad_segs=4),
             label="buffer(1.0, quad_segs=4)", args={"distance": 1.0, "quad_segs": 4})
+    w.add_set("simp_collapse", singles(sorted(S_CORPUS)))
     w.add_set("simp", singles(["line_diag", "line_dup", "sq", "sq_hole", "ell", "tri", "mpoly", "line_self"]))
     w.group("simplify", "geom", "simp", lambda a, b: a.simplify(1.0, preserve_topology=False),
             label="simplify(1.0, preserve_topology=false)", args={"tolerance": 1.0, "preserve_topology": False})
+    for tol in (1.0, 0.0, 0.05):
+        w.group("simplify", "geom", "simp_collapse",
+                lambda a, b, t=tol: a.simplify(t, preserve_topology=False),
+                label=f"simplify({tol}, preserve_topology=false, collapse)",
+                args={"tolerance": tol, "preserve_topology": False})
     w.group("simplify", "geom", "simp", lambda a, b: a.simplify(0.5),
             label="simplify(0.5)", args={"tolerance": 0.5})
     w.add_set("seg", singles(["line_h", "line_diag", "sq", "sq_hole", "mline", "pt1"]))

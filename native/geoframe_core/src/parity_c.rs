@@ -9,7 +9,8 @@
 //! * `interpolate`/`project` treat a `MultiLineString` as its parts laid end to end (GEOS
 //!   linear referencing): the gap between two parts has no length.
 //! * `hausdorff_distance` is the *discrete* GEOS algorithm: the largest distance from a vertex
-//!   of one geometry to the *whole* other geometry (not to its nearest vertex), both ways.
+//!   of one geometry to the *linework* of the other (not to its nearest vertex), both ways.
+//!   Polygons count as their rings only: a vertex inside a polygon is not at distance zero.
 //!   `densify` adds vertices at `k / round(1 / densify)` along every segment first.
 //! * `frechet_distance` is the discrete Fréchet distance over vertices and needs two
 //!   linestrings; anything else is null.
@@ -320,6 +321,45 @@ fn sample_coords(g: &Geometry<f64>, pieces: Option<usize>) -> Vec<Coord<f64>> {
     }
 }
 
+/// Distance from `c` to the linework of `g`, GEOS `EuclideanDistanceToPoint`: polygons count as
+/// their rings only (a point inside a polygon is *not* at distance zero), points count as points.
+/// `None` when `g` has no linework or points at all.
+fn distance_to_linework(at: Coord<f64>, g: &Geometry<f64>) -> Option<f64> {
+    let p = Point::from(at);
+    let line = |l: &LineString<f64>| Euclidean.distance(&p, l);
+    let polygon = |poly: &Polygon<f64>| {
+        std::iter::once(poly.exterior())
+            .chain(poly.interiors())
+            .map(line)
+            .reduce(f64::min)
+    };
+    match g {
+        Geometry::Point(q) => Some(Euclidean.distance(&p, q)),
+        Geometry::MultiPoint(m) => {
+            m.0.iter()
+                .map(|q| Euclidean.distance(&p, q))
+                .reduce(f64::min)
+        }
+        Geometry::Line(l) => Some(Euclidean.distance(&p, l)),
+        Geometry::LineString(l) => (!l.0.is_empty()).then(|| line(l)),
+        Geometry::MultiLineString(m) => {
+            m.0.iter()
+                .filter(|l| !l.0.is_empty())
+                .map(line)
+                .reduce(f64::min)
+        }
+        Geometry::Polygon(poly) => polygon(poly),
+        Geometry::MultiPolygon(m) => m.0.iter().filter_map(polygon).reduce(f64::min),
+        Geometry::Rect(r) => polygon(&r.to_polygon()),
+        Geometry::Triangle(t) => polygon(&t.to_polygon()),
+        Geometry::GeometryCollection(members) => members
+            .0
+            .iter()
+            .filter_map(|m| distance_to_linework(at, m))
+            .reduce(f64::min),
+    }
+}
+
 fn directed_hausdorff(
     from: &Geometry<f64>,
     to: &Geometry<f64>,
@@ -327,7 +367,7 @@ fn directed_hausdorff(
 ) -> Option<f64> {
     sample_coords(from, pieces)
         .into_iter()
-        .map(|c| Euclidean.distance(&Geometry::Point(Point::from(c)), to))
+        .filter_map(|c| distance_to_linework(c, to))
         .reduce(f64::max)
 }
 

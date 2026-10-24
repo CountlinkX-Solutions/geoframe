@@ -797,22 +797,51 @@ fn well_known_projected_crs_are_written_as_complete_projjson() {
     assert_eq!(value("Longitude of natural origin"), -177);
     assert_eq!(value("False northing"), 10000000);
 
-    // Anything else keeps the identifier-only stub, which reads back in GeoFrame.
+    // Any other EPSG code in the bundled table is translated from its WKT1 definition; the
+    // object has a top-level `type`, which pyproj requires.
+    for (code, kind) in [
+        (3035, "ProjectedCRS"),
+        (2154, "ProjectedCRS"),
+        (2236, "ProjectedCRS"),
+        (4258, "GeographicCRS"),
+    ] {
+        write_geoparquet(
+            &file,
+            &points(2, Some(&format!("EPSG:{code}"))),
+            "geometry",
+            &attributes(2),
+        )
+        .unwrap();
+        let crs = crs_in_geo(&file);
+        assert_eq!(crs["type"], kind, "EPSG:{code}");
+        assert_eq!(crs["id"]["code"], code);
+        assert_eq!(
+            read_geoparquet(&file, None)
+                .unwrap()
+                .geometry
+                .crs()
+                .as_deref(),
+            Some(format!("EPSG:{code}").as_str())
+        );
+    }
+
+    // An identifier without a definition keeps the identifier-only stub, which reads back in
+    // GeoFrame.
     write_geoparquet(
         &file,
-        &points(2, Some("EPSG:2236")),
+        &points(2, Some("EPSG:99999")),
         "geometry",
         &attributes(2),
     )
     .unwrap();
-    assert_eq!(crs_in_geo(&file)["id"]["code"], 2236);
+    assert_eq!(crs_in_geo(&file)["id"]["code"], 99999);
     assert_eq!(
         read_geoparquet(&file, None)
             .unwrap()
             .geometry
             .crs()
             .as_deref(),
-        Some("EPSG:2236")
+        Some("EPSG:99999")
     );
 }
 

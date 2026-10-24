@@ -427,6 +427,84 @@ defmodule GeoFrame.ParityG1Test do
     end
   end
 
+  # -- CRS metadata (issue #88) -------------------------------------------------------------
+
+  describe "GeoParquet CRS metadata against pyproj's PROJJSON" do
+    @projjson @fixtures |> Path.join("crs_projjson.json") |> File.read!() |> Jason.decode!()
+
+    defp written_crs(dir, code) do
+      path = Path.join(dir, "crs_#{code}.parquet")
+      assert :ok = GeoFrame.write_parquet(points(2, "EPSG:#{code}"), path)
+      {path, GeoFrame.geoparquet_metadata!(path)["columns"]["geometry"]["crs"]}
+    end
+
+    # The parts of a PROJJSON object that define the CRS, in a comparable form. Names, datum
+    # naming and axis directions are left out: the table GeoFrame translates from carries the
+    # WKT1 names, and its axes are x/y as GeoParquet stores coordinates (pyproj lists EPSG:3035
+    # as northing first). The axis units are compared.
+    defp essence(crs) do
+      datum =
+        crs["datum"] || crs["datum_ensemble"] || get_in(crs, ["base_crs", "datum"]) ||
+          get_in(crs, ["base_crs", "datum_ensemble"])
+
+      %{
+        type: crs["type"],
+        id: crs["id"]["code"],
+        ellipsoid:
+          {datum["ellipsoid"]["semi_major_axis"], inverse_flattening(datum["ellipsoid"])},
+        method: get_in(crs, ["conversion", "method", "id", "code"]),
+        parameters:
+          for(
+            p <- get_in(crs, ["conversion", "parameters"]) || [],
+            into: %{},
+            do: {p["id"]["code"], p["value"]}
+          ),
+        axes: crs["coordinate_system"]["axis"] |> Enum.map(& &1["unit"])
+      }
+    end
+
+    defp inverse_flattening(%{"inverse_flattening" => f}), do: f
+
+    defp inverse_flattening(%{"semi_major_axis" => a, "semi_minor_axis" => b}),
+      do: a / (a - b)
+
+    for {code, reference} <- @projjson["crs"] do
+      test "EPSG:#{code} is complete PROJJSON that agrees with pyproj", %{tmp_dir: dir} do
+        code = unquote(code)
+        reference = unquote(Macro.escape(reference))
+        {path, crs} = written_crs(dir, code)
+
+        # `type` is what pyproj insists on: without it proj_create fails on the object.
+        assert crs["type"] == reference["type"]
+        ours = essence(crs)
+        theirs = essence(reference)
+
+        assert ours.id == theirs.id
+        assert ours.method == theirs.method
+        assert ours.axes == theirs.axes
+        assert elem(ours.ellipsoid, 0) == elem(theirs.ellipsoid, 0)
+        assert_in_delta elem(ours.ellipsoid, 1), elem(theirs.ellipsoid, 1), 1.0e-6
+
+        assert Map.keys(ours.parameters) |> Enum.sort() ==
+                 Map.keys(theirs.parameters) |> Enum.sort()
+
+        for {id, value} <- ours.parameters do
+          assert_in_delta value, theirs.parameters[id], 1.0e-9, "parameter #{id}"
+        end
+
+        assert {:ok, back} = GeoFrame.read_parquet(path)
+        assert GeoDataFrame.crs(back) == "EPSG:#{code}"
+      end
+    end
+
+    test "GeoFrame reads the files GeoPandas wrote for these CRS" do
+      for code <- [3035, 32_633] do
+        path = Path.join(@fixtures, "wkb_#{code}.parquet")
+        assert GeoDataFrame.crs(GeoFrame.read_file!(path)) == "EPSG:#{code}"
+      end
+    end
+  end
+
   # -- properties ---------------------------------------------------------------------------
 
   describe "properties" do
