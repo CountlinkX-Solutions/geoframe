@@ -1,9 +1,10 @@
-# GeoFrame deck.gl map
+# GeoFrame deck.gl map on real data
 
 ```elixir
 Mix.install([
   {:geoframe, path: Path.join(__DIR__, "..")},
-  {:kino, "~> 0.19"}
+  {:kino, "~> 0.19"},
+  {:req, "~> 0.5"}
 ])
 ```
 
@@ -13,19 +14,144 @@ Mix.install([
 draws it with deck.gl, so a million points stay interactive. deck.gl and the Carto basemap load
 from the internet in your browser.
 
-## Neighborhood polygons
-
-Color by a numeric column with the viridis ramp, outline the polygons and show a tooltip on
-hover.
+The examples use [Natural Earth](https://www.naturalearthdata.com/) vector data (public domain),
+downloaded on first run into the system temp directory.
 
 ```elixir
-path = Path.join([__DIR__, "..", "test", "fixtures", "neighborhoods.parquet"]) |> Path.expand()
-gdf = GeoFrame.read_parquet!(path)
+base = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson"
 
-GeoFrame.Kino.deck(gdf, color: {:population, :viridis}, opacity: 0.7, tooltip: [:name, :population])
+fetch = fn name ->
+  path = Path.join(System.tmp_dir!(), name)
+
+  unless File.exists?(path) do
+    Req.get!("#{base}/#{name}", into: File.stream!(path)) |> then(& &1.status) |> then(&(200 = &1))
+  end
+
+  path
+end
 ```
 
-## One million points
+## World countries
+
+Read the 110m countries file and color each country by population with the viridis ramp. Hover
+for the name, population and GDP.
+
+```elixir
+countries =
+  fetch.("ne_110m_admin_0_countries.geojson")
+  |> GeoFrame.read_file!()
+  |> GeoFrame.GeoDataFrame.select(["NAME", "ADM0_A3", "CONTINENT", "POP_EST", "GDP_MD"])
+
+GeoFrame.Kino.deck(countries,
+  color: {"POP_EST", :viridis},
+  opacity: 0.8,
+  tooltip: ["NAME", "POP_EST", "GDP_MD"]
+)
+```
+
+Population alone mostly maps country size. Project to an equal-area CRS (EPSG:6933), compute the
+area in km² and color by people per km² instead; the widget reprojects back to longitude and
+latitude by itself.
+
+```elixir
+density =
+  countries
+  |> GeoFrame.GeoDataFrame.to_crs("EPSG:6933")
+  |> then(fn gdf ->
+    area_km2 = gdf |> GeoFrame.GeoDataFrame.area() |> Explorer.Series.divide(1_000_000)
+    GeoFrame.GeoDataFrame.put(gdf, "AREA_KM2", area_km2)
+  end)
+  |> GeoFrame.GeoDataFrame.mutate_with(fn df ->
+    [DENSITY: Explorer.Series.divide(df["POP_EST"], df["AREA_KM2"])]
+  end)
+
+GeoFrame.Kino.deck(density, color: {"DENSITY", :viridis}, tooltip: ["NAME", "POP_EST", "DENSITY"])
+```
+
+## Cities
+
+The 10m populated places as points: radius by the largest population estimate, a fixed orange
+color, and cities above one million people only. Hover for name, country and population.
+
+```elixir
+cities =
+  fetch.("ne_10m_populated_places_simple.geojson")
+  |> GeoFrame.read_file!()
+  |> GeoFrame.GeoDataFrame.select(["name", "adm0name", "pop_max", "megacity"])
+
+big_cities = GeoFrame.GeoDataFrame.filter_with(cities, &Explorer.Series.greater(&1["pop_max"], 1_000_000))
+
+GeoFrame.Kino.deck(big_cities,
+  color: {230, 100, 30},
+  radius: "pop_max",
+  opacity: 0.7,
+  tooltip: ["name", "adm0name", "pop_max"]
+)
+```
+
+## Rivers
+
+The 50m river centerlines are lines. Color them by the Natural Earth `scalerank` (smaller is a
+more important river); `:width` also accepts a numeric column.
+
+```elixir
+rivers = fetch.("ne_50m_rivers_lake_centerlines.geojson") |> GeoFrame.read_file!()
+
+GeoFrame.Kino.deck(rivers, color: {"scalerank", :viridis}, width: 2, tooltip: ["name", "scalerank"])
+```
+
+## Cities per country
+
+A spatial join answers "which country is each city in?". Keep the country name and code, join
+every city to the country polygon that contains it, then count the cities per country and
+color the countries by that count.
+
+```elixir
+alias Explorer.DataFrame, as: DF
+
+country_keys = GeoFrame.GeoDataFrame.select(countries, ["ADM0_A3"])
+
+located = GeoFrame.sjoin(cities, country_keys, how: :inner, predicate: :within)
+
+counts =
+  located
+  |> GeoFrame.GeoDataFrame.data()
+  |> DF.group_by("ADM0_A3")
+  |> DF.summarise_with(&[N_CITIES: Explorer.Series.count(&1["name"])])
+
+by_country = GeoFrame.GeoDataFrame.join(countries, counts, on: "ADM0_A3", how: :left)
+
+GeoFrame.Kino.deck(by_country, color: {"N_CITIES", :viridis}, tooltip: ["NAME", "N_CITIES"])
+```
+
+
+
+## Smart Cells
+
+With `geoframe` installed, Livebook's **Smart** menu offers two cells that write the code for
+you:
+
+* **Read spatial file** reads a file with `GeoFrame.read_file!/2`. Choose the path, the driver
+  (or leave it on `auto`), a GeoPackage layer, an optional bounding box and target CRS, and
+  tick **Show map** to end the cell with `GeoFrame.Kino.deck/2`.
+* **Spatial join** lists the `GeoDataFrame` variables of the notebook (evaluate the cell that
+  creates them first) and generates `GeoFrame.sjoin/3` or `GeoFrame.sjoin_nearest/3`.
+
+The cells generate plain Elixir, which **Convert to Code cell** keeps. Point **Read spatial
+file** at the cities file the notebook downloaded (`Path.join(System.tmp_dir!(), "ne_10m_populated_places_simple.geojson")`),
+and in **Spatial join** pick `cities` on the left and `countries` on the right with the
+`within` predicate. This is what they write, and it runs headlessly:
+
+```elixir
+path = Path.join(System.tmp_dir!(), "ne_10m_populated_places_simple.geojson")
+
+places = GeoFrame.read_file!(path)
+joined = GeoFrame.sjoin(places, countries, how: :inner, predicate: :within)
+
+GeoFrame.Kino.deck(joined, radius: 3, tooltip: ["name", "NAME"])
+```
+
+## Scaling: one million points (optional)
 
 Random points over South Florida, reprojected from Web Mercator to show that the widget
 converts to longitude/latitude first. Color by a categorical column and size by a number.
@@ -54,33 +180,4 @@ GeoFrame.Kino.deck(frame,
   opacity: 0.6,
   tooltip: [:zone, :size]
 )
-```
-
-## Smart Cells
-
-With `geoframe` installed, Livebook's **Smart** menu offers two cells that write the code for
-you:
-
-* **Read spatial file** reads a file with `GeoFrame.read_file!/2`. Choose the path, the driver
-  (or leave it on `auto`), a GeoPackage layer, an optional bounding box and target CRS, and
-  tick **Show map** to end the cell with `GeoFrame.Kino.deck/2`.
-* **Spatial join** lists the `GeoDataFrame` variables of the notebook (evaluate the cell that
-  creates them first) and generates `GeoFrame.sjoin/3` or `GeoFrame.sjoin_nearest/3`.
-
-The cells generate plain Elixir, which **Convert to Code cell** keeps. This is what they write
-for the neighborhoods file, joined with its nearest other neighborhood; it also runs headlessly:
-
-```elixir
-path = Path.join([__DIR__, "..", "test", "fixtures", "neighborhoods.parquet"]) |> Path.expand()
-
-neighborhoods = GeoFrame.read_file!(path)
-neighborhoods = GeoFrame.GeoDataFrame.to_crs(neighborhoods, 3857)
-joined =
-  GeoFrame.sjoin_nearest(neighborhoods, neighborhoods,
-    how: :left,
-    exclusive: true,
-    distance_col: "dist"
-  )
-
-GeoFrame.Kino.deck(joined, tooltip: [:name_left, :name_right, :dist])
 ```
