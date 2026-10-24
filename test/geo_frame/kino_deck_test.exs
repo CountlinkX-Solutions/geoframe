@@ -192,8 +192,8 @@ defmodule GeoFrame.Kino.DeckTest do
       assert hd(legend.stops) == [68, 1, 84]
       assert List.last(legend.stops) == [253, 231, 37]
       assert length(legend.stops) == 9
-      assert Enum.map(legend.ticks, & &1.label) == ["0", "2.5", "5", "7.5", "10"]
-      assert Enum.map(legend.ticks, & &1.position) == [0.0, 0.25, 0.5, 0.75, 1.0]
+      assert Enum.map(legend.ticks, & &1.label) == ["0", "5", "10"]
+      assert Enum.map(legend.ticks, & &1.position) == [0.0, 0.5, 1.0]
       assert legend.missing == false
     end
 
@@ -201,7 +201,19 @@ defmodule GeoFrame.Kino.DeckTest do
       legend =
         legend(Deck.payload(numeric_frame([0, 1_500_000, 3_000_000]), color: {:v, :viridis}))
 
-      assert Enum.map(legend.ticks, & &1.label) == ["0", "750k", "1.5M", "2.25M", "3M"]
+      assert Enum.map(legend.ticks, & &1.label) == ["0", "1.5M", "3M"]
+    end
+
+    test "tick labels keep three significant digits so they fit the bar" do
+      legend =
+        legend(Deck.payload(numeric_frame([31_370.0, 2_360_000.0]), color: {:v, :viridis}))
+
+      assert Enum.map(legend.ticks, & &1.label) == ["31.4k", "1.2M", "2.36M"]
+
+      legend = legend(Deck.payload(numeric_frame([0.0, 614_270.0]), color: {:v, :viridis}))
+      assert Enum.map(legend.ticks, & &1.label) == ["0", "307k", "614k"]
+      legend = legend(Deck.payload(numeric_frame([100.0, 1_220_000.0]), color: {:v, :viridis}))
+      assert Enum.map(legend.ticks, & &1.label) == ["100", "610k", "1.22M"]
     end
 
     test "a numeric legend flags missing values" do
