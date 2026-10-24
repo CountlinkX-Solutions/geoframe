@@ -279,7 +279,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 |---|---|---|---|---|
 | `crs` | CRS in metadata | `crs/1` (Series + GDF) | ✅ | |
 | `set_crs` | `set_crs` yes | `set_crs/2` (Series + GDF) | 🟡 | relabel only; no `allow_override`, no integer EPSG input (string/nil only) |
-| `to_crs` | `to_crs` yes (PROJ) | `to_crs/2` | 🟡 | proj4rs (no pipelines); datum shifts by NTv2 / GeoTIFF grids from a user-supplied directory or else a Helmert set, never downloaded: see [Datum shifts and grids](#datum-shifts-and-grids); accepts string or integer; Z kept (unchanged between non-geocentric CRSs, transformed to or from a geocentric one such as `EPSG:4978`), M dropped; see [Z and M](#z-and-m) |
+| `to_crs` | `to_crs` yes (PROJ) | `to_crs/2` | 🟡 | proj4rs (no pipelines) plus the PROJ projections it lacks (see [Datum shifts and grids](#datum-shifts-and-grids)); datum shifts by NTv2 / GeoTIFF grids from a user-supplied directory or else the Helmert operation PROJ picks by area of use, never downloaded: see [Datum shifts and grids](#datum-shifts-and-grids); accepts string or integer; Z kept (unchanged between non-geocentric CRSs, transformed to or from a geocentric one such as `EPSG:4978`), M dropped; see [Z and M](#z-and-m) |
 | `estimate_utm_crs` | `estimate_utm_crs(datum_name="WGS 84")` | `estimate_utm_crs/2` (`datum_name:`) | ✅ | the first EPSG UTM CRS of the datum, by code, whose area of use contains the centre of the bounds: the answer of `pyproj.database.query_utm_crs_info` (table generated from the PROJ database, any datum with UTM CRSs: WGS 84 80S-84N, NAD83, NAD27, ETRS89, ...). Geographic input is centred on its raw bounds, any other CRS on its lon/lat bounds (densified edges, pole and antimeridian handling as `transform_bounds`). Norway (32V) and Svalbard (32X/34X/36X) exceptions are **not** applied, because pyproj and GeoPandas do not apply them (`5 E, 60 N` is 32631, not 32632); zone edges belong to both zones and the lower code wins. 7 034 grid, edge, pole, antimeridian, projected-CRS and datum cases agree with GeoPandas 1.2 (issue #62) |
 | `crs` mismatch behaviour | — | raises | ✅ | stricter than GeoPandas (which warns) |
 | `Series.crs` setter from pyproj CRS objects | — | — | ⛔ | no pyproj object model |
@@ -289,11 +289,18 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 Issue #62. `to_crs` moves a datum that is not WGS 84 the way PROJ does when it has no network:
 a grid if one is installed, else a Helmert (`+towgs84`) set. GeoFrame never downloads a grid.
 
-* **Helmert (default).** The set stored in the bundled EPSG table, one per datum. `+datum=NAD27`
-  (and the NZGD49 `+nadgrids`), which `proj4rs` refuses to build without a grid file, use
-  `-8, 160, 176 m` (EPSG:1173, "NAD27 to WGS 84 (4)", CONUS) and the NZGD49 7-parameter set: all
-  218 NAD27/NZGD49 CRSs of the table, such as `EPSG:4267` and `EPSG:26717`, used to fail with
-  `NAD grid not available` and now convert.
+* **Helmert by area of use (default).** Without a grid PROJ runs the best Helmert operation whose
+  area of use holds the point, and a ballpark transformation (no shift) where none does.
+  GeoFrame has the same list per datum: `datum_helmert.rs`, generated from the PROJ database
+  by `test/reference/generate_crs_datum.py helmert_table` (`TransformerGroup` of every geographic
+  2D EPSG CRS to WGS 84: 450 CRSs, 293 distinct lists, 697 operations, about 95 KB). Operations
+  are tried by known accuracy, best first, then smaller area, then PROJ's own order (this
+  rule picks PROJ's operation for 96 % of random points over every CRS with three or more
+  operations; ED50 offshore operations are the main exception). Molodensky-Badekas operations
+  are folded into an equivalent Helmert set (pivot in the translation) and inverse steps are
+  inverted. `+datum=NAD27` and NZGD49, which `proj4rs` refuses to build without grid files, are
+  covered the same way. A CRS that PROJ transforms only with a ballpark gets no shift, even if the
+  bundled table lists a `+towgs84` (RD/83, Anguilla 1957 before the offset, ...).
 * **Grids.** NTv2 (`.gsb`) and the GeoTIFF grids of PROJ-data (`.tif`: NTv2 and NADCON
   conversions) are read by `proj4rs`. `GeoFrame.Grids` points at the directories holding them
   (`set_dirs/1`, `config :geoframe, grid_dirs: [...]`, or the `PROJ_NADGRIDS` / `PROJ_DATA`
@@ -303,24 +310,54 @@ a grid if one is installed, else a Helmert (`+towgs84`) set. GeoFrame never down
   geographic CRSs, 104 files, best accuracy first): OSGB36 `uk_os_OSTN15_NTv2_OSGBtoETRS.tif`,
   DHDN `de_adv_BETA2007.tif`, NAD27 `us_noaa_conus.tif`, `ca_nrc_ntv2_0.tif`, ED50
   `es_ign_SPED2ETV2.tif`, NTF, MGI, Tokyo, ... Grids are optional (`+nadgrids=@a,@b`): the ones
-  found are used, and a point outside every grid takes the Helmert set instead of failing, as PROJ
-  moves on to its next operation. Grids that shift to NAD83, ETRS89, GDA94 and similar count as
-  shifting to WGS 84 (PROJ's own step between them is null, 1 to 2 m).
+  found are used, and a point outside every grid takes the Helmert operation instead of failing,
+  as PROJ moves on to its next operation. Grids that shift to NAD83, ETRS89, GDA94 and similar
+  count as shifting to WGS 84 (PROJ's own step between them is null, 1 to 2 m).
+* **Units, prime meridians and axes (issue #97).** A geographic CRS is read and written in its
+  own angular unit: the Paris-meridian CRSs (`EPSG:4807` NTF (Paris), 4901, 4810, 4816, 4821, 4811,
+  4902, ...) are in grads, with the Paris meridian applied, as pyproj with `always_xy`. Projected
+  CRSs whose WKT points an axis south or west get `+axis` (the table lacked it for `EPSG:5513`
+  and `2065`, S-JTSK / Krovak: x is southing, y is westing, so coordinates are positive in the
+  Czech Republic; 5514 is the East North twin). `EPSG:3167` has the false easting PROJ has now
+  (40 000 chains, the table has 40 000 m).
+* **Projections added on top of proj4rs** (`proj_ext.rs`, PROJ's formulas; a CRS using one is
+  resolved as the projection plus the `proj4rs` geographic CRS that does the datum shift):
+  ellipsoidal Equidistant Cylindrical (`eqc`: `proj4rs` uses a sphere, so `EPSG:4087` was 22 km
+  north-south off; PROJ 9 uses the meridian distance), Hotine Oblique Mercator variants A
+  (`+no_uoff`) and B (27 codes such as 2057, 3078, 3375), Cassini-Soldner (30 codes: Tobago,
+  Berlin, Palestine, ...), Polyconic (5472, 5880, ...), Equal Earth (8857-8859) and the New
+  Zealand Map Grid (27200). The `aeqd` feature of `proj4rs` is now on (Guam, FSM: 3295, 3993). Each
+  matches pyproj to the centimetre in both directions (fixture `crs_parity.json`).
 * **Accuracy.** With a grid GeoFrame agrees with PROJ to under 1 mm on the same file (a synthetic
   NTv2 file and its GeoTIFF twin, 44 points inside, 5 outside, both directions;
-  `test/reference/fixtures/crs_datum/grids`). Real grids give centimetres to a metre. Without
-  one the error is that of the Helmert set against the operation PROJ picks for the region
-  (measured on 4 971 EPSG codes against pyproj 3.8 / PROJ 9.8 without grids: 91 % within 5 m,
-  93 % within 10 m, 96 % within 50 m): OSGB36, DHDN, NZGD49, Tokyo, MGI, GDA94 and ETRS89 agree to
-  a few metres or better, ED50 is within ~10 m in Western Europe and up to ~60 m at its eastern
-  edge, SAD69 up to ~20 m, and NAD27 up to ~25 m in Alaska, Canada and the Caribbean (PROJ
-  has a regional operation for each; GeoFrame has one set per datum). The Aleutians west of
-  170 E differ by up to ~215 m, because PROJ applies no shift at all there without a grid.
-* **Not done.** Selecting the Helmert operation by area of use like PROJ; vertical or geoid
-  grids and 3D shifts (heights stay unchanged); `NADCON` `.las/.los` text grids and NTv1 (only
-  the `.tif` conversions and NTv2 are read); `pyproj.sync`-style downloads and `PROJ_NETWORK`;
-  pipelines. Findings from the same sweep that are not datum shifts are in the follow-up issue
-  (grad-unit geographic CRSs such as NTF (Paris), Krovak, `EPSG:4087`).
+  `test/reference/fixtures/crs_datum/grids`). Real grids give centimetres to a metre. Sweep of
+  5 934 non-deprecated geographic 2D and projected EPSG CRSs, three points inside each area of
+  use, GeoFrame `to_crs` to EPSG:4326 against pyproj 3.8 / PROJ 9.8 without grids and
+  `always_xy` (`test/reference/sweep_crs.py`):
+
+  | | before #97 | after #97 |
+  |---|---|---|
+  | compared | 5 014 | 5 081 |
+  | within 5 m | 4 590 (91.5 %) | 5 034 (99.1 %) |
+  | 5 m to 50 m | 214 | 20 |
+  | 50 m to 1 km | 198 | 27 |
+  | 1 km or more | 12 | 0 |
+  | fail: not in the bundled table | 851 | 851 |
+  | fail: projection missing | 68 | 1 (`labrd`, EPSG:8441) |
+  | fail: no projection name | 1 | 1 (EPSG:29701) |
+
+  The 27 codes between 50 m and 1 km are datums whose PROJ operation is not a plain Helmert
+  set, which GeoFrame does not have: `geogoffset` steps (Anguilla 1957 570 m, Greek 190 m, Garoua,
+  Kousseri, ...) and PROJ's own asymmetric ballpark results (RD/83, PD/83: 4326 to the CRS and
+  back disagree by about 190 m inside PROJ).
+* **Not done.** CRSs outside the bundled table (851 codes: 568 Transverse Mercator, 143
+  geographic, Lambert conic, Colombia Urban, ...; newer than the table), because a PROJJSON
+  input needs a top-level `id` that is in the table: converting PROJJSON or WKT definitions to
+  proj strings is the follow-up; Laborde (`labrd`) and Hyperbolic Cassini; `geogoffset` and
+  other non-Helmert operations; selecting by PROJ's exact rule for offshore ED50 operations;
+  vertical or geoid grids and 3D shifts (heights stay unchanged); `NADCON` `.las/.los` text grids
+  and NTv1 (only the `.tif` conversions and NTv2 are read); `pyproj.sync`-style downloads and
+  `PROJ_NETWORK`; pipelines.
 
 ## 11. Spatial index and joins
 

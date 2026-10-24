@@ -30,6 +30,7 @@ use proj4rs::nadgrids::{catalog, formats, Catalog};
 use proj4rs::Proj;
 
 use crate::datum_grids::DATUM_GRIDS;
+use crate::datum_helmert::{DATUM_HELMERT, HELMERT_LISTS};
 use crate::wkt1_projjson::{parse, Node};
 
 static DIRS: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
@@ -137,6 +138,61 @@ pub(crate) fn base_geographic_code(wkt: &str) -> Option<u32> {
     u32::try_from(id["code"].as_u64()?).ok()
 }
 
+/// The unit of a geographic CRS in radians (grads for NTF Paris; degrees for every other CRS, and
+/// for projected ones, whose geographic base is not exposed).
+pub(crate) fn angular_unit(wkt: &str) -> f64 {
+    let degree = std::f64::consts::PI / 180.0;
+    let Some(root) = parse(wkt) else {
+        return degree;
+    };
+    if root.keyword != "GEOGCS" {
+        return degree;
+    }
+    root.child("UNIT")
+        .and_then(|u| u.number(1))
+        .filter(|f| *f > 0.0)
+        // The WKT rounds the degree to 0.0174532925199433: keep the exact value.
+        .map_or(degree, |f| {
+            if (f - degree).abs() < 1e-12 {
+                degree
+            } else {
+                f
+            }
+        })
+}
+
+/// The proj string with the axis directions of the WKT when the table left them out: EPSG:5513
+/// and 2065 (Krovak) use southing and westing, which PROJ writes `+axis=swu`. Only definitions
+/// that point an axis south or west are changed (`+axis=enu` is the default and a swapped
+/// north/east pair is what `always_xy` undoes).
+pub(crate) fn with_axes(proj: &str, wkt: &str) -> String {
+    let proj = proj.to_string();
+    if proj.contains("+axis=") {
+        return proj;
+    }
+    let Some(root) = parse(wkt) else {
+        return proj;
+    };
+    if root.keyword != "PROJCS" {
+        return proj;
+    }
+    let dirs: Vec<char> = root
+        .children("AXIS")
+        .filter_map(|a| match a.text(1)? {
+            "EAST" => Some('e'),
+            "WEST" => Some('w'),
+            "NORTH" => Some('n'),
+            "SOUTH" => Some('s'),
+            _ => None,
+        })
+        .collect();
+    if dirs.len() == 2 && dirs.iter().any(|d| matches!(d, 'w' | 's')) {
+        format!("{proj} +axis={}{}u", dirs[0], dirs[1])
+    } else {
+        proj
+    }
+}
+
 fn without_nadgrids(proj: &str) -> impl Iterator<Item = &str> {
     proj.split_whitespace()
         .filter(|token| !token.starts_with("+nadgrids="))
@@ -177,4 +233,54 @@ pub(crate) fn build(
         }
     }
     Ok((Proj::from_proj_string(&helmert)?, None))
+}
+
+/// The Helmert operations PROJ can pick from for the geographic CRS `code`, each as the
+/// projection `proj` with that operation's `+towgs84`, in the order they are tried, with the area
+/// of use (`[west, south, east, north]` degrees) they apply to, ending with the ballpark (no
+/// shift) PROJ uses where none applies. Empty when the CRS has none.
+pub(crate) fn area_variants(proj: &str, code: Option<u32>) -> Vec<([f64; 4], Proj)> {
+    let Some(code) = code else {
+        return Vec::new();
+    };
+    let Ok(i) = DATUM_HELMERT.binary_search_by_key(&code, |(c, _)| *c) else {
+        return Vec::new();
+    };
+    // A named datum carries its own set: replace it with its ellipsoid, the set is explicit below.
+    let base: Vec<String> = helmert_string(proj)
+        .split_whitespace()
+        .filter(|t| !t.starts_with("+towgs84="))
+        .map(|t| match t.strip_prefix("+datum=") {
+            Some(datum) => format!("+ellps={}", datum_ellipsoid(datum)),
+            None => t.to_string(),
+        })
+        .collect();
+    // Where no operation applies PROJ falls back to its ballpark transformation, which keeps the
+    // coordinates as they are: a projection with no datum shift at all.
+    let ballpark = Proj::from_proj_string(&base.join(" "))
+        .ok()
+        .map(|proj| ([-180.0, -90.0, 180.0, 90.0], proj));
+    HELMERT_LISTS[DATUM_HELMERT[i].1 as usize]
+        .iter()
+        .filter_map(|(area, p)| {
+            let set: Vec<String> = p.iter().map(|v| v.to_string()).collect();
+            let text = format!("{} +towgs84={}", base.join(" "), set.join(","));
+            Proj::from_proj_string(&text).ok().map(|proj| (*area, proj))
+        })
+        .chain(ballpark)
+        .collect()
+}
+
+/// The ellipsoid of the named datums the bundled table uses.
+fn datum_ellipsoid(datum: &str) -> &'static str {
+    match datum {
+        "GGRS87" | "NAD83" => "GRS80",
+        "carthage" => "clrk80ign",
+        "hermannskogel" | "potsdam" => "bessel",
+        "ire65" => "mod_airy",
+        "nzgd49" => "intl",
+        "OSGB36" => "airy",
+        "NAD27" => "clrk66",
+        _ => "WGS84",
+    }
 }

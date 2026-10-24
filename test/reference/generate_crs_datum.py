@@ -9,6 +9,8 @@ Writes into test/reference/fixtures/crs_datum/:
 * native/geoframe_core/src/utm_crs.rs (`utm_table` argument): the EPSG UTM CRS table of the PROJ
                       database that `estimate_utm_crs` filters, in the order pyproj returns it.
 * datum_shifts.json   pyproj (no grids available) vs the points GeoFrame must reproduce.
+* crs_parity.json     pyproj results for the CRSs of issue #97 (axis directions, grads and prime
+                      meridians, ellipsoidal projections, extra projections, Helmert by area).
 * grids/              tiny synthetic NTv2 grids and pyproj results using the same files.
 """
 import json
@@ -129,6 +131,123 @@ def generate_utm_table():
     return len(lines)
 
 
+HELMERT_ELLPS_SKIP = ("geogoffset", "molodensky", "hgridshift", "vgridshift", "deformation", "xyzgridshift")
+
+
+def parse_helmert(definition):
+    """The `+towgs84` (position vector) set equal to a PROJ pipeline that holds one Helmert or
+    Molodensky-Badekas step (inverse steps are inverted, a pivot is folded into the translation),
+    else None."""
+    import re
+    import numpy as np
+    d = re.sub(r"\s+", " ", definition)
+    if any(k in d for k in HELMERT_ELLPS_SKIP) or "t_epoch" in d or "dx=" in d:
+        return None
+    if d.count("proj=helmert") + d.count("proj=molobadekas") != 1:
+        return None
+    m = re.search(r"(inv )?proj=(?:helmert|molobadekas) ([^|]*?)(?: step|$)", d)
+    if not m:
+        return None
+    inverse = bool(m.group(1))
+    kv = dict(tok.split("=", 1) for tok in m.group(2).split() if "=" in tok)
+    if "convention" not in kv and any(k in kv for k in ("rx", "ry", "rz")):
+        return None
+    sign = -1.0 if kv.get("convention") == "coordinate_frame" else 1.0
+    g = lambda k, f=1.0: float(kv.get(k, 0.0)) * f
+    t = np.array([g("x"), g("y"), g("z")])
+    r = np.array([g("rx", sign), g("ry", sign), g("rz", sign)])
+    s = g("s")
+    rad = r * np.pi / 180 / 3600
+    rot = np.array([[1, -rad[2], rad[1]], [rad[2], 1, -rad[0]], [-rad[1], rad[0], 1]])
+    mat = (1 + s * 1e-6) * rot
+    if "px" in kv:  # Molodensky-Badekas: X' = P + T + M (X - P)
+        pivot = np.array([g("px"), g("py"), g("pz")])
+        t = pivot + t - mat @ pivot
+    if inverse:
+        t = -np.linalg.inv(mat) @ t
+        r = -r
+        s = (1 / (1 + s * 1e-6) - 1) * 1e6
+    return [float(v) for v in (*t, *r, s)]
+
+
+def helmert_ops():
+    """Per geographic 2D EPSG CRS: the Helmert operations to WGS 84 PROJ can use without grids, in
+    the order GeoFrame tries them (known accuracy first, best first, then smaller area, then PROJ's
+    own order). Measured against pyproj this rule picks PROJ's operation in ~96 % of the points
+    of a random sample of the area of use of every CRS with three or more operations."""
+    from pyproj.database import query_crs_info
+    from pyproj.enums import PJType
+    from pyproj.transformer import TransformerGroup
+    out = {}
+    skipped = 0
+    for info in query_crs_info("EPSG", pj_types=[PJType.GEOGRAPHIC_2D_CRS]):
+        if info.deprecated:
+            continue
+        try:
+            group = TransformerGroup(int(info.code), 4326, always_xy=True, allow_ballpark=True)
+        except Exception:
+            continue
+        ops = []
+        ballpark_only = True
+        for idx, t in enumerate(group.transformers):
+            if t.area_of_use is None or t.description.startswith(("Ballpark", "Transformation from")):
+                continue
+            ballpark_only = False
+            params = parse_helmert(t.definition)
+            if params is None:
+                skipped += 1
+                continue
+            w, s, e, n = t.area_of_use.bounds
+            acc = t.accuracy if t.accuracy is not None and t.accuracy >= 0 else 1e9
+            ops.append((acc, (e - w) % 360 * (n - s) if w > e else (e - w) * (n - s), idx, [w, s, e, n], params))
+        ops.sort(key=lambda o: o[:3])
+        if ops or ballpark_only:
+            # ballpark only: PROJ keeps the coordinates, so the list is empty (no shift anywhere)
+            out[int(info.code)] = [(o[3], o[4]) for o in ops]
+    return out, skipped
+
+
+def generate_helmert_table():
+    """Write native/geoframe_core/src/datum_helmert.rs."""
+    table, skipped = helmert_ops()
+    lists = []
+    index = {}
+    rows = []
+    for code in sorted(table):
+        key = repr(table[code])
+        if key not in index:
+            index[key] = len(lists)
+            lists.append(table[code])
+        rows.append((code, index[key]))
+    def fmt(v):
+        t = ("%.9f" % v).rstrip("0")
+        return t + "0" if t.endswith(".") else t
+
+    lines = []
+    for i, ops in enumerate(lists):
+        body = ", ".join(
+            "([%s], [%s])" % (", ".join(fmt(b) for b in box), ", ".join(fmt(v) for v in params))
+            for box, params in ops
+        )
+        lines.append("    &[%s], // %d" % (body, i))
+    header = (
+        "//! Generated by test/reference/generate_crs_datum.py (`helmert_table`) from the PROJ database\n"
+        "//! (pyproj %s, PROJ %s): the Helmert operations PROJ can run without grids from each geographic\n"
+        "//! 2D EPSG CRS to WGS 84, as `TransformerGroup` lists them, each with its area of use\n"
+        "//! (`[west, south, east, north]`, degrees; west > east across the antimeridian) and `+towgs84`\n"
+        "//! set (position vector convention: metres, arc-seconds, ppm). Operations are in the order they\n"
+        "//! are tried: known accuracy first, best accuracy first, smaller area first, PROJ's order.\n"
+        "//! `DATUM_HELMERT` maps a CRS code to an index of `HELMERT_LISTS`.\n\n"
+        "pub(crate) type HelmertOp = ([f64; 4], [f64; 7]);\n\n"
+        % (pyproj.__version__, pyproj.proj_version_str)
+    ).replace("\\n", "\n")
+    path = os.path.join(HERE, "..", "..", "native", "geoframe_core", "src", "datum_helmert.rs")
+    text = header + "pub(crate) static HELMERT_LISTS: &[&[HelmertOp]] = &[\n" + "\n".join(lines) + "\n];\n\n"
+    text += "pub(crate) static DATUM_HELMERT: &[(u32, u16)] = &[\n" + "\n".join("    (%d, %d)," % r for r in rows) + "\n];\n"
+    open(path, "w").write(text)
+    return len(rows), len(lists), sum(len(l) for l in lists), skipped
+
+
 # Targets a grid may shift to while still counting as "to WGS 84" (PROJ's own chain from these
 # to WGS 84 is a null/ballpark transformation of about 1-2 m).
 GRID_TARGETS = (4326, 4258, 4269, 4283, 7844, 4171, 4167, 4617, 4612, 6668)
@@ -225,6 +344,45 @@ def shift_cases():
             pts.append([x, y, ex, ey])
         out[str(code)] = {"name": SHIFT_CRS[code], "pts": pts}
     return out
+
+
+# -- issue #97 parity cases --------------------------------------------------------------------
+
+PARITY_CRS = [
+    # axis directions, grad units with prime meridians, ellipsoidal equidistant cylindrical
+    5513, 2065, 5514, 4807, 4901, 4810, 4816, 4821, 4811, 4087,
+    # projections proj4rs lacks: omerc A/B, cass, poly, eqearth, nzmg, aeqd (feature)
+    # Helmert operation chosen by area of use
+    4688, 3303, 4156, 4267, 4230, 4618,
+    2057, 3078, 3375, 3468, 6394, 2066, 3068, 3377, 5472, 5880, 8857, 8858, 27200, 3295, 3993,
+]
+
+
+def parity_cases():
+    from pyproj.database import query_crs_info
+    areas = {int(i.code): i.area_of_use for i in query_crs_info(auth_name="EPSG", allow_deprecated=False) if i.area_of_use}
+    out = {}
+    for code in PARITY_CRS:
+        a = areas[code]
+        fwd = Transformer.from_crs(4326, code, always_xy=True)
+        inv = Transformer.from_crs(code, 4326, always_xy=True)
+        width = (a.east - a.west) % 360 or 360
+        pts = []
+        for fx, fy in ((0.5, 0.5), (0.2, 0.3), (0.8, 0.7), (0.35, 0.8), (0.65, 0.2)):
+            lon = a.west + width * fx
+            lon = ((lon + 180) % 360) - 180
+            lat = a.south + (a.north - a.south) * fy
+            x, y = fwd.transform(lon, lat)
+            ex, ey = inv.transform(x, y)
+            pts.append([lon, lat, x, y, ex, ey])
+        out[str(code)] = {"name": CRS(code).name, "geographic": CRS(code).is_geographic, "pts": pts}
+    return out
+
+
+def generate_parity():
+    json.dump({"pyproj": pyproj.__version__, "proj": pyproj.proj_version_str, "crs": parity_cases()},
+              open(os.path.join(OUT, "crs_parity.json"), "w"), separators=(",", ":"))
+    print("crs parity written")
 
 
 # -- synthetic NTv2 / GeoTIFF grids ----------------------------------------------------------------
@@ -350,7 +508,7 @@ def grid_cases(gsb, tif):
     def pipeline(path):
         crs = CRS.from_proj4("+proj=longlat +ellps=bessel +nadgrids=%s +no_defs" % path)
         return Transformer.from_crs(crs, 4326, always_xy=True), Transformer.from_crs(4326, crs, always_xy=True)
-    fb = CRS.from_proj4(TOKYO_FALLBACK)
+    fb = CRS.from_epsg(4301)  # no grid installed: the operation PROJ picks by area of use
     fb_fwd, fb_inv = Transformer.from_crs(fb, 4326, always_xy=True), Transformer.from_crs(4326, fb, always_xy=True)
     gsb_f, gsb_i = pipeline(gsb)
     tif_f, tif_i = pipeline(tif)
@@ -381,6 +539,10 @@ if __name__ == "__main__":
         generate_utm()
     if "datum" in which:
         generate_datum()
+    if "parity" in which:
+        generate_parity()
+    if "helmert_table" in which:
+        print("helmert table: CRSs, lists, ops, skipped ops", generate_helmert_table())
     if "grid_table" in which:
         print("grid table: CRSs, grid names", generate_grid_table())
     if "utm_table" in which:
