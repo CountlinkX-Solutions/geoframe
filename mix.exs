@@ -16,7 +16,23 @@ defmodule GeoFrame.MixProject do
         "GeoPandas-style geospatial dataframes for Elixir, powered by GeoArrow and Rust.",
       name: "GeoFrame",
       source_url: @source_url,
+      package: package(),
       docs: [main: "readme", extras: ["README.md"]]
+    ]
+  end
+
+  # Ship the NIF sources only. `priv/native` is never packaged: Rustler copies every cdylib
+  # artifact Cargo reports there, including `proj4rs.so` (proj4rs declares
+  # `crate-type = ["cdylib", "rlib"]`), and those build outputs must not reach Hex or a
+  # precompiled NIF archive. Any rustler_precompiled setup must pick the NIF library by
+  # name (`libgeoframe_native`) for the same reason.
+  defp package do
+    [
+      licenses: ["Apache-2.0"],
+      links: %{"GitHub" => @source_url},
+      files: ~w(lib native/geoframe_core/src native/geoframe_core/Cargo.toml
+                native/geoframe_native/src native/geoframe_native/Cargo.toml
+                Cargo.toml Cargo.lock mix.exs README.md LICENSE)
     ]
   end
 
