@@ -417,7 +417,12 @@ defmodule GeoFrame.GeoSeries do
   @spec crs(t()) :: String.t() | nil
   def crs(%__MODULE__{ref: ref}), do: Native.crs(ref)
 
-  @doc "Replaces the CRS metadata without touching coordinates (no reprojection)."
+  @doc """
+  Replaces the CRS metadata without touching coordinates (no reprojection).
+
+  `crs` is stored as given: `"EPSG:<code>"`, `"OGC:CRS84"`, or a PROJJSON or WKT definition
+  (see `to_crs/2` for what a definition may hold).
+  """
   @spec set_crs(t(), String.t() | nil) :: t()
   def set_crs(%__MODULE__{ref: ref}, crs) when is_binary(crs) or is_nil(crs) do
     %__MODULE__{ref: Native.set_crs(ref, crs)}
@@ -712,15 +717,32 @@ defmodule GeoFrame.GeoSeries do
   @doc """
   Reprojects to `target`, returning a copy whose CRS is `target`.
 
-  `target` is `"EPSG:<code>"`, `"OGC:CRS84"` (lon/lat WGS 84) or an integer EPSG code
-  (`3857` is `"EPSG:3857"`). The series must have a CRS (as in GeoPandas, a naive series
-  raises: use `set_crs/2` first). Reprojecting to the CRS the series already has returns an
-  unchanged copy.
+  `target` is `"EPSG:<code>"`, `"OGC:CRS84"` (lon/lat WGS 84), an integer EPSG code
+  (`3857` is `"EPSG:3857"`), or a full CRS definition as PROJJSON or WKT (WKT1 or WKT2) text,
+  as `pyproj.CRS.from_user_input` takes. The series must have a CRS (as in GeoPandas, a naive
+  series raises: use `set_crs/2` first). Reprojecting to the CRS the series already has returns
+  an unchanged copy.
 
-  The engine is pure Rust (`proj4rs` with the bundled EPSG table), so no PROJ install is
-  needed. Axis order is always x = easting/longitude, y = northing/latitude, for every CRS
-  including `EPSG:4326` (GeoPandas `always_xy=True`). A source CRS stored as PROJJSON must
-  carry a top-level `id` with authority and code. Rows that are null, or whose transform fails
+  The engine is pure Rust (`proj4rs` with the bundled EPSG tables), so no PROJ install is
+  needed. Every EPSG geographic, geocentric, projected and compound CRS is available: the
+  `crs-definitions` table plus a compact supplementary table generated from the PROJ database
+  (about 1 200 newer codes, 50 KB packed). A definition given as text is converted without a
+  code: ellipsoid, prime meridian, units, axes, a WKT1 `TOWGS84` or the abridged transformation
+  of a bound CRS, and these methods: Transverse Mercator (also south orientated), Lambert
+  Conic Conformal (1SP, 1SP variant B, 2SP, 2SP Belgium, 2SP Michigan, west orientated), Albers,
+  Lambert Azimuthal Equal Area, Azimuthal Equidistant (also Guam), Oblique and Polar
+  Stereographic, Hotine Oblique Mercator (A, B, the Swiss one), Mercator (A, B, Pseudo-Mercator),
+  Cassini-Soldner (also Hyperbolic), Equidistant Cylindrical, Lambert Cylindrical Equal Area,
+  Krovak (also Modified), Laborde, Colombia Urban, American Polyconic, New Zealand Map Grid and
+  Equal Earth. Any other method is an error that names it (Bonne, Tunisia Mining Grid, Local
+  Orthographic, Transverse Mercator Zoned Grid System, ...). A definition that carries the
+  EPSG identifier of its base geographic CRS shifts its datum exactly like the code does; a
+  geographic CRS without one finds its datum shifts by name (as PROJ identifies it), and any
+  other datum is left unshifted (PROJ's ballpark). The text is stored as given by `set_crs/2`
+  and by the result of `to_crs/2`.
+
+  Axis order is always x = easting/longitude, y = northing/latitude, for every CRS
+  including `EPSG:4326` (GeoPandas `always_xy=True`). Rows that are null, or whose transform fails
   (outside the projection's domain), become null. Z is kept (unchanged between CRSs that are
   not geocentric; transformed to or from a geocentric CRS such as `EPSG:4978`); M is dropped.
 

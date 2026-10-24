@@ -68,11 +68,12 @@ defmodule GeoFrame do
   into an `"AUTHORITY:CODE"` string, other PROJJSON is kept as JSON text. When writing,
   `"OGC:CRS84"` omits the key, `nil` writes an explicit `null`, an EPSG code (`"EPSG:4326"`,
   `"EPSG:3035"`, a UTM zone, ...) gets a full PROJJSON definition that `geopandas.read_parquet`
-  parses (every EPSG code in the bundled definition table: geographic, geocentric,
-  projected and compound CRS), any other `"AUTHORITY:CODE"` string (an EPSG code outside that
-  table, another authority) is written as a PROJJSON stub with only a name and an identifier
-  (the pure-Rust build has no CRS database), and a PROJJSON string is written as given, which
-  is how to write a CRS the table lacks. Any other CRS string is rejected.
+  parses (every EPSG code in the bundled definition tables, the `crs-definitions` table and the
+  supplementary one generated from the PROJ database: geographic, geocentric, projected and
+  compound CRS), any other `"AUTHORITY:CODE"` string (an EPSG code outside both tables,
+  another authority) is written as a PROJJSON stub with only a name and an identifier (the
+  pure-Rust build has no CRS database), and a PROJJSON string is written as given, which is how
+  to write a CRS the tables lack. Any other CRS string is rejected.
 
   ### Column order
 
@@ -471,8 +472,9 @@ defmodule GeoFrame do
   name is logged with `Logger.warning/1`. A frame without attributes gets a `FID` column, as
   in GDAL.
 
-  The `.prj` is the OGC WKT definition of the CRS for any EPSG code in the bundled table
-  (GDAL writes the ESRI flavour; GDAL, GeoPandas and pyproj read both); a WKT CRS string is
+  The `.prj` is the OGC WKT definition of the CRS for any EPSG code in the `crs-definitions`
+  table (the codes only in the supplementary table, see `GeoFrame.GeoSeries.to_crs/2`, have no
+  WKT1 here; GDAL writes the ESRI flavour; GDAL, GeoPandas and pyproj read both); a WKT CRS string is
   written as given. A CRS GeoFrame has no definition for (an unknown code, `ESRI:` codes) writes
   no `.prj` and logs a warning. A stale `.prj` from an earlier write is removed when there is
   no CRS.
@@ -522,7 +524,7 @@ defmodule GeoFrame do
   multi, so rows read back as written. Z and M are kept (the `z` and `m` flags of the layer are 0, 1 or 2).
 
   The CRS must be an `"AUTHORITY:CODE"` string, `"OGC:CRS84"` (stored as EPSG 4326), PROJJSON
-  with an identifier, or WKT. An EPSG code outside the bundled table is stored with the
+  with an identifier, or WKT. An EPSG code outside the `crs-definitions` table is stored with the
   definition `undefined` and a warning; `nil` is stored as GDAL's "Undefined SRS" (id 99999), which GDAL and GeoPandas read back as no CRS.
 
   Options:

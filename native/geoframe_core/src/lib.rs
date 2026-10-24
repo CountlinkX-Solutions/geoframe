@@ -8,6 +8,9 @@ mod attributes;
 pub(crate) mod column;
 mod coverage;
 mod coverage_simplify;
+mod crs_convert;
+mod crs_extra;
+mod crs_names;
 mod crs_wkt;
 mod datum;
 mod datum_grids;
@@ -93,6 +96,8 @@ mod arrow_multi_tests;
 mod coverage_simplify_tests;
 #[cfg(test)]
 mod coverage_tests;
+#[cfg(test)]
+mod crs_convert_tests;
 #[cfg(test)]
 mod crs_parity_tests;
 #[cfg(test)]

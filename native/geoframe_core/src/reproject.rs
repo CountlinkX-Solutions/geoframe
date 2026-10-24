@@ -2,11 +2,13 @@
 //!
 //! # CRS identification
 //!
-//! A CRS is identified by an authority code: `EPSG:<code>` (any code in the bundled
-//! `crs-definitions` table) or `OGC:CRS84`. A CRS stored as PROJJSON is accepted when it
-//! carries a top-level `id` with an authority and code; PROJJSON without one is rejected
-//! because the definition cannot be mapped to a proj string without a full PROJ database.
-//! Labels are canonicalised (`epsg:3857` becomes `EPSG:3857`).
+//! A CRS is identified by an authority code: `EPSG:<code>` (any code of the bundled
+//! `crs-definitions` table or of the supplementary table, see [`crate::crs_extra`]) or
+//! `OGC:CRS84`. It may also be given as a definition, PROJJSON or WKT (WKT1 or WKT2) text, as
+//! `pyproj.CRS.from_user_input` takes: one that carries the identifier of an EPSG code the tables
+//! have is that code, any other is converted to a proj string by [`crate::crs_convert`] and keeps
+//! its (canonical) text as its label. Labels are canonicalised (`epsg:3857` becomes
+//! `EPSG:3857`).
 //!
 //! # Axis order
 //!
@@ -43,7 +45,7 @@ struct Resolved {
     base: Option<u32>,
     /// Helmert operations of the datum by area of use (see [`crate::datum::area_variants`]):
     /// the first whose area holds the point replaces the single `+towgs84` set of the table.
-    areas: Vec<([f64; 4], Proj)>,
+    areas: Vec<crate::datum::AreaOp>,
     /// Set for a projection `proj4rs` lacks (see [`crate::proj_ext`]); `proj` is then the
     /// geographic CRS under it and coordinates go through this first.
     ext: Option<Ext>,
@@ -71,71 +73,135 @@ fn table_fix(code: u16) -> Option<&'static str> {
     }
 }
 
-fn parse_epsg_code(text: &str, input: &str) -> Result<u16, String> {
-    let code: u32 = text
-        .trim()
-        .parse()
-        .map_err(|_| format!("invalid CRS {input:?}: EPSG code must be an integer"))?;
-    u16::try_from(code).map_err(|_| format!("unknown EPSG code {code}: not in the bundled table"))
+/// The `AUTHORITY:code` of a PROJJSON object's top-level `id`, when it has one.
+fn projjson_label(value: &Value) -> Option<(String, String)> {
+    let id = value.get("id")?;
+    let authority = id.get("authority").and_then(Value::as_str)?;
+    let code = match id.get("code")? {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    Some((authority.to_string(), code))
 }
 
-/// Pulls `AUTHORITY:code` out of a PROJJSON object's top-level `id`.
-fn projjson_label(value: &Value) -> Result<String, String> {
-    let id = value.get("id").ok_or_else(|| {
-        "unsupported PROJJSON CRS: no top-level `id` with authority and code".to_string()
-    })?;
-    let authority = id.get("authority").and_then(Value::as_str);
-    let code = id.get("code").and_then(|c| match c {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    });
-    match (authority, code) {
-        (Some(a), Some(c)) => Ok(format!("{a}:{c}")),
-        _ => Err("unsupported PROJJSON CRS: `id` lacks authority or code".to_string()),
+/// What a CRS label or definition resolves to before the engine builds it.
+struct Source {
+    label: String,
+    proj: String,
+    base: Option<u32>,
+    angular: f64,
+}
+
+/// The EPSG code `authority:code` names when its definition is available without being given:
+/// the bundled table, then the supplementary table (see [`crate::crs_extra`]).
+fn epsg_source(code: u32) -> Result<Source, String> {
+    if let Ok(small) = u16::try_from(code) {
+        // A few entries have a WKT but no proj string: the supplementary table serves them.
+        if let Some(def) = crs_definitions::from_code(small).filter(|d| !d.proj4.is_empty()) {
+            return Ok(Source {
+                label: format!("EPSG:{code}"),
+                proj: crate::datum::with_axes(table_fix(small).unwrap_or(def.proj4), def.wkt),
+                base: crate::datum::base_geographic_code(def.wkt),
+                angular: crate::datum::angular_unit(def.wkt),
+            });
+        }
     }
+    if let Some(projjson) = crate::crs_extra::projjson(code) {
+        let def = crate::crs_convert::from_projjson(&projjson)
+            .map_err(|e| format!("cannot convert EPSG:{code}: {e}"))?;
+        return Ok(Source {
+            label: format!("EPSG:{code}"),
+            proj: def.proj,
+            base: def.base,
+            angular: def.angular,
+        });
+    }
+    Err(format!(
+        "unknown EPSG code {code}: not in the bundled tables (pass its PROJJSON or WKT)"
+    ))
 }
 
-fn resolve(input: &str) -> Result<Resolved, String> {
+/// A definition given as PROJJSON or WKT, converted without a code. `label` is how the CRS is
+/// named afterwards: the canonical text of the definition, which resolves to the same CRS again.
+fn definition_source(value: &Value, label: String) -> Result<Source, String> {
+    let def = crate::crs_convert::from_projjson(value)?;
+    Ok(Source {
+        label,
+        proj: def.proj,
+        base: def.base,
+        angular: def.angular,
+    })
+}
+
+fn source_of(input: &str) -> Result<Source, String> {
     let text = input.trim();
     if text.starts_with('{') {
         let value: Value =
             serde_json::from_str(text).map_err(|e| format!("invalid PROJJSON CRS: {e}"))?;
-        return resolve(&projjson_label(&value)?);
+        return json_source(&value);
     }
-    let (authority, code) = text
-        .split_once(':')
-        .ok_or_else(|| format!("unsupported CRS {input:?}: expected EPSG:<code> or OGC:CRS84"))?;
-    let (label, proj_string, base, angular) = match authority.trim().to_ascii_uppercase().as_str() {
+    if crate::crs_wkt::looks_like_wkt(text) {
+        let label = crate::crs_wkt::prj_wkt_to_crs(text);
+        if label != text {
+            // The WKT names an EPSG code (its top-level AUTHORITY / ID or a well-known name).
+            if let Ok(source) = source_of(&label) {
+                return Ok(source);
+            }
+        }
+        let value = crate::crs_convert::wkt_to_projjson(text)?;
+        return definition_source(&value, text.to_string())
+            .map_err(|e| format!("unsupported WKT CRS: {e}"));
+    }
+    let (authority, code) = text.split_once(':').ok_or_else(|| {
+        format!("unsupported CRS {input:?}: expected EPSG:<code>, OGC:CRS84, PROJJSON or WKT")
+    })?;
+    match authority.trim().to_ascii_uppercase().as_str() {
         "EPSG" => {
-            let code = parse_epsg_code(code, input)?;
-            let def = crs_definitions::from_code(code)
-                .ok_or_else(|| format!("unknown EPSG code {code}: not in the bundled table"))?;
-            (
-                format!("EPSG:{code}"),
-                crate::datum::with_axes(table_fix(code).unwrap_or(def.proj4), def.wkt),
-                crate::datum::base_geographic_code(def.wkt),
-                crate::datum::angular_unit(def.wkt),
-            )
+            let parsed: u32 = code
+                .trim()
+                .parse()
+                .map_err(|_| format!("invalid CRS {input:?}: EPSG code must be an integer"))?;
+            epsg_source(parsed)
         }
-        "OGC" if code.trim().eq_ignore_ascii_case("CRS84") => (
-            "OGC:CRS84".to_string(),
-            CRS84_PROJ.to_string(),
-            None,
-            std::f64::consts::PI / 180.0,
-        ),
-        other => {
-            return Err(format!(
-                "unsupported CRS authority {other:?} in {input:?}: expected EPSG or OGC:CRS84"
-            ))
+        "OGC" if code.trim().eq_ignore_ascii_case("CRS84") => Ok(Source {
+            label: "OGC:CRS84".to_string(),
+            proj: CRS84_PROJ.to_string(),
+            base: None,
+            angular: std::f64::consts::PI / 180.0,
+        }),
+        other => Err(format!(
+            "unsupported CRS authority {other:?} in {input:?}: expected EPSG or OGC:CRS84"
+        )),
+    }
+}
+
+/// A PROJJSON CRS: the table definition of an EPSG code it carries, else the definition itself.
+fn json_source(value: &Value) -> Result<Source, String> {
+    if let Some((authority, code)) = projjson_label(value) {
+        if authority.eq_ignore_ascii_case("EPSG") || authority.eq_ignore_ascii_case("OGC") {
+            if let Ok(source) = source_of(&format!("{authority}:{code}")) {
+                return Ok(source);
+            }
         }
-    };
-    let (proj_string, ext) = if proj_ext::handles(&proj_string) {
-        let (ext, geographic) = proj_ext::build(&proj_string)
+    }
+    let label = serde_json::to_string(value).map_err(|e| e.to_string())?;
+    definition_source(value, label).map_err(|e| format!("unsupported PROJJSON CRS: {e}"))
+}
+
+fn resolve(input: &str) -> Result<Resolved, String> {
+    let Source {
+        label,
+        proj,
+        base,
+        angular,
+    } = source_of(input)?;
+    let (proj_string, ext) = if proj_ext::handles(&proj) {
+        let (ext, geographic) = proj_ext::build(&proj)
             .map_err(|e| format!("cannot build projection for {label}: {e}"))?;
         (geographic, Some(ext))
     } else {
-        (proj_string, None)
+        (proj, None)
     };
     let (proj, fallback) = crate::datum::build(&proj_string, base)
         .map_err(|e| format!("cannot build projection for {label}: {e}"))?;
@@ -238,13 +304,21 @@ impl Resolved {
     /// The Helmert variant of this CRS for a point: the first operation by area of use that holds
     /// it, else the one `+towgs84` set of the table.
     fn helmert_at(&self, at: Option<(f64, f64)>) -> &Proj {
-        at.and_then(|at| {
-            self.areas
-                .iter()
-                .find(|(area, _)| in_area(area, at))
-                .map(|(_, p)| p)
-        })
-        .unwrap_or_else(|| self.fallback.as_ref().unwrap_or(&self.proj))
+        self.operation_at(at)
+            .map(|op| &op.proj)
+            .unwrap_or_else(|| self.fallback.as_ref().unwrap_or(&self.proj))
+    }
+
+    /// The operation by area of use that holds the point.
+    fn operation_at(&self, at: Option<(f64, f64)>) -> Option<&crate::datum::AreaOp> {
+        at.and_then(|at| self.areas.iter().find(|op| in_area(&op.area, at)))
+    }
+
+    /// The geographic offset (`geogoffset`) PROJ would use at the point, with the projection it
+    /// applies to.
+    fn offset_at(&self, at: Option<(f64, f64)>) -> Option<(&Proj, &crate::datum::Offset)> {
+        self.operation_at(at)
+            .and_then(|op| op.offset.as_ref().map(|o| (&op.proj, o)))
     }
 
     /// The projection tried first: the grids when it has them, else the Helmert variant.
@@ -294,6 +368,43 @@ fn with_fallback<T>(
     .map_err(|e| e.to_string())
 }
 
+thread_local! {
+    static WGS84_LL: Proj = Proj::from_proj_string("+proj=longlat +datum=WGS84 +no_defs")
+        .expect("WGS 84 is a valid proj string");
+}
+
+/// A transformation through WGS 84 geographic coordinates, for a CRS whose operation at the
+/// point is a geographic offset (Anguilla 1957, the Greek datum): the offset has no `proj4rs`
+/// datum parameter, so it is applied between the two halves.
+fn via_wgs84(
+    src: &Resolved,
+    dst: &Resolved,
+    at: Option<(f64, f64)>,
+    xy: (f64, f64),
+) -> Result<(f64, f64), String> {
+    let step = |from: &Proj, to: &Proj, mut p: (f64, f64)| {
+        proj4rs::transform::transform(from, to, &mut p)
+            .map(|_| p)
+            .map_err(|e| e.to_string())
+    };
+    WGS84_LL.with(|wgs| {
+        let mid = match src.offset_at(at) {
+            Some((proj, o)) => {
+                let (lon, lat) = step(proj, &o.geo, xy)?;
+                step(&o.post, wgs, (lon + o.dlon, lat + o.dlat))?
+            }
+            None => step(src.primary_at(at), wgs, xy)?,
+        };
+        match dst.offset_at(at) {
+            Some((proj, o)) => {
+                let (lon, lat) = step(wgs, &o.post, mid)?;
+                step(&o.geo, proj, (lon - o.dlon, lat - o.dlat))
+            }
+            None => step(wgs, dst.primary_at(at), mid),
+        }
+    })
+}
+
 /// Angle in radians; `unit` is radians per unit. Degrees go through `to_radians` so that a round
 /// trip is exact.
 fn to_radians(v: f64, unit: f64) -> f64 {
@@ -340,11 +451,15 @@ fn from_engine(res: &Resolved, x: f64, y: f64) -> Result<(f64, f64), String> {
 fn transform_coord(src: &Resolved, dst: &Resolved, c: Coord<f64>) -> Result<Coord<f64>, String> {
     let (x, y) = to_engine(src, c.x, c.y)?;
     let at = locate(src, dst, x, y);
-    let (x, y) = with_fallback(src, dst, at, |src, dst| {
-        let mut point = (x, y);
-        proj4rs::transform::transform(src, dst, &mut point)?;
-        Ok(point)
-    })?;
+    let (x, y) = if src.offset_at(at).is_some() || dst.offset_at(at).is_some() {
+        via_wgs84(src, dst, at, (x, y))?
+    } else {
+        with_fallback(src, dst, at, |src, dst| {
+            let mut point = (x, y);
+            proj4rs::transform::transform(src, dst, &mut point)?;
+            Ok(point)
+        })?
+    };
     let (x, y) = from_engine(dst, x, y)?;
     if x.is_finite() && y.is_finite() {
         Ok(Coord { x, y })

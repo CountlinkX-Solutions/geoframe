@@ -7,6 +7,10 @@ native/geoframe_core). Prints the distribution of the deviation and writes the p
 
     python -I test/reference/sweep_crs.py OUT.json        # run
     python -I test/reference/sweep_crs.py --summary OUT.json
+
+With CRS_SWEEP_FORM=projjson (or wkt2) GeoFrame is given each CRS as its PROJJSON (WKT2) definition
+without the top-level identifier instead of `EPSG:<code>`, which tests the definition converter
+(issue #100) on the whole registry.
 """
 import json
 import math
@@ -71,6 +75,23 @@ def pyproj_rows():
     return rows
 
 
+def definition(code, form):
+    """The CRS as GeoFrame is given it: its label, or a definition with no identifier (spaces are
+    written %20 so that the line stays three whitespace-separated words)."""
+    if form == "code":
+        return f"EPSG:{code}"
+    import re
+    from pyproj import CRS
+    crs = CRS.from_epsg(code)
+    if form == "projjson":
+        pj = crs.to_json_dict()
+        pj.pop("id", None)
+        text = json.dumps(pj, separators=(",", ":"))
+    else:
+        text = re.sub(r',ID\["EPSG",\d+\]\]$', "]", crs.to_wkt())
+    return re.sub(r"\s", "%20", text)
+
+
 def main(out_path):
     # The pyproj side takes minutes: CRS_SWEEP_TRUTH names a file that caches it between runs.
     cache = os.environ.get("CRS_SWEEP_TRUTH")
@@ -80,7 +101,8 @@ def main(out_path):
         rows = pyproj_rows()
         if cache:
             json.dump(rows, open(cache, "w"))
-    jobs = [f"EPSG:{r['code']} {r['x']!r} {r['y']!r}" for r in rows]
+    form = os.environ.get("CRS_SWEEP_FORM", "code")
+    jobs = [f"{definition(r['code'], form)} {r['x']!r} {r['y']!r}" for r in rows]
     proc = subprocess.run([EXE], input="\n".join(jobs) + "\n", capture_output=True, text=True)
     lines = proc.stdout.splitlines()
     assert len(lines) == len(rows), (len(lines), len(rows), proc.stderr[-500:])

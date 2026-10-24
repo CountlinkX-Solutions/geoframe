@@ -25,6 +25,8 @@ wkt = "0.14"
 proj4rs = { version = "0.2.1", default-features = false, features = ["tiff", "aeqd"] }
 earcut = "0.4"
 crs-definitions = "0.6.0"
+# Inflates the supplementary EPSG table (already in the tree through zip and parquet).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 flatgeobuf = { version = "6.0.1", default-features = false }
 # Same version as flatgeobuf uses: features are rebuilt without a geometry (flatgeobuf_nulls.rs).
 flatbuffers = "24.12.23"

@@ -1,7 +1,8 @@
 //! Projections `proj4rs` does not have (or has in a form that differs from PROJ), written after
 //! the PROJ formulas: ellipsoidal Equidistant Cylindrical (`eqc`, EPSG:4087), Cassini-Soldner
-//! (`cass`), Hotine Oblique Mercator (`omerc`, variants A and B), Polyconic (`poly`), Equal Earth
-//! (`eqearth`) and the New Zealand Map Grid (`nzmg`).
+//! (`cass`, also Hyperbolic Cassini-Soldner), Hotine Oblique Mercator (`omerc`, variants A and B),
+//! Polyconic (`poly`), Equal Earth (`eqearth`), the New Zealand Map Grid (`nzmg`), Laborde
+//! (`labrd`), Colombia Urban (`col_urban`) and Modified Krovak (`mod_krovak`).
 //!
 //! A CRS that uses one of them is resolved as a pair: this module converts between the CRS
 //! coordinates and geographic radians on the CRS ellipsoid (relative to its prime meridian), and
@@ -38,20 +39,50 @@ pub(crate) struct Ext {
 
 #[derive(Debug)]
 enum Kind {
-    Eqc { rc: f64 },
-    Cass,
+    Eqc {
+        rc: f64,
+    },
+    /// Cassini-Soldner; `hyperbolic` is `1 / (6 rho0 nu0)` of the Hyperbolic variant.
+    Cass {
+        hyperbolic: Option<f64>,
+    },
     Omerc(Omerc),
     Poly,
-    EqEarth { qp: f64, rqda: f64 },
+    EqEarth {
+        qp: f64,
+        rqda: f64,
+    },
     Nzmg,
+    Labrd(Labrd),
+    ColUrban {
+        a_scale: f64,
+        b_scale: f64,
+    },
+    ModKrovak(ModKrovak),
+    /// Spherical Lambert Azimuthal Equal Area on the sphere of the authalic radius (`+R_A`),
+    /// with the latitude of the origin as sine and cosine.
+    LaeaSphere {
+        sin0: f64,
+        cos0: f64,
+    },
 }
 
 /// The projections handled here, by `+proj` name.
 pub(crate) fn handles(proj: &str) -> bool {
     matches!(
         token_value(proj, "proj"),
-        Some("eqc" | "cass" | "omerc" | "poly" | "eqearth" | "nzmg")
-    )
+        Some(
+            "eqc"
+                | "cass"
+                | "omerc"
+                | "poly"
+                | "eqearth"
+                | "nzmg"
+                | "labrd"
+                | "col_urban"
+                | "mod_krovak"
+        )
+    ) || (token_value(proj, "proj") == Some("laea") && has_flag(proj, "R_A"))
 }
 
 fn token_value<'a>(proj: &'a str, key: &str) -> Option<&'a str> {
@@ -88,8 +119,30 @@ fn angle(proj: &str, key: &str) -> Result<Option<f64>, String> {
 
 /// Tokens that describe the projection (and its units) rather than the datum.
 const PROJECTION_KEYS: &[&str] = &[
-    "proj", "lat_0", "lon_0", "lonc", "alpha", "gamma", "azi", "k", "k_0", "x_0", "y_0", "lat_ts",
-    "units", "to_meter", "no_uoff", "no_off", "no_rot", "axis", "lat_1", "lat_2", "south",
+    "proj",
+    "lat_0",
+    "lon_0",
+    "lonc",
+    "alpha",
+    "gamma",
+    "azi",
+    "k",
+    "k_0",
+    "x_0",
+    "y_0",
+    "lat_ts",
+    "units",
+    "to_meter",
+    "no_uoff",
+    "no_off",
+    "no_rot",
+    "axis",
+    "lat_1",
+    "lat_2",
+    "south",
+    "hyperbolic",
+    "h_0",
+    "R_A",
 ];
 
 /// The `+proj=longlat` string with the datum of `proj` (ellipsoid, shift, prime meridian).
@@ -120,6 +173,12 @@ pub(crate) fn build(proj: &str) -> Result<(Ext, String), String> {
     proj4rs::transform::transform(&geodetic, &geocentric, &mut pole).map_err(|e| e.to_string())?;
     let (a, b) = (equator.0, pole.2);
     let es = 1.0 - (b * b) / (a * a);
+    // The spherical projection runs on the sphere of the same surface area as the ellipsoid.
+    let a = if name == "laea" {
+        a * (qsfn(1.0, es.sqrt(), 1.0 - es) / 2.0).sqrt()
+    } else {
+        a
+    };
 
     let mut lam0 = angle(proj, "lon_0")?.unwrap_or(0.0);
     let mut phi0 = angle(proj, "lat_0")?.unwrap_or(0.0);
@@ -146,7 +205,34 @@ pub(crate) fn build(proj: &str) -> Result<(Ext, String), String> {
             }
             Kind::Eqc { rc }
         }
-        "cass" => Kind::Cass,
+        "cass" => Kind::Cass {
+            hyperbolic: has_flag(proj, "hyperbolic").then(|| {
+                let t = 1.0 - es * phi0.sin().powi(2);
+                // rho0 = (1 - es) / t^1.5 and nu0 = 1 / sqrt(t), in units of the semi-major axis
+                1.0 / (6.0 * (1.0 - es) / (t * t))
+            }),
+        },
+        "labrd" => {
+            let azimuth = angle(proj, "azi")?.ok_or("labrd needs +azi")?;
+            Kind::Labrd(Labrd::new(es, phi0, azimuth, k0))
+        }
+        "col_urban" => {
+            let h0 = number(proj, "h_0")?.unwrap_or(0.0) / a;
+            let t = 1.0 - es * phi0.sin().powi(2);
+            let (nu0, rho0) = (1.0 / t.sqrt(), (1.0 - es) / (t * t.sqrt()));
+            Kind::ColUrban {
+                a_scale: 1.0 + h0 / nu0,
+                b_scale: 1.0 + h0 / rho0,
+            }
+        }
+        "laea" => {
+            let (sin0, cos0) = phi0.sin_cos();
+            Kind::LaeaSphere { sin0, cos0 }
+        }
+        "mod_krovak" => {
+            let alpha = angle(proj, "alpha")?.ok_or("mod_krovak needs +alpha")?;
+            Kind::ModKrovak(ModKrovak::new(es, phi0, alpha, k0))
+        }
         "poly" => Kind::Poly,
         "eqearth" => {
             let e = es.sqrt();
@@ -196,12 +282,24 @@ impl Ext {
     /// Geographic radians (relative to the prime meridian of the CRS) to CRS coordinates.
     pub(crate) fn forward(&self, lam: f64, phi: f64) -> Result<(f64, f64), String> {
         let lam = adjlon(lam - self.lam0);
+        if let Kind::ModKrovak(k) = &self.kind {
+            return Ok(k.forward(lam, phi, self));
+        }
         let (x, y) = match &self.kind {
             Kind::Eqc { rc } => {
                 let (s, c) = phi.sin_cos();
                 (rc * lam, mlfn(phi, s, c, &self.en) - self.m0)
             }
-            Kind::Cass => self.cass_forward(lam, phi),
+            Kind::Cass { hyperbolic } => {
+                let (x, y) = self.cass_forward(lam, phi);
+                (x, hyperbolic.map_or(y, |c| y - c * y * y * y))
+            }
+            Kind::Labrd(l) => l.forward(lam, phi),
+            Kind::ColUrban { a_scale, b_scale } => {
+                self.col_urban_forward(lam, phi, *a_scale, *b_scale)
+            }
+            Kind::ModKrovak(_) => unreachable!("handled above"),
+            Kind::LaeaSphere { sin0, cos0 } => laea_sphere_forward(*sin0, *cos0, lam, phi)?,
             Kind::Omerc(o) => o.forward(lam, phi, self.es)?,
             Kind::Poly => self.poly_forward(lam, phi),
             Kind::EqEarth { qp, rqda } => self.eqearth_forward(lam, phi, *qp, *rqda),
@@ -220,6 +318,10 @@ impl Ext {
 
     /// CRS coordinates to geographic radians (relative to the prime meridian of the CRS).
     pub(crate) fn inverse(&self, x: f64, y: f64) -> Result<(f64, f64), String> {
+        if let Kind::ModKrovak(k) = &self.kind {
+            let (lam, phi) = k.inverse(x, y, self)?;
+            return Ok((adjlon(lam + self.lam0), phi));
+        }
         let (mut east, mut north) = (0.0, 0.0);
         for (d, v) in self.axis.iter().zip([x, y]) {
             match d {
@@ -238,7 +340,30 @@ impl Ext {
                 let phi = inv_mlfn(y + self.m0, self.es, &self.en);
                 (x / rc, phi)
             }
-            Kind::Cass => self.cass_inverse(x, y),
+            Kind::Cass { hyperbolic } => {
+                let y = match hyperbolic {
+                    // y_h = y - c y^3: Newton on the cubic
+                    Some(c) => {
+                        let mut yc = y;
+                        for _ in 0..30 {
+                            let d = (yc - c * yc * yc * yc - y) / (1.0 - 3.0 * c * yc * yc);
+                            yc -= d;
+                            if d.abs() < 1e-15 {
+                                break;
+                            }
+                        }
+                        yc
+                    }
+                    None => y,
+                };
+                self.cass_inverse(x, y)
+            }
+            Kind::Labrd(l) => l.inverse(x, y, self.es)?,
+            Kind::ColUrban { a_scale, b_scale } => {
+                self.col_urban_inverse(x, y, *a_scale, *b_scale)?
+            }
+            Kind::ModKrovak(_) => unreachable!("handled above"),
+            Kind::LaeaSphere { sin0, cos0 } => laea_sphere_inverse(*sin0, *cos0, x, y, self.phi0),
             Kind::Omerc(o) => o.inverse(x, y, self.es)?,
             Kind::Poly => self.poly_inverse(x, y)?,
             Kind::EqEarth { qp, rqda } => self.eqearth_inverse(x, y, *qp, *rqda),
@@ -285,6 +410,45 @@ impl Ext {
         let phi = ph1 - (n * tn / r) * d2 * (0.5 - (1.0 + 3.0 * t) * d2 * C3);
         let lam = dd * (1.0 + t * d2 * (-C4 + (1.0 + 3.0 * t) * d2 * C5)) / ph1.cos();
         (lam, phi)
+    }
+
+    // -- Colombia Urban ----------------------------------------------------------------------
+
+    fn col_urban_forward(&self, lam: f64, phi: f64, a_scale: f64, b_scale: f64) -> (f64, f64) {
+        let (s, c) = phi.sin_cos();
+        let nu = 1.0 / (1.0 - self.es * s * s).sqrt();
+        let t = lam * c;
+        (
+            a_scale * nu * t,
+            b_scale * (mlfn(phi, s, c, &self.en) - self.m0 + 0.5 * nu * phi.tan() * t * t),
+        )
+    }
+
+    /// Newton on the forward formula (a few steps: the grid is a city).
+    fn col_urban_inverse(
+        &self,
+        x: f64,
+        y: f64,
+        a_scale: f64,
+        b_scale: f64,
+    ) -> Result<(f64, f64), String> {
+        let (mut lam, mut phi) = (x / a_scale, self.phi0 + y / b_scale);
+        for _ in 0..40 {
+            let (fx, fy) = self.col_urban_forward(lam, phi, a_scale, b_scale);
+            let (rx, ry) = (fx - x, fy - y);
+            if rx.abs() + ry.abs() < 1e-15 {
+                return Ok((lam, phi));
+            }
+            let h = 1e-7;
+            let (gx, gy) = self.col_urban_forward(lam + h, phi, a_scale, b_scale);
+            let (hx, hy) = self.col_urban_forward(lam, phi + h, a_scale, b_scale);
+            let (j11, j21) = ((gx - fx) / h, (gy - fy) / h);
+            let (j12, j22) = ((hx - fx) / h, (hy - fy) / h);
+            let det = j11 * j22 - j12 * j21;
+            lam -= (rx * j22 - ry * j12) / det;
+            phi -= (ry * j11 - rx * j21) / det;
+        }
+        Err("col_urban inverse did not converge".to_string())
     }
 
     // -- Polyconic ---------------------------------------------------------------------------
@@ -511,6 +675,298 @@ fn zpoly1_with_derivative(z: Complex, c: &[Complex]) -> (Complex, Complex) {
     derivative.0 += acc.0 + zd.0;
     derivative.1 += acc.1 + zd.1;
     (value, derivative)
+}
+
+// -- Lambert Azimuthal Equal Area, spherical ----------------------------------------------
+
+fn laea_sphere_forward(sin0: f64, cos0: f64, lam: f64, phi: f64) -> Result<(f64, f64), String> {
+    let (sp, cp) = phi.sin_cos();
+    let d = 1.0 + sin0 * sp + cos0 * cp * lam.cos();
+    if d <= EPS {
+        return Err("laea: point opposite the origin".to_string());
+    }
+    let k = (2.0 / d).sqrt();
+    Ok((k * cp * lam.sin(), k * (cos0 * sp - sin0 * cp * lam.cos())))
+}
+
+fn laea_sphere_inverse(sin0: f64, cos0: f64, x: f64, y: f64, phi0: f64) -> (f64, f64) {
+    let rho = x.hypot(y);
+    if rho < EPS {
+        return (0.0, phi0);
+    }
+    let c = 2.0 * (rho / 2.0).clamp(-1.0, 1.0).asin();
+    let (sc, cc) = c.sin_cos();
+    let phi = (cc * sin0 + y * sc * cos0 / rho).clamp(-1.0, 1.0).asin();
+    let lam = (x * sc).atan2(rho * cos0 * cc - y * sin0 * sc);
+    (lam, phi)
+}
+
+// -- Laborde ------------------------------------------------------------------------------
+
+/// Laborde Oblique Mercator (EPSG method 9813, PROJ `labrd`): the ellipsoid goes conformally to a
+/// sphere (Gauss), the sphere is rotated so that the initial line of azimuth `alpha` through the
+/// projection centre becomes the equator of a Mercator projection, and the plane is rotated by
+/// the azimuth so that grid north is true north at the centre.
+#[derive(Debug)]
+struct Labrd {
+    e: f64,
+    b: f64,
+    c: f64,
+    /// Sphere radius over the semi-major axis, with the scale factor.
+    r: f64,
+    sin_az: f64,
+    cos_az: f64,
+    u: [f64; 3],
+    d: [f64; 3],
+    m: [f64; 3],
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Isometric latitude of the ellipsoid.
+fn isometric(phi: f64, e: f64) -> f64 {
+    let con = e * phi.sin();
+    (FRAC_PI_4 + 0.5 * phi).tan().ln() + 0.5 * e * ((1.0 - con) / (1.0 + con)).ln()
+}
+
+impl Labrd {
+    fn new(es: f64, phi0: f64, azimuth: f64, k0: f64) -> Self {
+        let e = es.sqrt();
+        let (s, c) = phi0.sin_cos();
+        let b = (1.0 + es * c.powi(4) / (1.0 - es)).sqrt();
+        let phis = (s / b).asin();
+        let r = k0 * (1.0 - es).sqrt() / (1.0 - es * s * s);
+        let cc = (FRAC_PI_4 + 0.5 * phis).tan().ln() - b * isometric(phi0, e);
+        let (sin_az, cos_az) = azimuth.sin_cos();
+        let u = [phis.cos(), 0.0, phis.sin()];
+        let east = [0.0, 1.0, 0.0];
+        let north = [-phis.sin(), 0.0, phis.cos()];
+        let d = [
+            sin_az * east[0] + cos_az * north[0],
+            sin_az * east[1] + cos_az * north[1],
+            sin_az * east[2] + cos_az * north[2],
+        ];
+        let m = [
+            u[1] * d[2] - u[2] * d[1],
+            u[2] * d[0] - u[0] * d[2],
+            u[0] * d[1] - u[1] * d[0],
+        ];
+        Labrd {
+            e,
+            b,
+            c: cc,
+            r,
+            sin_az,
+            cos_az,
+            u,
+            d,
+            m,
+        }
+    }
+
+    fn forward(&self, lam: f64, phi: f64) -> (f64, f64) {
+        let l = self.b * lam;
+        let q = self.c + self.b * isometric(phi, self.e);
+        let psi = 2.0 * q.exp().atan() - FRAC_PI_2;
+        let p = [psi.cos() * l.cos(), psi.cos() * l.sin(), psi.sin()];
+        let lam2 = dot(p, self.d).atan2(dot(p, self.u));
+        let phi2 = dot(p, self.m).clamp(-1.0, 1.0).asin();
+        let (x, y) = (self.r * lam2, self.r * (FRAC_PI_4 + 0.5 * phi2).tan().ln());
+        (
+            x * self.sin_az - y * self.cos_az,
+            x * self.cos_az + y * self.sin_az,
+        )
+    }
+
+    fn inverse(&self, e_: f64, n_: f64, es: f64) -> Result<(f64, f64), String> {
+        let (x, y) = (
+            e_ * self.sin_az + n_ * self.cos_az,
+            -e_ * self.cos_az + n_ * self.sin_az,
+        );
+        let lam2 = x / self.r;
+        let phi2 = 2.0 * (y / self.r).exp().atan() - FRAC_PI_2;
+        let (c2, s2) = (phi2.cos(), phi2.sin());
+        let p: Vec<f64> = (0..3)
+            .map(|i| self.u[i] * c2 * lam2.cos() + self.d[i] * c2 * lam2.sin() + self.m[i] * s2)
+            .collect();
+        let psi = p[2].clamp(-1.0, 1.0).asin();
+        let l = p[1].atan2(p[0]);
+        let q = (FRAC_PI_4 + 0.5 * psi).tan().ln();
+        let iso = (q - self.c) / self.b;
+        let mut phi = 2.0 * iso.exp().atan() - FRAC_PI_2;
+        for _ in 0..30 {
+            let next = 2.0
+                * (iso
+                    - 0.5
+                        * self.e
+                        * ((1.0 - self.e * phi.sin()) / (1.0 + self.e * phi.sin())).ln())
+                .exp()
+                .atan()
+                - FRAC_PI_2;
+            let done = (next - phi).abs() < 1e-14;
+            phi = next;
+            if done {
+                break;
+            }
+        }
+        let _ = es;
+        Ok((l / self.b, phi))
+    }
+}
+
+// -- Modified Krovak ----------------------------------------------------------------------
+
+/// Krovak (EPSG 9819) with the polynomial correction of the Czech S-JTSK/05 (EPSG method 1042
+/// and 1043, PROJ `mod_krovak`).
+#[derive(Debug)]
+struct ModKrovak {
+    e: f64,
+    a_exp: f64,
+    k: f64,
+    n: f64,
+    rho0: f64,
+    tan_s0: f64,
+    sin_ac: f64,
+    cos_ac: f64,
+}
+
+/// S-JTSK/05 polynomial: the origin of the reduced coordinates and C1 .. C10 (EPSG GN 7-2).
+const MK_X0: f64 = 1_089_000.0;
+const MK_Y0: f64 = 654_000.0;
+const MK_C: [f64; 10] = [
+    0.029_465_292_77,
+    0.025_159_656_96,
+    1.193_845_912e-7,
+    -4.668_270_147e-7,
+    9.233_980_362e-12,
+    1.523_735_715e-12,
+    1.696_780_024e-18,
+    4.408_314_235e-18,
+    -8.331_083_518e-24,
+    -3.689_471_323e-24,
+];
+
+impl ModKrovak {
+    fn new(es: f64, phi_c: f64, alpha: f64, k0: f64) -> Self {
+        let e = es.sqrt();
+        let (s, c) = phi_c.sin_cos();
+        let a_exp = (1.0 + es * c.powi(4) / (1.0 - es)).sqrt();
+        let u0 = (s / a_exp).asin();
+        let g = ((1.0 + e * s) / (1.0 - e * s)).powf(a_exp * e / 2.0);
+        let k = (FRAC_PI_4 + 0.5 * u0).tan() / (FRAC_PI_4 + 0.5 * phi_c).tan().powf(a_exp) * g;
+        let s0 = 78.5_f64.to_radians();
+        let n = s0.sin();
+        let r = (1.0 - es).sqrt() / (1.0 - es * s * s);
+        let (sin_ac, cos_ac) = alpha.sin_cos();
+        ModKrovak {
+            e,
+            a_exp,
+            k,
+            n,
+            rho0: k0 * r / s0.tan(),
+            tan_s0: (FRAC_PI_4 + 0.5 * s0).tan(),
+            sin_ac,
+            cos_ac,
+        }
+    }
+
+    /// Southing and westing of the plain Krovak, in units of the semi-major axis.
+    fn plain(&self, lam: f64, phi: f64) -> (f64, f64) {
+        let con = self.e * phi.sin();
+        let t = self.k * (FRAC_PI_4 + 0.5 * phi).tan().powf(self.a_exp)
+            / ((1.0 + con) / (1.0 - con)).powf(self.a_exp * self.e / 2.0);
+        let u = 2.0 * (t.atan() - FRAC_PI_4);
+        let v = -self.a_exp * lam;
+        let big_t = (self.cos_ac * u.sin() + self.sin_ac * u.cos() * v.cos()).asin();
+        let d = (u.cos() * v.sin() / big_t.cos()).asin();
+        let theta = self.n * d;
+        let r = self.rho0 * self.tan_s0.powf(self.n) / (FRAC_PI_4 + 0.5 * big_t).tan().powf(self.n);
+        (r * theta.cos(), r * theta.sin())
+    }
+
+    fn plain_inverse(&self, xp: f64, yp: f64) -> (f64, f64) {
+        let r = xp.hypot(yp);
+        let theta = yp.atan2(xp);
+        let d = theta / self.n;
+        let big_t = 2.0 * (((self.rho0 / r).powf(1.0 / self.n) * self.tan_s0).atan() - FRAC_PI_4);
+        let u = (self.cos_ac * big_t.sin() - self.sin_ac * big_t.cos() * d.cos()).asin();
+        let v = (big_t.cos() * d.sin() / u.cos()).asin();
+        let t = (FRAC_PI_4 + 0.5 * u).tan();
+        let mut phi = u;
+        for _ in 0..30 {
+            let con = self.e * phi.sin();
+            let next = 2.0
+                * ((t.powf(1.0 / self.a_exp) / self.k.powf(1.0 / self.a_exp))
+                    * ((1.0 + con) / (1.0 - con)).powf(self.e / 2.0))
+                .atan()
+                - FRAC_PI_2;
+            let done = (next - phi).abs() < 1e-14;
+            phi = next;
+            if done {
+                break;
+            }
+        }
+        (-v / self.a_exp, phi)
+    }
+
+    /// The correction in metres for reduced coordinates `(xr, yr)`.
+    fn correction(xr: f64, yr: f64) -> (f64, f64) {
+        let c = &MK_C;
+        let (x2, y2) = (xr * xr, yr * yr);
+        let dx = c[0] + c[2] * xr - c[3] * yr - 2.0 * c[5] * xr * yr
+            + c[4] * (x2 - y2)
+            + c[6] * xr * (x2 - 3.0 * y2)
+            - c[7] * yr * (3.0 * x2 - y2)
+            + 4.0 * c[8] * xr * yr * (x2 - y2)
+            + c[9] * (x2 * x2 - 6.0 * x2 * y2 + y2 * y2);
+        let dy = c[1]
+            + c[2] * yr
+            + c[3] * xr
+            + 2.0 * c[4] * xr * yr
+            + c[5] * (x2 - y2)
+            + c[7] * xr * (x2 - 3.0 * y2)
+            + c[6] * yr * (3.0 * x2 - y2)
+            + c[8] * (x2 * x2 - 6.0 * x2 * y2 + y2 * y2)
+            + 4.0 * c[9] * xr * yr * (x2 - y2);
+        (dx, dy)
+    }
+
+    /// CRS coordinates: southing and westing plus the false offsets, in the axes of the CRS.
+    fn forward(&self, lam: f64, phi: f64, ext: &Ext) -> (f64, f64) {
+        let (xp, yp) = self.plain(lam, phi);
+        let (xm, ym) = (xp * ext.a, yp * ext.a);
+        let (dx, dy) = Self::correction(xm - MK_X0, ym - MK_Y0);
+        let (south, west) = (xm - dx + ext.y0, ym - dy + ext.x0);
+        if ext.axis == *b"sw" {
+            (south / ext.to_meter, west / ext.to_meter)
+        } else {
+            (-west / ext.to_meter, -south / ext.to_meter)
+        }
+    }
+
+    fn inverse(&self, x: f64, y: f64, ext: &Ext) -> Result<(f64, f64), String> {
+        let (south, west) = if ext.axis == *b"sw" {
+            (x * ext.to_meter, y * ext.to_meter)
+        } else {
+            (-y * ext.to_meter, -x * ext.to_meter)
+        };
+        let (south, west) = (south - ext.y0, west - ext.x0);
+        // Undo the correction (south = xm - dx) by fixed-point iteration (a few centimetres).
+        let (mut xm, mut ym) = (south, west);
+        for _ in 0..20 {
+            let (dx, dy) = Self::correction(xm - MK_X0, ym - MK_Y0);
+            let (nx, ny) = (south + dx, west + dy);
+            let done = (nx - xm).abs() + (ny - ym).abs() < 1e-10;
+            xm = nx;
+            ym = ny;
+            if done {
+                break;
+            }
+        }
+        Ok(self.plain_inverse(xm / ext.a, ym / ext.a))
+    }
 }
 
 // -- Hotine Oblique Mercator ----------------------------------------------------------------
