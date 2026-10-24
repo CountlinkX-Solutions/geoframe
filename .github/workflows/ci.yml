@@ -72,10 +72,38 @@ jobs:
 
       - run: mix test
 
+      # Broken references and missing modules in the docs fail the build.
+      - name: Docs
+        if: matrix.elixir == '1.19'
+        run: mix docs --warnings-as-errors
+
       - name: PostGIS tests
         env:
           GEOFRAME_POSTGIS_URL: postgres://postgres:geoframe@127.0.0.1:5432/postgres
         run: mix test --only postgis
+
+      # Runs the code cells of every notebook against this checkout (Mix.install with a path
+      # dependency, so the NIF is built once more in Mix.install's own directory, debug mode).
+      # Guards against regressions that only show in a fresh install, such as the optional
+      # postgrex compile break (#95). The notebooks download Natural Earth data over the network.
+      - name: Notebooks
+        if: matrix.elixir == '1.19'
+        timeout-minutes: 30
+        env:
+          MIX_ENV: dev
+        run: |
+          # Mix.install fetches Explorer's precompiled NIF with :httpc, which fails on
+          # GitHub's long redirect headers (header_too_long). Prefetch it into the
+          # rustler_precompiled cache with curl; the checksum is still verified.
+          version=$(sed -n 's/.*"explorer": {:hex, :explorer, "\([0-9.]*\)".*/\1/p' mix.lock)
+          nif="libexplorer-v${version}-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz"
+          cache="$HOME/.cache/rustler_precompiled/precompiled_nifs"
+          mkdir -p "$cache"
+          curl -fsSL --retry 5 -o "$cache/$nif" \
+            "https://github.com/elixir-nx/explorer/releases/download/v${version}/${nif}"
+          for notebook in deck tour spike; do
+            elixir scripts/run_livemd.exs "notebooks/${notebook}.livemd"
+          done
 
   rust:
     name: Rust

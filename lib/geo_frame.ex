@@ -16,6 +16,9 @@ defmodule GeoFrame do
   | Shapefile   | `read_shapefile/2`  | `write_shapefile/3`  | `.shp`, `.zip`                  |
   | GeoPackage  | `read_gpkg/2`       | `write_gpkg/3`       | `.gpkg`                         |
 
+  PostGIS (`read_postgis/3`, `to_postgis/4`, optional `:postgrex`) is a database rather than a
+  file; see `GeoFrame.PostGIS`.
+
   `read_file/2` and `write_file/3` pick the format from the extension or from the
   `:driver` option. All formats share one data path: geometry stays in Rust, and the
   other columns cross the NIF boundary as an Arrow IPC stream. No format needs GDAL.
@@ -68,8 +71,8 @@ defmodule GeoFrame do
   into an `"AUTHORITY:CODE"` string, other PROJJSON is kept as JSON text. When writing,
   `"OGC:CRS84"` omits the key, `nil` writes an explicit `null`, an EPSG code (`"EPSG:4326"`,
   `"EPSG:3035"`, a UTM zone, ...) gets a full PROJJSON definition that `geopandas.read_parquet`
-  parses (every EPSG code in the bundled definition tables, the `crs-definitions` table and the
-  supplementary one generated from the PROJ database: geographic, geocentric, projected and
+  parses (every EPSG code in the bundled definition tables: the `crs-definitions` table and the
+  supplementary one generated from the PROJ database; geographic, geocentric, projected and
   compound CRS), any other `"AUTHORITY:CODE"` string (an EPSG code outside both tables,
   another authority) is written as a PROJJSON stub with only a name and an identifier (the
   pure-Rust build has no CRS database), and a PROJJSON string is written as given, which is how

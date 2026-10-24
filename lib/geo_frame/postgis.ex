@@ -5,6 +5,27 @@ defmodule GeoFrame.PostGIS do
   Needs the optional `:postgrex` dependency. Geometry crosses the wire as EWKB and is parsed
   in Rust, never as Elixir structs. See `GeoFrame.Postgrex.Extension` for how a `geometry`
   column reaches Elixir.
+
+  ## Usage
+
+      {:ok, conn} =
+        Postgrex.start_link(hostname: "localhost", database: "gis", types: GeoFrame.Postgrex.Types)
+
+      {:ok, gdf} = GeoFrame.read_postgis(conn, "SELECT id, geom FROM places WHERE id > $1", params: [10])
+      :ok = GeoFrame.to_postgis(gdf, conn, "places_copy", if_exists: :replace, spatial_index: true)
+
+  Without the GeoFrame types module, select `ST_AsEWKB(geom) AS geom`. The SRID of the geometry
+  becomes the CRS; a column of mixed geometry types is created as `geometry(Geometry, srid)`.
+
+  ## Attribute types
+
+  A `numeric` column becomes an Explorer `{:decimal, precision, scale}` series sized to the
+  data, so no digit is lost to float rounding (`NaN` and `Infinity` force float64 and values
+  wider than 38 digits are read as exact text). A result with no rows, or an all-`NULL` column,
+  keeps the dtype of its Postgres type. Intervals, ranges, `inet`, `uuid` and geometric types
+  are read as text. Duplicate column names in a result are an error: alias them. `geography`
+  columns are not handled, and a frame with secondary geometry columns is refused (PostGIS holds
+  one geometry per feature here; drop the extra columns or convert them to WKT).
   """
 
   alias Explorer.DataFrame
