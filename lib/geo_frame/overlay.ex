@@ -259,6 +259,11 @@ defmodule GeoFrame.Overlay do
       rows, then the `df1` remainders. Symmetric difference: the `df1` remainders, then the `df2`
       remainders. A row from only one side has nulls for the other side's attributes.
 
+  A row with a null geometry meets nothing, so it never appears in an intersection. Where a
+  side's remainder is part of the result (`:difference`, `:identity`, `:union`,
+  `:symmetric_difference`) its null rows are kept, with a null geometry and in place among the
+  remainders, exactly as `geopandas.overlay` does (checked against it for every `:how`).
+
   Implemented as GeoPandas does it: candidate pairs from the R-tree, pairwise intersections,
   and, for the differences, each row minus the union of the rows of the other frame it meets.
 

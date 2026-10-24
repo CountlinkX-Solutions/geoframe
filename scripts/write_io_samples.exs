@@ -158,7 +158,17 @@ files = write.(files, "wkb_nocrs.parquet", mixed_nocrs, parquet.([]), kind: "par
 
 # Projected CRS that GeoPandas can only read when the PROJJSON is complete (issue #88).
 files =
-  for {code, name} <- [{3035, "laea_europe"}, {32633, "utm33n"}, {4326, "wgs84"}],
+  for {code, name} <- [
+        {3035, "laea_europe"},
+        {32633, "utm33n"},
+        {4326, "wgs84"},
+        # Geocentric, 3D geographic, datum-shifted and compound CRS (issue #50).
+        {3822, "twd97_geocentric"},
+        {4480, "cgcs2000_3d"},
+        {3823, "twd97_bound"},
+        {5707, "lambert_i_ngf"},
+        {5498, "nad83_navd88"}
+      ],
       reduce: files do
     acc ->
       gdf = GeoDataFrame.set_crs(mixed, "EPSG:#{code}")
@@ -629,8 +639,7 @@ files =
     acc -> zm_vector.(acc, name, gdf, gpkg.(layer: layer), "gpkg", layer: layer)
   end
 
-# FlatGeobuf: no null rows (GDAL cannot parse the empty geometry GeoFrame stores for a null),
-# one geometry type per file, and one dimension (a mixed file is promoted with NaN).
+# FlatGeobuf: one geometry type per file, and one dimension (a mixed file is promoted with NaN).
 fgb_frames = [
   {"z_points.fgb",
    frame.(
@@ -704,6 +713,10 @@ files =
   for {name, gdf} <- fgb_frames, reduce: files do
     acc -> zm_vector.(acc, name, gdf, flatgeobuf.(index: false), "flatgeobuf", [])
   end
+
+# A null row is a feature without a geometry, which GDAL reads as null (issue #78). Without
+# an index so the rows keep their order.
+files = write.(files, "null_rows.fgb", points, flatgeobuf.(index: false), kind: "flatgeobuf")
 
 files = zm_vector.(files, "z_features.geojson", zlines, geojson.([]), "geojson", [])
 files = zm_vector.(files, "z_mixed.geojson", zmixed, geojson.([]), "geojson", [])

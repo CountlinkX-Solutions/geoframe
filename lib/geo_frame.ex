@@ -60,9 +60,11 @@ defmodule GeoFrame do
   into an `"AUTHORITY:CODE"` string, other PROJJSON is kept as JSON text. When writing,
   `"OGC:CRS84"` omits the key, `nil` writes an explicit `null`, an EPSG code (`"EPSG:4326"`,
   `"EPSG:3035"`, a UTM zone, ...) gets a full PROJJSON definition that `geopandas.read_parquet`
-  parses, any other `"AUTHORITY:CODE"` string is written as a PROJJSON stub with only a name
-  and an identifier (the pure-Rust build has no CRS database), and a PROJJSON string is
-  written as given. Any other CRS string is rejected.
+  parses (every EPSG code in the bundled definition table: geographic, geocentric,
+  projected and compound CRS), any other `"AUTHORITY:CODE"` string (an EPSG code outside that
+  table, another authority) is written as a PROJJSON stub with only a name and an identifier
+  (the pure-Rust build has no CRS database), and a PROJJSON string is written as given, which
+  is how to write a CRS the table lacks. Any other CRS string is rejected.
 
   ### Column order
 

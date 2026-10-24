@@ -172,6 +172,83 @@ fn null_geometries_survive_with_and_without_an_index() {
     }
 }
 
+/// Which features of a FlatGeobuf file carry a geometry, in file order.
+fn geometry_presence(file: &str) -> Vec<bool> {
+    use flatgeobuf::{FallibleStreamingIterator, FgbReader};
+    let mut reader = std::io::BufReader::new(std::fs::File::open(file).unwrap());
+    let mut features = FgbReader::open(&mut reader).unwrap().select_all().unwrap();
+    let mut out = Vec::new();
+    while let Some(feature) = features.next().unwrap() {
+        out.push(feature.fbs_feature().geometry().is_some());
+    }
+    out
+}
+
+/// GDAL cannot parse a feature whose geometry table is empty ("Fatal error parsing feature",
+/// issue #78); it writes and reads a null row as a feature with no geometry at all.
+#[test]
+fn null_rows_are_features_without_a_geometry() {
+    let dir = TempDir::new().unwrap();
+    for index in [false, true] {
+        let file = path(&dir, &format!("nogeom{index}.fgb"));
+        let geometry = GeoColumn::from_wkt(
+            &[Some("POINT (1 1)"), None, Some("POINT (50 50)"), None],
+            Some("EPSG:4326"),
+        )
+        .unwrap();
+        write_flatgeobuf(&file, &geometry, &id_ipc(4), "l", index).unwrap();
+
+        let present = geometry_presence(&file);
+        assert_eq!(present.iter().filter(|p| **p).count(), 2, "index = {index}");
+        assert_eq!(present.len(), 4, "index = {index}");
+
+        let read = read_flatgeobuf(&file, None).unwrap();
+        let mut rows = wkt(&read.geometry);
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![
+                None,
+                None,
+                Some("POINT(1 1)".to_string()),
+                Some("POINT(50 50)".to_string())
+            ],
+            "index = {index}"
+        );
+        // attributes stay with their rows
+        let ids = column(&read.attributes_ipc, "id").1;
+        assert_eq!(ids.len(), 4);
+    }
+}
+
+#[test]
+fn an_indexed_file_with_null_rows_still_answers_bbox_queries() {
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "indexed_nulls.fgb");
+    let geometry = GeoColumn::from_wkt(
+        &[None, Some("POINT (1 1)"), None, Some("POINT (50 50)")],
+        Some("EPSG:4326"),
+    )
+    .unwrap();
+    write_flatgeobuf(&file, &geometry, &id_ipc(4), "l", true).unwrap();
+    let hit = read_flatgeobuf(&file, Some([40.0, 40.0, 60.0, 60.0])).unwrap();
+    assert_eq!(wkt(&hit.geometry), vec![Some("POINT(50 50)".to_string())]);
+    let hit = read_flatgeobuf(&file, Some([0.0, 0.0, 2.0, 2.0])).unwrap();
+    assert_eq!(wkt(&hit.geometry), vec![Some("POINT(1 1)".to_string())]);
+    // the id column of the surviving row still matches its geometry
+    let ids = column(&hit.attributes_ipc, "id").1;
+    assert_eq!(ids.as_primitive::<Int64Type>().value(0), 1);
+}
+
+#[test]
+fn a_file_without_nulls_is_left_byte_for_byte_alone() {
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "plain.fgb");
+    let geometry = points(&[(1.0, 1.0), (2.0, 2.0)], Some("EPSG:4326"));
+    write_flatgeobuf(&file, &geometry, &id_ipc(2), "l", true).unwrap();
+    assert_eq!(geometry_presence(&file), vec![true, true]);
+}
+
 #[test]
 fn a_leading_null_geometry_does_not_break_the_index() {
     let dir = TempDir::new().unwrap();

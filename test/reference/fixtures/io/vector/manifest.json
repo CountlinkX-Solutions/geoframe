@@ -111,6 +111,26 @@
     "POINT (3 4)"
    ]
   },
+  "nulls.fgb": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3
+    ],
+    "name": [
+     "a",
+     null,
+     "c"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "wkt": [
+    "POINT (1 2)",
+    null,
+    "POINT (3 4)"
+   ]
+  },
   "points.shp": {
    "columns": {
     "id": [

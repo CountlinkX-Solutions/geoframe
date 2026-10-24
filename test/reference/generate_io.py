@@ -267,6 +267,15 @@ def generate_vector():
                      swkt.loads("LINESTRING (2 2, 3 5)")], crs="EPSG:4269").to_file(single, layer="roads", driver="GPKG")
     record("single.gpkg", gpd.read_file(single), info=info_of(single))
 
+    # A null row is a feature without a geometry (issue #78). GDAL refuses to write one into an
+    # indexed FlatGeobuf file, so the fixture has no spatial index.
+    nulls = os.path.join(out, "nulls.fgb")
+    gpd.GeoDataFrame(
+        {"id": [1, 2, 3], "name": ["a", None, "c"]},
+        geometry=[swkt.loads("POINT (1 2)"), None, swkt.loads("POINT (3 4)")], crs="EPSG:4326",
+    ).to_file(nulls, driver="FlatGeobuf", SPATIAL_INDEX="NO")
+    record("nulls.fgb", gpd.read_file(nulls))
+
     shrink(multi)
     shrink(single)
 

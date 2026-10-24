@@ -5,10 +5,12 @@
 //! written with one are unreadable there. The CRS below are written in full instead:
 //! `EPSG:4326` and `EPSG:4269` (geographic), `EPSG:3857` (Pseudo-Mercator) and the WGS 84 UTM
 //! zones `EPSG:32601`..`32660` (north) and `EPSG:32701`..`32760` (south). Every other EPSG
-//! code in the bundled `crs-definitions` table is translated from its WKT1 definition
-//! (`wkt1_projjson.rs`). An identifier outside that table, or a projection the translation does
-//! not know, keeps the name-and-identifier stub, which GeoFrame reads back but pyproj cannot
-//! interpret.
+//! code in the bundled `crs-definitions` table is translated from its WKT definition
+//! (`wkt1_projjson.rs`, `wkt2_projjson.rs`): geographic (2D and 3D), geocentric, projected and
+//! compound CRS. An identifier outside that table (the pure-Rust build has no PROJ database),
+//! another authority, or one of the few entries the table leaves empty keeps the
+//! name-and-identifier stub, which GeoFrame reads back but pyproj cannot interpret; a caller
+//! that needs such a CRS in a GeoParquet file passes its PROJJSON as the CRS.
 
 use serde_json::{json, Value};
 

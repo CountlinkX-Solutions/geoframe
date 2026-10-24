@@ -497,6 +497,24 @@ defmodule GeoFrame.ParityG1Test do
       end
     end
 
+    # Issue #50: geocentric, 3D geographic, datum-shifted and compound CRS are complete too.
+    for {code, type} <- [
+          {3822, "GeodeticCRS"},
+          {4480, "GeographicCRS"},
+          {3823, "GeographicCRS"},
+          {5707, "CompoundCRS"}
+        ] do
+      test "EPSG:#{code} is written as a #{type}", %{tmp_dir: dir} do
+        code = unquote(code)
+        {path, crs} = written_crs(dir, code)
+
+        assert crs["type"] == unquote(type)
+        assert crs["id"]["code"] == code
+        assert {:ok, back} = GeoFrame.read_parquet(path)
+        assert GeoDataFrame.crs(back) == "EPSG:#{code}"
+      end
+    end
+
     test "GeoFrame reads the files GeoPandas wrote for these CRS" do
       for code <- [3035, 32_633] do
         path = Path.join(@fixtures, "wkb_#{code}.parquet")
