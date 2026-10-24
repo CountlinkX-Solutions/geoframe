@@ -48,6 +48,7 @@ defmodule RunLivemd do
 
   defp eval("pyproject.toml", code, state, _path) do
     ensure_pythonx!()
+    prefetch_uv()
     {apply(Pythonx, :uv_init, [code]), state}
   end
 
@@ -68,6 +69,36 @@ defmodule RunLivemd do
   defp run_quoted(quoted, state) do
     {value, binding, env} = Code.eval_quoted_with_env(quoted, state.binding, state.env)
     {value, %{state | binding: binding, env: env}}
+  end
+
+  # Pythonx downloads uv with :httpc, which fails on GitHub's long redirect headers
+  # (header_too_long) on some networks, CI among them. On x86_64 Linux, fetch the same archive
+  # with curl into the path Pythonx looks in first; elsewhere Pythonx downloads it as usual.
+  defp prefetch_uv do
+    pythonx = Application.spec(:pythonx, :vsn) |> to_string()
+    uv = apply(Pythonx.Uv, :default_uv_version, [])
+
+    base =
+      if dir = System.get_env("PYTHONX_CACHE_DIR"),
+        do: Path.expand(dir),
+        else: :filename.basedir(:user_cache, "pythonx")
+
+    bin = Path.join([base, pythonx, "uv", uv, "bin", "uv"])
+    target = "x86_64-unknown-linux-gnu"
+    linux_x86? = :erlang.system_info(:system_architecture) |> to_string() =~ ~r/^x86_64.*linux/
+
+    if linux_x86? and not File.exists?(bin) and System.find_executable("curl") do
+      url = "https://github.com/astral-sh/uv/releases/download/#{uv}/uv-#{target}.tar.gz"
+      tmp = Path.join(System.tmp_dir!(), "uv-#{uv}-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      archive = Path.join(tmp, "uv.tar.gz")
+      {_, 0} = System.cmd("curl", ["-fsSL", "--retry", "5", "-o", archive, url])
+      {_, 0} = System.cmd("tar", ["-xzf", archive, "-C", tmp])
+      File.mkdir_p!(Path.dirname(bin))
+      File.cp!(Path.join([tmp, "uv-#{target}", "uv"]), bin)
+      File.chmod!(bin, 0o755)
+      File.rm_rf!(tmp)
+    end
   end
 
   defp ensure_pythonx! do
