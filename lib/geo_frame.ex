@@ -58,10 +58,11 @@ defmodule GeoFrame do
   GeoParquet 1.1 semantics apply when reading: a missing `crs` key means `"OGC:CRS84"`,
   an explicit `null` means unknown (`nil`). PROJJSON that carries an identifier is turned
   into an `"AUTHORITY:CODE"` string, other PROJJSON is kept as JSON text. When writing,
-  `"OGC:CRS84"` omits the key, `nil` writes an explicit `null`, `"EPSG:4326"` gets a full
-  PROJJSON definition, other `"AUTHORITY:CODE"` strings are written as a PROJJSON stub with
-  only a name and an identifier (the pure-Rust build has no CRS database), and a PROJJSON
-  string is written as given. Any other CRS string is rejected.
+  `"OGC:CRS84"` omits the key, `nil` writes an explicit `null`, an EPSG code (`"EPSG:4326"`,
+  `"EPSG:3035"`, a UTM zone, ...) gets a full PROJJSON definition that `geopandas.read_parquet`
+  parses, any other `"AUTHORITY:CODE"` string is written as a PROJJSON stub with only a name
+  and an identifier (the pure-Rust build has no CRS database), and a PROJJSON string is
+  written as given. Any other CRS string is rejected.
 
   ### Column order
 

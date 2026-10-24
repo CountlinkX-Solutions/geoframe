@@ -4,9 +4,11 @@
 //! GeoPandas and pyproj refuse a PROJJSON stub that only carries an identifier, so files
 //! written with one are unreadable there. The CRS below are written in full instead:
 //! `EPSG:4326` and `EPSG:4269` (geographic), `EPSG:3857` (Pseudo-Mercator) and the WGS 84 UTM
-//! zones `EPSG:32601`..`32660` (north) and `EPSG:32701`..`32760` (south). Every other
-//! identifier keeps the name-and-identifier stub, which GeoFrame reads back but pyproj
-//! cannot interpret.
+//! zones `EPSG:32601`..`32660` (north) and `EPSG:32701`..`32760` (south). Every other EPSG
+//! code in the bundled `crs-definitions` table is translated from its WKT1 definition
+//! (`wkt1_projjson.rs`). An identifier outside that table, or a projection the translation does
+//! not know, keeps the name-and-identifier stub, which GeoFrame reads back but pyproj cannot
+//! interpret.
 
 use serde_json::{json, Value};
 
@@ -23,8 +25,17 @@ pub(crate) fn known_projjson(authority: &str, code: u64) -> Option<Value> {
         3857 => Some(pseudo_mercator()),
         32601..=32660 => Some(utm(code - 32600, true)),
         32701..=32760 => Some(utm(code - 32700, false)),
-        _ => None,
+        _ => from_table(code),
     }
+}
+
+/// The PROJJSON translated from the bundled WKT1 table. The requested code names the `id`: a
+/// few table entries carry another code in their own `AUTHORITY`.
+fn from_table(code: u64) -> Option<Value> {
+    let wkt = crate::crs_wkt::epsg_definition(i64::try_from(code).ok()?)?;
+    let mut value = crate::wkt1_projjson::wkt1_to_projjson(wkt)?;
+    value["id"] = json!({ "authority": "EPSG", "code": code });
+    Some(value)
 }
 
 fn geographic_axes() -> Value {

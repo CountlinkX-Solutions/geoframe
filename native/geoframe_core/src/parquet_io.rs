@@ -19,9 +19,11 @@
 //! * **CRS, written:** `OGC:CRS84` is the GeoParquet default, so the `crs` key is omitted. An
 //!   unknown CRS is written as an explicit `"crs": null`. `EPSG:4326`, `EPSG:4269`,
 //!   `EPSG:3857` and the WGS 84 UTM zones get a full PROJJSON definition (`projjson.rs`, so
-//!   GeoPandas/pyproj can parse the file); any other `AUTHORITY:CODE` string is written as a
-//!   PROJJSON stub carrying only `name` and `id` (there is no PROJ database in the pure-Rust
-//!   build to expand it).
+//!   GeoPandas/pyproj can parse the file); every other EPSG code in the bundled
+//!   `crs-definitions` table is translated from its WKT1 definition (`wkt1_projjson.rs`). An
+//!   `AUTHORITY:CODE` string without a definition is written as a PROJJSON stub carrying only
+//!   `name` and `id` (there is no PROJ database in the pure-Rust build to expand it); pyproj
+//!   cannot parse a stub.
 //!   A PROJJSON object given as the CRS is written as is.
 //! * **CRS, read (GeoParquet 1.1 semantics, as GeoPolars `dev`):** a missing `crs` key means
 //!   `OGC:CRS84`; an explicit `null` means unknown. A PROJJSON object that carries an `id`

@@ -66,6 +66,22 @@ def expected(df):
     }
 
 
+# EPSG codes whose PROJJSON GeoFrame writes into GeoParquet metadata (issue #88): geographic,
+# UTM, Web Mercator and projected CRS from the bundled table (several projection methods).
+PROJJSON_CODES = [4326, 4258, 4269, 3857, 32633, 32760, 3035, 2154, 27700, 5070, 3031, 2056,
+                  3395, 25832, 6933]
+
+
+def generate_crs_projjson():
+    """pyproj's own PROJJSON for each code, to compare with what GeoFrame writes."""
+    import pyproj
+
+    docs = {str(c): pyproj.CRS.from_epsg(c).to_json_dict() for c in PROJJSON_CODES}
+    with open(os.path.join(OUT, "crs_projjson.json"), "w") as handle:
+        json.dump({"pyproj": pyproj.__version__, "crs": docs}, handle, indent=1, sort_keys=True)
+        handle.write("\n")
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     for name in os.listdir(OUT):
@@ -106,6 +122,12 @@ def main():
     record("wkb_3857.parquet", mixed_3857)
     mixed_nocrs.to_parquet(os.path.join(OUT, "wkb_nocrs.parquet"))
     record("wkb_nocrs.parquet", mixed_nocrs)
+    # Projected CRS other than Web Mercator and UTM (issue #88): GeoFrame must read them.
+    for code in (3035, 32633):
+        df = frame(MIXED, f"EPSG:{code}")
+        df.to_parquet(os.path.join(OUT, f"wkb_{code}.parquet"))
+        record(f"wkb_{code}.parquet", df)
+    generate_crs_projjson()
     points.to_parquet(os.path.join(OUT, "geoarrow_points.parquet"), geometry_encoding="geoarrow")
     record("geoarrow_points.parquet", points)
     points.to_parquet(

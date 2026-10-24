@@ -36,6 +36,7 @@ mod set_ops;
 mod shapefile_io;
 mod sindex;
 mod unary;
+mod wkt1_projjson;
 mod zm;
 mod zm_bridge;
 mod zm_io;
@@ -115,6 +116,8 @@ mod parquet_tests;
 mod polygonize_tests;
 #[cfg(test)]
 mod predicates_tests;
+#[cfg(test)]
+mod projjson_tests;
 #[cfg(test)]
 mod reproject_tests;
 #[cfg(test)]

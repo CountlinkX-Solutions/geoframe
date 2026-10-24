@@ -156,6 +156,15 @@ files = write.(files, "wkb_3857.parquet", mixed_3857, parquet.([]), kind: "parqu
 files = write.(files, "wkb_utm17n.parquet", mixed_utm, parquet.([]), kind: "parquet")
 files = write.(files, "wkb_nocrs.parquet", mixed_nocrs, parquet.([]), kind: "parquet")
 
+# Projected CRS that GeoPandas can only read when the PROJJSON is complete (issue #88).
+files =
+  for {code, name} <- [{3035, "laea_europe"}, {32633, "utm33n"}, {4326, "wgs84"}],
+      reduce: files do
+    acc ->
+      gdf = GeoDataFrame.set_crs(mixed, "EPSG:#{code}")
+      write.(acc, "wkb_#{name}.parquet", gdf, parquet.([]), kind: "parquet")
+  end
+
 files =
   write.(files, "geoarrow_points.parquet", points, parquet.(geometry_encoding: :geoarrow),
     kind: "parquet",
