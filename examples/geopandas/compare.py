@@ -8,6 +8,7 @@ they have not drifted apart.
 """
 
 # --- setup
+import functools
 import json
 import os
 import tempfile
@@ -45,11 +46,17 @@ big_cities = cities[cities["pop_max"] > 1_000_000]
 
 
 # --- analysis: buffer_dissolve
-def buffer_dissolve():
+@functools.cache
+def covered_areas():
     buffers = big_cities.to_crs(EQUAL_AREA)[["adm0name", "geometry"]]
     buffers = buffers.set_geometry(buffers.buffer(100_000))
     covered = buffers.dissolve(by="adm0name").reset_index()
     covered["area_km2"] = covered.area / 1e6
+    return covered
+
+
+def buffer_dissolve():
+    covered = covered_areas()
     top = covered.sort_values(["area_km2", "adm0name"], ascending=[False, True]).head(10)
     return {
         "n_countries": len(covered),
@@ -60,13 +67,19 @@ def buffer_dissolve():
 
 
 # --- analysis: river_corridor
-def river_corridor():
+@functools.cache
+def corridor_pieces():
     major = rivers[rivers["scalerank"] <= 4].to_crs(EQUAL_AREA)
     corridor = gpd.GeoDataFrame(geometry=[major.buffer(50_000).union_all()], crs=EQUAL_AREA)
     pieces = gpd.overlay(
         countries_eq[["ADM0_A3", "geometry"]], corridor, how="intersection", keep_geom_type=True
     )
     pieces["inside_km2"] = pieces.area / 1e6
+    return pieces
+
+
+def river_corridor():
+    pieces = corridor_pieces()
     pieces = pieces.merge(
         countries_eq.assign(area_km2=countries_eq.area / 1e6)[["ADM0_A3", "area_km2"]],
         on="ADM0_A3",
@@ -135,12 +148,18 @@ def nearest_river():
 
 
 # --- analysis: river_length_south_america
-def river_length_south_america():
+@functools.cache
+def river_pieces():
     south_america = countries[countries["CONTINENT"] == "South America"]
     south_america = south_america[["ADM0_A3", "geometry"]].to_crs(SOUTH_AMERICA_ALBERS)
-    streams = rivers.cx[-95:-30, -60:15][["geometry"]].to_crs(SOUTH_AMERICA_ALBERS)
+    streams = rivers.cx[-95:-30, -60:15][["name", "geometry"]].to_crs(SOUTH_AMERICA_ALBERS)
     pieces = gpd.overlay(streams, south_america, how="intersection", keep_geom_type=True)
     pieces["km"] = pieces.length / 1000
+    return pieces
+
+
+def river_length_south_america():
+    pieces = river_pieces()
     per_country = pieces.groupby("ADM0_A3")["km"].sum().reset_index()
     top = per_country.sort_values(["km", "ADM0_A3"], ascending=[False, True]).head(5)
     return {
@@ -152,8 +171,13 @@ def river_length_south_america():
 
 
 # --- analysis: continents
+@functools.cache
+def merged_continents():
+    return countries_eq[["CONTINENT", "geometry"]].dissolve(by="CONTINENT").sort_index()
+
+
 def continents():
-    merged = countries_eq[["CONTINENT", "geometry"]].dissolve(by="CONTINENT").sort_index()
+    merged = merged_continents()
     centre = merged.centroid
     # Simplification is measured on the countries, so that it does not depend on the union.
     parts = countries_eq[["CONTINENT"]].assign(
@@ -233,7 +257,8 @@ def predicates():
 
 
 # --- analysis: voronoi
-def voronoi():
+@functools.cache
+def owned_land():
     south_america = countries_eq[countries_eq["CONTINENT"] == "South America"]
     land = south_america.union_all()
     capitals = cities[(cities["adm0cap"] == 1) & (cities["adm0_a3"].isin(south_america["ADM0_A3"]))]
@@ -241,8 +266,13 @@ def voronoi():
     diagram = capitals.geometry.voronoi_polygons(extend_to=shapely.box(*land.bounds))
     cells = gpd.GeoDataFrame(geometry=diagram.reset_index(drop=True), crs=EQUAL_AREA)
     owned = gpd.sjoin(cells, capitals[["name", "geometry"]], predicate="contains")
-    owned["area_km2"] = owned.geometry.intersection(land).area / 1e6
-    owned = owned.sort_values("name")
+    owned = owned.set_geometry(owned.geometry.intersection(land))
+    owned["area_km2"] = owned.area / 1e6
+    return owned.sort_values("name")
+
+
+def voronoi():
+    owned = owned_land()
     return {
         "capitals": owned["name"].tolist(),
         "cell_area_km2": owned["area_km2"].tolist(),
