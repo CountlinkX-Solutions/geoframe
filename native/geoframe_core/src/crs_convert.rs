@@ -554,7 +554,9 @@ fn projection(conversion: &Value, axes: &Axes) -> Result<String, String> {
             p.or_zero(&[8806, 8826]),
             p.or_zero(&[8807, 8827])
         ),
-        // The sphere of the base ellipsoid's semi-major axis, no datum shift (what PROJ does).
+        // The sphere of the base ellipsoid's semi-major axis with no shift between the sphere and
+        // the ellipsoid (what PROJ does); `+nadgrids=@null` keeps the datum WGS 84, so shifts to
+        // other datums still apply (see `datum::without_nadgrids`).
         1024 => format!(
             "+proj=merc +lat_ts=0 +lon_0={} +x_0={} +y_0={} +k=1 +nadgrids=@null +wktext",
             p.or_zero(&[8802]),
