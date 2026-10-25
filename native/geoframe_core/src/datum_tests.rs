@@ -121,6 +121,55 @@ fn datum_shifts_without_grids_stay_within_the_documented_ballpark_of_pyproj() {
     );
 }
 
+/// Web Mercator (EPSG:3857) is defined on WGS 84 (`+nadgrids=@null` in its proj string). Going
+/// straight to or from a CRS on another datum must apply that datum's shift, as going through
+/// EPSG:4326 does. Expected values are pyproj 3.8 / PROJ 9.8.1 without grids (`always_xy`).
+#[test]
+fn web_mercator_keeps_the_datum_shift_to_other_datums() {
+    let _guard = exclusive();
+    let close = |got: (f64, f64), want: (f64, f64), what: &str| {
+        let miss = ((got.0 - want.0).powi(2) + (got.1 - want.1).powi(2)).sqrt();
+        assert!(
+            miss < 0.01,
+            "{what}: got {got:?}, want {want:?} ({miss:.3} m off)"
+        );
+    };
+    // Soho, London (the Broad Street pump), to the British National Grid (OSGB36).
+    let soho = (-15_222.781_732_626_117, 6_712_604.559_631_288);
+    let osgb = point(soho.0, soho.1, "EPSG:3857")
+        .to_crs("EPSG:27700")
+        .unwrap();
+    close(
+        xy(&osgb),
+        (529_390.946_921_815, 181_024.571_306_380_1),
+        "3857 -> 27700",
+    );
+    let back = point(529_390.946_921_815, 181_024.571_306_380_1, "EPSG:27700")
+        .to_crs("EPSG:3857")
+        .unwrap();
+    close(
+        xy(&back),
+        (-15_222.780_340_696_188, 6_712_604.558_808_459),
+        "27700 -> 3857",
+    );
+    // Stuttgart to Gauss-Krueger zone 3 (DHDN).
+    let stuttgart = point(1_021_912.925_482_251_3, 6_237_614.107_564_601, "EPSG:3857")
+        .to_crs("EPSG:31467")
+        .unwrap();
+    close(
+        xy(&stuttgart),
+        (3_513_304.512_453_810_3, 5_404_737.597_294_708),
+        "3857 -> 31467",
+    );
+    // The direct route and the route through EPSG:4326 agree.
+    let via = point(soho.0, soho.1, "EPSG:3857")
+        .to_crs("EPSG:4326")
+        .unwrap()
+        .to_crs("EPSG:27700")
+        .unwrap();
+    close(xy(&osgb), xy(&via), "direct vs through 4326");
+}
+
 /// Tokyo (EPSG:4301) is the datum the synthetic grids stand in for; no other test touches it.
 const TOKYO: u32 = 4301;
 

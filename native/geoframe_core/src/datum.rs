@@ -201,9 +201,12 @@ pub(crate) fn with_axes(proj: &str, wkt: &str) -> String {
     }
 }
 
+/// The proj string without its grid list. `+nadgrids=@null` stays: it is not a grid but the
+/// legacy way of saying "these coordinates are WGS 84" (Web Mercator's definition), and without
+/// it `proj4rs` sees no datum and skips the shift to any other datum.
 fn without_nadgrids(proj: &str) -> impl Iterator<Item = &str> {
     proj.split_whitespace()
-        .filter(|token| !token.starts_with("+nadgrids="))
+        .filter(|token| !token.starts_with("+nadgrids=") || *token == "+nadgrids=@null")
 }
 
 /// The proj string with no grid at all: the Helmert set it carries, or the NAD27 default.
@@ -230,11 +233,12 @@ pub(crate) fn build(
     if !names.is_empty() {
         install_reader();
         let optional: Vec<String> = names.iter().map(|n| format!("@{n}")).collect();
-        let with_grids = format!(
-            "{} +nadgrids={}",
-            without_nadgrids(proj).collect::<Vec<_>>().join(" "),
-            optional.join(",")
-        );
+        // The grids replace every `+nadgrids` entry, `@null` included.
+        let rest: Vec<&str> = proj
+            .split_whitespace()
+            .filter(|token| !token.starts_with("+nadgrids="))
+            .collect();
+        let with_grids = format!("{} +nadgrids={}", rest.join(" "), optional.join(","));
         // Fails with `NadGridNotAvailable` when none of the files exists.
         if let Ok(gridded) = Proj::from_proj_string(&with_grids) {
             return Ok((gridded, Proj::from_proj_string(&helmert).ok()));
