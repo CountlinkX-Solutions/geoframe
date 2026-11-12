@@ -24,7 +24,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use geo::{Area, BoundingRect, Centroid, Geometry, Validation};
+use geo::{Area, BoundingRect, Centroid, Geometry};
 use geoarrow_array::array::GeometryArray;
 use geoarrow_array::builder::GeometryBuilder;
 use geoarrow_array::cast::{to_wkb, to_wkt};
@@ -418,7 +418,7 @@ impl GeoColumn {
     }
 
     pub fn is_valid(&self) -> Vec<Option<bool>> {
-        self.map_geo(|g| Some(g.is_valid()))
+        self.map_geo(|g| Some(crate::validity::is_valid(g)))
     }
 
     /// `[minx, miny, maxx, maxy]` per row; `None` for null and empty geometries.

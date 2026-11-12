@@ -482,13 +482,6 @@ zm_deviations ++
     },
     %{
       reason:
-        "geo's validation accepts a zero-area polygon ring (collinear vertices) that GEOS reports as a self-intersection, so is_valid is true and make_valid leaves it unchanged.",
-      doc: "docs/parity.md#reference-testing",
-      op: "is_valid",
-      cases: ["is_valid:poly_flat"]
-    },
-    %{
-      reason:
         "is_valid_reason uses geo's wording (first reason only), not GEOS' text and coordinates.",
       doc: "docs/parity.md#reference-testing",
       op: "is_valid_reason",
@@ -496,24 +489,10 @@ zm_deviations ++
     },
     %{
       reason:
-        "geo's validation accepts a zero-area polygon ring (collinear vertices) that GEOS reports as a self-intersection, so is_valid is true and make_valid leaves it unchanged.",
-      doc: "docs/parity.md#reference-testing",
-      op: "is_valid_reason",
-      cases: ["is_valid_reason:poly_flat"]
-    },
-    %{
-      reason:
         "line_merge on a polygon: GeoFrame gives an empty collection for non-lines; GEOS merges the polygon's boundary.",
       doc: "docs/parity.md#reference-testing",
       op: "line_merge",
       cases: ["line_merge:sq"]
-    },
-    %{
-      reason:
-        "geo's validation accepts a zero-area polygon ring (collinear vertices) that GEOS reports as a self-intersection, so is_valid is true and make_valid leaves it unchanged.",
-      doc: "docs/parity.md#reference-testing",
-      op: "make_valid",
-      cases: ["make_valid:poly_flat"]
     },
     %{
       reason:
@@ -631,7 +610,7 @@ zm_deviations ++
     },
     %{
       reason:
-        "set_precision on an INVALID multipolygon (parts that overlap or lie inside each other). GEOS' overlay keeps the parts it was given (including a polygon inside another one, or a hole, in an invalid result); GeoFrame merges parts that overlap after snapping. Valid input agrees in every case.",
+        "set_precision on an INVALID multipolygon (parts that overlap or lie inside each other). GEOS' overlay noder decides from edge contact after snapping: a part whose edges meet no other part's is kept (including a polygon inside another one in an invalid result), parts whose edges coincide are merged (i_mpoly_holes), and crossing edges make GEOS raise a TopologyException; GeoFrame merges parts that overlap after snapping and never raises. Valid input agrees in every case.",
       doc: "docs/parity.md#batch-i-hard--low-value-defer",
       op: "set_precision",
       cases: [

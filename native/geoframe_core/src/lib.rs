@@ -47,6 +47,7 @@ mod sindex;
 mod unary;
 mod utm;
 mod utm_crs;
+mod validity;
 mod wkt1_projjson;
 mod wkt2_projjson;
 mod zm;
@@ -160,6 +161,8 @@ mod test_support;
 mod tests;
 #[cfg(test)]
 mod unary_tests;
+#[cfg(test)]
+mod validity_tests;
 #[cfg(test)]
 mod zm_io_tests;
 #[cfg(test)]
