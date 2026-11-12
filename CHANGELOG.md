@@ -58,7 +58,8 @@ through Hex. The NIF is compiled on your machine, so you need a stable Rust tool
 - **Testing helpers**: `GeoFrame.Testing` assertions for geometry series and frames, including
   secondary geometry columns.
 - **Quality**: a differential suite checks every operation shared with GeoPandas 1.2 /
-  Shapely 2.2 (tens of thousands of cases), inputs are bounded and files are written atomically,
+  Shapely 2.2 (18 864 reference cases: 18 131 agree, 733 are documented deviations), inputs are
+  bounded and files are written atomically,
   and four notebooks (tour, deck.gl widget, GeoFrame vs GeoPandas, spike) run in CI.
 
 ### Known issues

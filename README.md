@@ -4,8 +4,8 @@ GeoPandas-style geospatial dataframes for Elixir, powered by
 [GeoArrow](https://geoarrow.org) and Rust.
 
 > Status: first tagged release, `0.1.0`, distributed from GitHub (not on Hex yet); see the
-> [changelog](CHANGELOG.md). Behaviour is checked against GeoPandas 1.2 / Shapely 2.2 on tens
-> of thousands of cases, but the API may still change before 1.0.
+> [changelog](CHANGELOG.md). Behaviour is checked against GeoPandas 1.2 / Shapely 2.2 on
+> 18 864 reference cases, but the API may still change before 1.0.
 
 Elixir has [Explorer](https://github.com/elixir-explorer/explorer) for dataframes, but no way
 to carry geometry with spatial semantics. GeoFrame adds it without forking Explorer:
