@@ -346,3 +346,66 @@ fn esri_wkt1_stateplane_in_feet_reprojects_like_pyproj() {
         }
     }
 }
+
+/// ESRI writes the Lambert conformal conic 1SP method as `Lambert_Conformal_Conic` with
+/// `Standard_Parallel_1` equal to `Latitude_Of_Origin`, and a `Scale_Factor`. Exported by PROJ in the
+/// ESRI dialect: EPSG:8068 (NAD83(2011) PCCS zone 4, international foot, scale 0.9998), EPSG:7057
+/// (NAD83(2011) IaRCS zone 1, US survey foot) and EPSG:6794 (OCRS Bend-Redmond-Prineville, metre,
+/// scale 1.00012). Values from pyproj 3.8 / PROJ 9.8, `always_xy`, with
+/// `wkt = pyproj.CRS.from_epsg(code).to_wkt("WKT1_ESRI")`, three points around the middle of the
+/// area of use (`area_of_use.bounds`, offsets 0/0, 0.4/0.3, -0.3/-0.2 degrees), and the
+/// forward/inverse generator of `esri_cases`.
+fn esri_lcc_1sp_cases() -> Vec<EsriCase> {
+    vec![
+        ("EPSG:8068", r#"PROJCS["NAD_1983_(2011)_PCCS_zone_4_(ft)",GEOGCS["GCS_NAD_1983_2011",DATUM["D_NAD_1983_2011",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",30000.0],PARAMETER["False_Northing",-620000.0],PARAMETER["Central_Meridian",-110.75],PARAMETER["Standard_Parallel_1",30.5],PARAMETER["Scale_Factor",0.9998],PARAMETER["Latitude_Of_Origin",30.5],UNIT["foot",0.3048]]"#.to_string(), [
+            (-110.74, 32.41, 33087.39500246114, 74792.2770971437, -110.74, 32.410000000000004),
+            (-110.34, 32.71, 156186.32042808278, 184220.57170050306, -110.34, 32.709999999999994),
+            (-111.04, 32.21, -59721.33466125998, 2121.5876317461184, -111.04000000000002, 32.21),
+        ]),
+        ("EPSG:7057", r#"PROJCS["NAD_1983_(2011)_IaRCS_zone_1",GEOGCS["GCS_NAD_1983_2011",DATUM["D_NAD_1983_2011",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",11500000.0],PARAMETER["False_Northing",9600000.0],PARAMETER["Central_Meridian",-95.25],PARAMETER["Standard_Parallel_1",43.2],PARAMETER["Scale_Factor",1.000052],PARAMETER["Latitude_Of_Origin",43.2],UNIT["US survey foot",0.304800609601219]]"#.to_string(), [
+            (-95.285, 43.205, 11490667.421889808, 9601824.49455068, -95.28499999999998, 43.205),
+            (-94.885, 43.505, 11596848.265330981, 9711389.761714473, -94.885, 43.50499999999999),
+            (-95.585, 43.005, 11410382.351083523, 9529101.26818554, -95.585, 43.00500000000002),
+        ]),
+        ("EPSG:6794", r#"PROJCS["OCRS_Bend-Redmond-Prineville_NAD_1983_2011_LCC_Meters",GEOGCS["GCS_NAD_1983_2011",DATUM["D_NAD_1983_2011",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",80000.0],PARAMETER["False_Northing",130000.0],PARAMETER["Central_Meridian",-121.25],PARAMETER["Standard_Parallel_1",44.6666666666667],PARAMETER["Scale_Factor",1.00012],PARAMETER["Latitude_Of_Origin",44.6666666666667],UNIT["Meter",1.0]]"#.to_string(), [
+            (-120.835, 44.37, 113082.28849539903, 97113.81951633212, -120.835, 44.37),
+            (-120.435, 44.67, 144634.64296980045, 130693.6220876741, -120.43500000000002, 44.669999999999995),
+            (-121.135, 44.17, 89198.77900738984, 74809.37462896085, -121.13499999999999, 44.16999999999999),
+        ]),
+    ]
+}
+
+#[test]
+fn esri_lcc_1sp_reprojects_like_pyproj() {
+    for (name, wkt, points) in esri_lcc_1sp_cases() {
+        for (lon, lat, x, y, back_lon, back_lat) in points {
+            let (gx, gy) = transform_xy("EPSG:4326", &wkt, lon, lat)
+                .unwrap_or_else(|e| panic!("{name} forward at {lon} {lat}: {e}"));
+            assert!(
+                (gx - x).abs() < 1e-3 && (gy - y).abs() < 1e-3,
+                "{name} forward: {gx} {gy} vs {x} {y}"
+            );
+            let (bx, by) = transform_xy(&wkt, "EPSG:4326", x, y)
+                .unwrap_or_else(|e| panic!("{name} inverse at {x} {y}: {e}"));
+            assert!(
+                (bx - back_lon).abs() < 1e-8 && (by - back_lat).abs() < 1e-8,
+                "{name} inverse: {bx} {by} vs {back_lon} {back_lat}"
+            );
+        }
+    }
+}
+
+/// `Lambert_Conformal_Conic` with one standard parallel that is not the latitude of origin is not
+/// the 1SP method the table represents: it is refused, not reprojected.
+#[test]
+fn esri_lcc_with_a_lone_standard_parallel_off_the_origin_is_refused() {
+    let (_, wkt, _) = esri_lcc_1sp_cases().remove(2);
+    let off = wkt.replace(
+        r#"PARAMETER["Standard_Parallel_1",44.6666666666667]"#,
+        r#"PARAMETER["Standard_Parallel_1",45.5]"#,
+    );
+    assert_ne!(off, wkt);
+    let err = crate::crs_convert::wkt_to_projjson(&off).unwrap_err();
+    assert!(err.starts_with("unsupported WKT definition"), "{err}");
+    assert!(transform_xy("EPSG:4326", &off, -120.8, 44.4).is_err());
+}

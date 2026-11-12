@@ -14,7 +14,9 @@ change before 1.0.
   survey feet) is now read by `to_crs/2`, `set_crs/2` and `GeoFrame.Kino.deck/2` instead of
   raising `unsupported WKT definition`. WKT1 parameter names are matched without regard to
   case (ESRI writes `False_Easting`, `Standard_Parallel_1`), and ESRI's
-  `Lambert_Conformal_Conic` is read as the 2SP method when it has a second standard parallel.
+  `Lambert_Conformal_Conic` is read as the 2SP method when it has a second standard parallel, and
+  as the 1SP method (with `Standard_Parallel_1` equal to `Latitude_Of_Origin`, as ESRI writes it)
+  otherwise; a lone standard parallel that differs from the origin is still refused.
   `Foot_US` and `Foot` units are honoured. Reprojection matches pyproj
   ([#110](https://github.com/CountlinkX-Solutions/geoframe/issues/110)).
 

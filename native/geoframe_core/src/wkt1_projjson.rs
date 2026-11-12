@@ -765,6 +765,11 @@ fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
         .child("AXIS")
         .and_then(|a| a.text(1))
         .is_some_and(|d| d.eq_ignore_ascii_case("east"));
+    let latitude_of_origin = parameters
+        .iter()
+        .find(|p| name_of(p).as_deref() == Some("latitude_of_origin"))
+        .and_then(|p| p.number(1))
+        .unwrap_or(0.0);
     let two_parallels = parameters
         .iter()
         .any(|p| name_of(p).as_deref() == Some("standard_parallel_2"));
@@ -780,6 +785,16 @@ fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
         let entry = table.iter().find(|(names, ..)| names.contains(&name));
         let Some((_, epsg_name, code, kind)) = entry else {
             if name == "scale_factor" && value == 1.0 {
+                continue;
+            }
+            // ESRI repeats the latitude of origin as `Standard_Parallel_1` of a 1SP Lambert
+            // conformal conic. The method has no such parameter, so it is only dropped when it
+            // is that latitude; any other value is a different definition and stays refused.
+            if projection == "Lambert_Conformal_Conic"
+                && !two_parallels
+                && name == "standard_parallel_1"
+                && value == latitude_of_origin
+            {
                 continue;
             }
             // The Laborde grid angle is not an EPSG parameter of that method (PROJ drops it).
