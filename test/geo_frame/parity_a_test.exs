@@ -276,6 +276,27 @@ defmodule GeoFrame.ParityATest do
       assert list(GeoSeries.is_ring(series)) == [true, false, false, nil]
     end
 
+    # Shapely 2.2.0 / GEOS 3.14.1:
+    #   g = wkt.loads("POLYGON ((0 0, 1 1, 2 2, 0 0))")
+    #   g.is_valid -> False; explain_validity(g) -> "Self-intersection[1 1]"
+    #   make_valid(g).wkt -> "MULTILINESTRING ((0 0, 1 1), (1 1, 2 2))"
+    test "a zero-area collinear ring is invalid and make_valid collapses it to its lines" do
+      flat = "POLYGON ((0 0, 1 1, 2 2, 0 0))"
+      series = s([flat, @square, nil])
+
+      assert list(GeoSeries.is_valid(series)) == [false, true, nil]
+      assert [reason, "Valid Geometry", nil] = list(GeoSeries.is_valid_reason(series))
+      assert reason =~ "Self-intersection"
+      assert list(GeoSeries.isna(GeoSeries.null_out_invalid(series))) == [true, false, true]
+
+      repaired = GeoSeries.make_valid(series)
+      assert list(GeoSeries.geom_type(repaired)) == ["MultiLineString", "Polygon", nil]
+      assert list(GeoSeries.is_valid(repaired)) == [true, true, nil]
+
+      assert [line | _] = GeoSeries.to_wkt(repaired)
+      assert line =~ ~r/^MULTILINESTRING\s*\(\(0 0,\s*1 1\),\s*\(1 1,\s*2 2\)\)$/
+    end
+
     test "is_valid_reason and null_out_invalid" do
       series = s([@square, @bowtie, nil])
       assert [valid, reason, nil] = list(GeoSeries.is_valid_reason(series))

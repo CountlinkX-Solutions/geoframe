@@ -269,15 +269,19 @@ impl GeoColumn {
     /// The wording is `geo`'s, not GEOS' (`"Self-intersection[x y]"`).
     pub fn is_valid_reason(&self) -> Vec<Option<String>> {
         self.map_scalars(|scalar| match geometry_to_geo(scalar) {
-            Ok(g) => catch_unwind(AssertUnwindSafe(|| g.check_validation()))
-                .map(|result| result.err().map_or(VALID.to_string(), |e| e.to_string()))
-                .unwrap_or_else(|_| "validation failed".to_string()),
+            Ok(g) => catch_unwind(AssertUnwindSafe(|| match g.check_validation() {
+                Err(e) => e.to_string(),
+                Ok(()) => {
+                    crate::validity::collapsed_reason(&g).unwrap_or_else(|| VALID.to_string())
+                }
+            }))
+            .unwrap_or_else(|_| "validation failed".to_string()),
             Err(_) => VALID.to_string(),
         })
     }
 
     /// Keeps valid geometries and nulls the invalid ones.
     pub fn null_out_invalid(&self) -> Result<Self, String> {
-        self.map_geometry(|g| g.is_valid().then(|| g.clone()))
+        self.map_geometry(|g| crate::validity::is_valid(g).then(|| g.clone()))
     }
 }
