@@ -414,12 +414,19 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
   whatever the name of the GEOGCS: a Shapefile `.prj` (`GCS_...` / `D_...`, no authority) is
   shifted like its EPSG code, and a datum name PROJ does not know leaves the text unshifted. On
   the whole PROJ database (1 110 geographic and sampled projected CRSs written as WKT1_ESRI,
-  one point each) 716 differed from pyproj before and 32 do now, 30 of which are differences the
-  CRS has by code too (GDA2020, Minna, Saba, RD/83, ...); the rest are Paris- and Ferro-meridian
-  and Tokyo 1892 definitions. GDA94, GDA2020 and CR-SIRGAS names are left out on purpose:
+  one point each) 716 differed from pyproj before and 60 do now, and none got worse. 27 of those
+  60 are differences the CRS has by code too (GDA2020, Minna, Saba, RD/83, ...); 31 are CRSs
+  with a prime meridian other than Greenwich, and two are Tokyo 1892 and Rassadiran. A
+  definition with a prime meridian other than Greenwich (Ferro, Paris, Rome, Jakarta, Oslo,
+  Athens, Lisbon, Bern, Bogota: `MGI (Ferro)`, `NTF (Paris)`, `Monte Mario (Rome)`, ...) is not
+  looked up by its datum name, because the Helmert operations are written for Greenwich
+  longitudes and the lookup made MGI (Ferro) worse (81 m to 306 m): it keeps the result it had,
+  which is the unshifted one, 33 to 496 m off pyproj (178 km for ATF (Paris)). They are
+  documented deviations, not pursued.
+  GDA94, GDA2020 and CR-SIRGAS names are left out on purpose:
   PROJ runs a null operation first there and the Helmert table does not (1.7 m), which would
-  move a `.prj` that agrees with pyproj today. A definition whose projection ESRI names differently (`Double_Stereographic`, `Gauss_Kruger`) is still
-  refused: that is the converter, not the datum.
+  move a `.prj` that agrees with pyproj today. A definition whose projection ESRI names
+  differently (`Double_Stereographic`, `Gauss_Kruger`) is still refused: that is the converter, not the datum.
   Any other datum is left unshifted, which is PROJ's ballpark and what pyproj does for a custom
   datum.
 * **Labels.** A definition with an identifier that the tables have is that code (`EPSG:5515`). Any

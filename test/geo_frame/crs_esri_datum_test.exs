@@ -59,4 +59,26 @@ defmodule GeoFrame.CrsEsriDatumTest do
     assert_in_delta gx, ex, @tolerance
     assert_in_delta gy, ey, @tolerance
   end
+
+  @prime_meridian Path.expand(
+                    "../reference/fixtures/crs_datum/crs_esri_prime_meridian.json",
+                    __DIR__
+                  )
+                  |> File.read!()
+                  |> Jason.decode!()
+
+  for code <- ["4805", "4806", "4807", "4901"] do
+    test "EPSG:#{code} as ESRI text with another prime meridian keeps its previous result" do
+      e = get_in(@prime_meridian, ["crs", unquote(code)])
+      [bx, by] = e["before"]
+
+      {gx, gy} =
+        GeoSeries.from_wkt!(["POINT (#{e["x"]} #{e["y"]})"], crs: e["wkt"])
+        |> GeoSeries.to_crs("EPSG:4326")
+        |> xy()
+
+      assert_in_delta gx, bx, 1.0e-9
+      assert_in_delta gy, by, 1.0e-9
+    end
+  end
 end

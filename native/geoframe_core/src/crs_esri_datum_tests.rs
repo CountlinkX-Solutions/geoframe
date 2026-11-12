@@ -54,3 +54,30 @@ fn esri_wkt_shifts_its_datum_like_pyproj() {
         failures.join("\n")
     );
 }
+
+/// A definition with a prime meridian other than Greenwich (Ferro, Paris, Rome) is not moved by
+/// the datum-name lookup: its result stays what it was before (fixture
+/// `crs_esri_prime_meridian.json`: GeoFrame without the lookup).
+#[test]
+fn esri_wkt_with_another_prime_meridian_keeps_its_result() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test/reference/fixtures/crs_datum/crs_esri_prime_meridian.json"
+    ))
+    .unwrap();
+    let data: Value = serde_json::from_str(&text).unwrap();
+    for (code, e) in data["crs"].as_object().unwrap() {
+        let (gx, gy) = transform_xy(
+            e["wkt"].as_str().unwrap(),
+            "EPSG:4326",
+            num(&e["x"]),
+            num(&e["y"]),
+        )
+        .unwrap();
+        let [bx, by] = [0, 1].map(|i| num(&e["before"][i]));
+        assert!(
+            (gx - bx).abs() < 1e-9 && (gy - by).abs() < 1e-9,
+            "{code}: got {gx} {gy}, before {bx} {by}"
+        );
+    }
+}

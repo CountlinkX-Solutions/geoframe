@@ -79,8 +79,16 @@ fn geographic_code(value: &Value) -> Option<u32> {
             lookup(crate::crs_names::CRS_NAMES, name)
         })
         .or_else(|| {
-            let name = value.get("datum")?.get("name")?.as_str()?;
-            lookup(crate::crs_datum_names::DATUM_NAMES, name)
+            let datum = value.get("datum")?;
+            // The table is Greenwich-based: a definition with another prime meridian (Ferro,
+            // Paris, Rome, ...) keeps the result it had without the lookup.
+            if datum.get("prime_meridian").is_some() {
+                return None;
+            }
+            lookup(
+                crate::crs_datum_names::DATUM_NAMES,
+                datum.get("name")?.as_str()?,
+            )
         })
         .or(id)
 }
