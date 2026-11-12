@@ -189,5 +189,23 @@ defmodule GeoFrame.ToCrsTest do
       assert_in_delta lon, -112.0, 1.0e-9
       assert_in_delta lat, 33.5, 1.0e-9
     end
+
+    # RD New (EPSG:28992, the Dutch national CRS) as `pyproj.CRS.from_epsg(28992).to_wkt("WKT1_ESRI")`
+    # writes it: the projection is `Double_Stereographic`. Expected values: pyproj 3.8 / PROJ 9.8.1,
+    # `Transformer.from_crs("EPSG:4326", wkt, always_xy=True).transform(5.21, 52.225)` and back.
+    @esri_rd_new ~s(PROJCS["RD_New",GEOGCS["GCS_Amersfoort",DATUM["D_Amersfoort",SPHEROID["Bessel_1841",6377397.155,299.1528128]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Double_Stereographic"],PARAMETER["False_Easting",155000.0],PARAMETER["False_Northing",463000.0],PARAMETER["Central_Meridian",5.38763888888889],PARAMETER["Scale_Factor",0.9999079],PARAMETER["Latitude_Of_Origin",52.1561605555556],UNIT["Meter",1.0]])
+
+    test "an ESRI WKT1 RD New CRS (Double_Stereographic) reprojects both ways" do
+      geo = GeoDataFrame.new(Explorer.DataFrame.new(name: ["a"]), s(["POINT (5.21 52.225)"]))
+
+      projected = GeoDataFrame.to_crs(geo, @esri_rd_new)
+      {x, y} = projected.geometry |> xy()
+      assert_in_delta x, 142_892.19257513565, 1.0e-3
+      assert_in_delta y, 470_783.86722838413, 1.0e-3
+
+      {lon, lat} = projected |> GeoDataFrame.to_crs("EPSG:4326") |> Map.fetch!(:geometry) |> xy()
+      assert_in_delta lon, 5.21, 1.0e-8
+      assert_in_delta lat, 52.225, 1.0e-8
+    end
   end
 end

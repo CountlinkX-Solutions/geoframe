@@ -429,7 +429,11 @@ const LAT_ORIGIN: Param = (
     Kind::Angle,
 );
 const LON_ORIGIN: Param = (
-    &["central_meridian", "longitude_of_center"],
+    &[
+        "central_meridian",
+        "longitude_of_center",
+        "longitude_of_origin",
+    ],
     "Longitude of natural origin",
     8802,
     Kind::Angle,
@@ -487,7 +491,7 @@ const FALSE_ORIGIN: &[Param] = &[
 
 const POLAR_B: &[Param] = &[
     (
-        &["latitude_of_origin"],
+        &["latitude_of_origin", "standard_parallel_1"],
         "Latitude of standard parallel",
         8832,
         Kind::Angle,
@@ -516,7 +520,7 @@ const MERCATOR_B: &[Param] = &[
 
 const EQUIDISTANT_CYLINDRICAL: &[Param] = &[
     (
-        &["latitude_of_origin"],
+        &["latitude_of_origin", "standard_parallel_1"],
         "Latitude of 1st standard parallel",
         8823,
         Kind::Angle,
@@ -553,7 +557,9 @@ const HOTINE_CENTRE: [Param; 5] = [
     ),
     (&["azimuth"], "Azimuth of initial line", 8813, Kind::Angle),
     (
-        &["rectified_grid_angle"],
+        // ESRI names the angle `XY_Plane_Rotation` in its `Rectified_Skew_Orthomorphic_*`
+        // projections and leaves it out of `Hotine_Oblique_Mercator_Azimuth_*` (the azimuth then).
+        &["rectified_grid_angle", "xy_plane_rotation"],
         "Angle from Rectified to Skew Grid",
         8814,
         Kind::Angle,
@@ -593,6 +599,25 @@ const HOTINE_B: &[Param] = &[
         Kind::Linear,
     ),
 ];
+
+/// Lambert conic conformal (2SP Michigan): the 2SP false origin and the ellipsoid scaling factor
+/// (ESRI's `Scale_Factor`).
+const LCC_MICHIGAN: &[Param] = &[
+    FALSE_ORIGIN[0],
+    FALSE_ORIGIN[1],
+    FALSE_ORIGIN[2],
+    FALSE_ORIGIN[3],
+    FALSE_ORIGIN[4],
+    FALSE_ORIGIN[5],
+    (
+        &["scale_factor"],
+        "Ellipsoid scaling factor",
+        1038,
+        Kind::Scale,
+    ),
+];
+
+const EQUAL_EARTH: &[Param] = &[LON_ORIGIN, FALSE_EASTING, FALSE_NORTHING];
 
 const LABORDE: &[Param] = &[
     (
@@ -681,20 +706,40 @@ const KROVAK: &[Param] = &[
 ];
 
 /// The EPSG method (name, code) and parameter table of a WKT1 projection.
-fn method(
-    projection: &str,
+/// What the parameters and axes of a WKT1 projection say about the method behind its name.
+struct Hints {
+    /// The latitude of origin is a pole (`Polar_Stereographic` variant A, `Stereographic`).
+    on_a_pole: bool,
+    /// On a pole and with a scale factor: variant A of the polar stereographic projection.
     has_scale: bool,
+    /// The Krovak projection is the north orientated one.
     east_first: bool,
+    /// A second standard parallel is given.
     two_parallels: bool,
-) -> Option<(&'static str, u32, &'static [Param])> {
+    /// A scale factor other than one is given.
+    scaled: bool,
+}
+
+fn method(projection: &str, hints: &Hints) -> Option<(&'static str, u32, &'static [Param])> {
+    let Hints {
+        on_a_pole,
+        has_scale,
+        east_first,
+        two_parallels,
+        scaled,
+    } = *hints;
     Some(match projection {
         // ESRI writes both Lambert Conformal Conic methods as `Lambert_Conformal_Conic`: the
         // second standard parallel tells the 2SP from the 1SP.
+        // With a scale factor other than one the two parallels are the Michigan variant.
+        "Lambert_Conformal_Conic" if two_parallels && scaled => {
+            ("Lambert Conic Conformal (2SP Michigan)", 1051, LCC_MICHIGAN)
+        }
         "Lambert_Conformal_Conic" if two_parallels => {
             ("Lambert Conic Conformal (2SP)", 9802, FALSE_ORIGIN)
         }
         "Lambert_Conformal_Conic" => ("Lambert Conic Conformal (1SP)", 9801, NATURAL_ORIGIN),
-        "Transverse_Mercator" => ("Transverse Mercator", 9807, NATURAL_ORIGIN),
+        "Transverse_Mercator" | "Gauss_Kruger" => ("Transverse Mercator", 9807, NATURAL_ORIGIN),
         "Transverse_Mercator_South_Orientated" => (
             "Transverse Mercator (South Orientated)",
             9808,
@@ -702,17 +747,35 @@ fn method(
         ),
         "Lambert_Conformal_Conic_2SP" => ("Lambert Conic Conformal (2SP)", 9802, FALSE_ORIGIN),
         "Lambert_Conformal_Conic_1SP" => ("Lambert Conic Conformal (1SP)", 9801, NATURAL_ORIGIN),
-        "Albers_Conic_Equal_Area" => ("Albers Equal Area", 9822, FALSE_ORIGIN),
+        "Albers_Conic_Equal_Area" | "Albers" => ("Albers Equal Area", 9822, FALSE_ORIGIN),
+        "Stereographic_North_Pole" | "Stereographic_South_Pole" => {
+            ("Polar Stereographic (variant B)", 9829, POLAR_B)
+        }
+        // ESRI's `Stereographic` is the polar variant A on a pole; elsewhere PROJ keeps it as an
+        // ESRI method with no EPSG equivalent, which stays refused.
+        "Stereographic" | "Polar_Stereographic_Variant_A" if on_a_pole => {
+            ("Polar Stereographic (variant A)", 9810, NATURAL_ORIGIN)
+        }
         "Polar_Stereographic" if has_scale => {
             ("Polar Stereographic (variant A)", 9810, NATURAL_ORIGIN)
         }
         "Polar_Stereographic" => ("Polar Stereographic (variant B)", 9829, POLAR_B),
-        "Cassini_Soldner" => ("Cassini-Soldner", 9806, NATURAL_ORIGIN_NO_SCALE),
+        "Cassini_Soldner" | "Cassini" => ("Cassini-Soldner", 9806, NATURAL_ORIGIN_NO_SCALE),
         "Hotine_Oblique_Mercator" => ("Hotine Oblique Mercator (variant A)", 9812, HOTINE_A),
         "Hotine_Oblique_Mercator_Azimuth_Center" => {
             ("Hotine Oblique Mercator (variant B)", 9815, HOTINE_B)
         }
-        "Oblique_Stereographic" => ("Oblique Stereographic", 9809, NATURAL_ORIGIN),
+        "Hotine_Oblique_Mercator_Azimuth_Natural_Origin"
+        | "Rectified_Skew_Orthomorphic_Natural_Origin" => {
+            ("Hotine Oblique Mercator (variant A)", 9812, HOTINE_A)
+        }
+        "Rectified_Skew_Orthomorphic_Center" => {
+            ("Hotine Oblique Mercator (variant B)", 9815, HOTINE_B)
+        }
+        "Oblique_Stereographic" | "Double_Stereographic" => {
+            ("Oblique Stereographic", 9809, NATURAL_ORIGIN)
+        }
+        "Equal_Earth" => ("Equal Earth", 1078, EQUAL_EARTH),
         "Lambert_Conformal_Conic_2SP_Belgium" => {
             ("Lambert Conic Conformal (2SP Belgium)", 9803, FALSE_ORIGIN)
         }
@@ -724,12 +787,14 @@ fn method(
             NATURAL_ORIGIN_NO_SCALE,
         ),
         "Mercator_1SP" => ("Mercator (variant A)", 9804, NATURAL_ORIGIN),
-        "Mercator_2SP" => ("Mercator (variant B)", 9805, MERCATOR_B),
+        "Mercator_2SP" | "Mercator" => ("Mercator (variant B)", 9805, MERCATOR_B),
         "Krovak" if east_first => ("Krovak (North Orientated)", 1041, KROVAK),
         "Krovak" => ("Krovak", 9819, KROVAK),
         "Polyconic" => ("American Polyconic", 9818, NATURAL_ORIGIN_NO_SCALE),
-        "Equirectangular" => ("Equidistant Cylindrical", 1028, EQUIDISTANT_CYLINDRICAL),
-        "Cylindrical_Equal_Area" => (
+        "Equirectangular" | "Equidistant_Cylindrical" => {
+            ("Equidistant Cylindrical", 1028, EQUIDISTANT_CYLINDRICAL)
+        }
+        "Cylindrical_Equal_Area" | "Behrmann" => (
             "Lambert Cylindrical Equal Area",
             9835,
             CYLINDRICAL_EQUAL_AREA,
@@ -742,6 +807,49 @@ fn method(
         ),
         _ => return None,
     })
+}
+
+/// ESRI projections whose angle from the rectified to the skew grid is the azimuth unless
+/// `XY_Plane_Rotation` says otherwise.
+const ESRI_AZIMUTH_PROJECTIONS: [&str; 4] = [
+    "Hotine_Oblique_Mercator_Azimuth_Natural_Origin",
+    "Hotine_Oblique_Mercator_Azimuth_Center",
+    "Rectified_Skew_Orthomorphic_Natural_Origin",
+    "Rectified_Skew_Orthomorphic_Center",
+];
+
+/// Whether a `Krovak` projection is the north orientated one (`Some(true)`, axes east, north) or
+/// the south, west orientated one, or `None` for a definition that is neither. OGC WKT says it
+/// with its axes; ESRI writes no axes and says it with `X_Scale`, `Y_Scale` and `XY_Plane_Rotation`:
+/// 1, 1 and 0 is the south orientated method, -1, 1 and 90 the north orientated one.
+fn krovak_north_orientated(node: &Node) -> Option<bool> {
+    let value = |name: &str, default: f64| {
+        node.children("PARAMETER")
+            .find(|p| p.text(0).is_some_and(|n| n.eq_ignore_ascii_case(name)))
+            .map_or(Some(default), |p| p.number(1))
+    };
+    let esri = ["x_scale", "y_scale", "xy_plane_rotation"]
+        .iter()
+        .any(|name| {
+            node.children("PARAMETER")
+                .any(|p| p.text(0).is_some_and(|n| n.eq_ignore_ascii_case(name)))
+        });
+    if !esri {
+        return Some(
+            node.child("AXIS")
+                .and_then(|a| a.text(1))
+                .is_some_and(|d| d.eq_ignore_ascii_case("east")),
+        );
+    }
+    match (
+        value("x_scale", 1.0)?,
+        value("y_scale", 1.0)?,
+        value("xy_plane_rotation", 0.0)?,
+    ) {
+        (x, y, r) if (x, y, r) == (1.0, 1.0, 0.0) => Some(false),
+        (x, y, r) if (x, y, r) == (-1.0, 1.0, 90.0) => Some(true),
+        _ => None,
+    }
 }
 
 fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
@@ -761,10 +869,18 @@ fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
         && parameters
             .iter()
             .any(|p| name_of(p).as_deref() == Some("scale_factor"));
-    let east_first = node
-        .child("AXIS")
-        .and_then(|a| a.text(1))
-        .is_some_and(|d| d.eq_ignore_ascii_case("east"));
+    let value_of = |name: &str| {
+        parameters
+            .iter()
+            .find(|p| name_of(p).as_deref() == Some(name))
+            .and_then(|p| p.number(1))
+    };
+    let scaled = value_of("scale_factor").is_some_and(|k| k != 1.0);
+    let east_first = if projection == "Krovak" {
+        krovak_north_orientated(node)?
+    } else {
+        false
+    };
     let latitude_of_origin = parameters
         .iter()
         .find(|p| name_of(p).as_deref() == Some("latitude_of_origin"))
@@ -773,8 +889,14 @@ fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
     let two_parallels = parameters
         .iter()
         .any(|p| name_of(p).as_deref() == Some("standard_parallel_2"));
-    let (method_name, method_code, table) =
-        method(projection, has_scale, east_first, two_parallels)?;
+    let hints = Hints {
+        on_a_pole,
+        has_scale,
+        east_first,
+        two_parallels,
+        scaled,
+    };
+    let (method_name, method_code, table) = method(projection, &hints)?;
     let angular = unit_value(base.child("UNIT")?, true)?;
 
     let mut out = Vec::new();
@@ -782,7 +904,13 @@ fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
         let name = name_of(parameter)?;
         let name = name.as_str();
         let value = parameter.number(1)?;
-        let entry = table.iter().find(|(names, ..)| names.contains(&name));
+        let entry = table.iter().find(|(names, epsg, ..)| {
+            names.contains(&name)
+                    // PROJ exports some definitions with the EPSG parameter names. For the
+                    // cylindrical equal area it then ignores the standard parallel, so that
+                    // spelling stays refused rather than reprojected differently.
+                    || (epsg.eq_ignore_ascii_case(name) && projection != "Cylindrical_Equal_Area")
+        });
         let Some((_, epsg_name, code, kind)) = entry else {
             if name == "scale_factor" && value == 1.0 {
                 continue;
@@ -794,6 +922,12 @@ fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
                 && !two_parallels
                 && name == "standard_parallel_1"
                 && value == latitude_of_origin
+            {
+                continue;
+            }
+            // ESRI's Krovak scales and rotates the plane to say which axes it uses; the two
+            // combinations `krovak_north_orientated` accepted are in the method name.
+            if projection == "Krovak" && matches!(name, "x_scale" | "y_scale" | "xy_plane_rotation")
             {
                 continue;
             }
@@ -818,16 +952,23 @@ fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
     // GDAL leaves a parameter out of the WKT1 when it is zero (or a scale of one): PROJ would
     // default it, but a complete definition lists it.
     for (names, epsg_name, code, kind) in table {
-        let given = parameters
-            .iter()
-            .any(|p| name_of(p).is_some_and(|n| names.contains(&n.as_str())));
+        let given = parameters.iter().any(|p| {
+            name_of(p)
+                .is_some_and(|n| names.contains(&n.as_str()) || epsg_name.eq_ignore_ascii_case(&n))
+        });
         if given {
             continue;
         }
-        let (value, unit) = match kind {
-            Kind::Angle => (0, angular.clone()),
-            Kind::Linear => (0, linear.clone()),
-            Kind::Scale => (1, Value::from("unity")),
+        // PROJ reads the angle of the ESRI Hotine and rectified skew projections that give none
+        // as the azimuth.
+        let azimuth = (*code == 8814 && ESRI_AZIMUTH_PROJECTIONS.contains(&projection))
+            .then(|| value_of("azimuth"))
+            .flatten();
+        let (value, unit) = match (kind, azimuth) {
+            (_, Some(azimuth)) => (number(azimuth), angular.clone()),
+            (Kind::Angle, _) => (0.into(), angular.clone()),
+            (Kind::Linear, _) => (0.into(), linear.clone()),
+            (Kind::Scale, _) => (1.into(), Value::from("unity")),
         };
         out.push(json!({
             "name": epsg_name,
@@ -846,6 +987,21 @@ fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
     }))
 }
 
+/// The axes of a projected CRS that lists none. PROJ reads the ESRI south orientated methods
+/// (Transverse Mercator south orientated, Krovak without the north orientation) as west, south
+/// and south, west; every other projection is east, north.
+fn default_axes(node: &Node) -> [(&'static str, &'static str); 2] {
+    match node.child("PROJECTION").and_then(|p| p.text(0)) {
+        Some("Transverse_Mercator_South_Orientated") => {
+            [("Westing", "west"), ("Southing", "south")]
+        }
+        Some("Krovak") if krovak_north_orientated(node) == Some(false) => {
+            [("Southing", "south"), ("Westing", "west")]
+        }
+        _ => [("Easting", "east"), ("Northing", "north")],
+    }
+}
+
 fn projected(node: &Node, with_schema: bool) -> Option<Value> {
     let base_node = node.child("GEOGCS")?;
     let base = geographic(base_node, false)?;
@@ -858,11 +1014,12 @@ fn projected(node: &Node, with_schema: bool) -> Option<Value> {
     out.insert("name".into(), Value::from(node.text(0)?));
     out.insert("base_crs".into(), base);
     out.insert("conversion".into(), conversion(node, base_node, &linear)?);
+    let default_axes = default_axes(node);
     out.insert(
         "coordinate_system".into(),
         json!({
             "subtype": "Cartesian",
-            "axis": axes(node, &linear, [("Easting", "east"), ("Northing", "north")]),
+            "axis": axes(node, &linear, default_axes),
         }),
     );
     if let Some(id) = node.id() {
