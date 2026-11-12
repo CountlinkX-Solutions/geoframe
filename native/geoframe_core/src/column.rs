@@ -92,13 +92,45 @@ fn push_guarded(
     builder: &mut GeometryBuilder,
     geometry: Option<&impl geo_traits::GeometryTrait<T = f64>>,
 ) -> Result<(), String> {
+    if geometry.is_some_and(mixes_dimensions) {
+        return Err(MIXED_DIMENSIONS_ERROR.to_string());
+    }
+    // Last-resort guard: the pre-check above mirrors the known panic, not every possible one.
     catch_unwind(AssertUnwindSafe(|| builder.push_geometry(geometry)))
-        .map_err(|_| {
-            "unsupported geometry: a collection cannot mix dimensions (XY, XYZ, XYM, XYZM) \
-             among its members"
-                .to_string()
-        })?
+        .map_err(|_| MIXED_DIMENSIONS_ERROR.to_string())?
         .map_err(|e| e.to_string())
+}
+
+const MIXED_DIMENSIONS_ERROR: &str = "unsupported geometry: a collection cannot mix dimensions \
+     (XY, XYZ, XYM, XYZM) among its members";
+
+/// True when pushing `geometry` would make the GeoArrow builder panic: a collection (with
+/// other than one member; a single member is unwrapped and pushed on its own) holding a
+/// member whose dimension differs from the collection's own. Checked recursively.
+fn mixes_dimensions<G: geo_traits::GeometryTrait<T = f64>>(geometry: &G) -> bool {
+    use geo_traits::{GeometryCollectionTrait, GeometryTrait as _, GeometryType};
+    let GeometryType::GeometryCollection(gc) = geometry.as_type() else {
+        return false;
+    };
+    if gc.num_geometries() == 1 {
+        return gc.geometries().next().is_some_and(|g| mixes_dimensions(&g));
+    }
+    let dim = gc.dim();
+    gc.geometries()
+        .any(|g| !dimensions_agree(dim, g.dim()) || mixes_dimensions(&g))
+}
+
+/// Whether the GeoArrow builder accepts a `member` dimension inside a `collection` of the
+/// given dimension (it also accepts an unnamed `Unknown(n)` by ordinate count).
+fn dimensions_agree(collection: geo_traits::Dimensions, member: geo_traits::Dimensions) -> bool {
+    use geo_traits::Dimensions::{Unknown, Xy, Xym, Xyz, Xyzm};
+    match (collection, member) {
+        (a, b) if a == b => true,
+        (Xy, Unknown(2)) | (Unknown(2), Xy) => true,
+        (Xyz | Xym, Unknown(3)) | (Unknown(3), Xyz | Xym) => true,
+        (Xyzm, Unknown(4)) | (Unknown(4), Xyzm) => true,
+        _ => false,
+    }
 }
 
 /// Maximum parenthesis nesting accepted in WKT; `wkt` parses recursively without a limit.
@@ -515,4 +547,49 @@ fn polygon_perimeter(polygon: &geo::Polygon<f64>) -> f64 {
             .iter()
             .map(|ring| Euclidean.length(ring))
             .sum::<f64>()
+}
+
+#[cfg(test)]
+mod mixed_dimension_tests {
+    use super::*;
+
+    fn mixed(text: &str) -> bool {
+        mixes_dimensions(&wkt::Wkt::<f64>::from_str(text).unwrap())
+    }
+
+    #[test]
+    fn mixed_member_dimensions_are_detected_before_the_builder_runs() {
+        assert!(mixed("GEOMETRYCOLLECTION (POINT (1 2), POINT Z (1 2 3))"));
+        assert!(mixed("GEOMETRYCOLLECTION (POINT Z (1 2 3), POINT (1 2))"));
+        assert!(mixed(
+            "GEOMETRYCOLLECTION (POINT M (1 2 3), POINT Z (1 2 3))"
+        ));
+        assert!(mixed(
+            "GEOMETRYCOLLECTION (POINT (1 2), LINESTRING Z (0 0 1, 1 1 1))"
+        ));
+        assert!(mixed(
+            "GEOMETRYCOLLECTION (POINT (1 2), GEOMETRYCOLLECTION (POINT Z (1 2 3), POINT Z (4 5 6)))"
+        ));
+    }
+
+    #[test]
+    fn uniform_collections_and_plain_geometries_are_not_flagged() {
+        assert!(!mixed("POINT Z (1 2 3)"));
+        assert!(!mixed(
+            "GEOMETRYCOLLECTION (POINT (1 2), LINESTRING (0 0, 1 1))"
+        ));
+        assert!(!mixed(
+            "GEOMETRYCOLLECTION Z (POINT Z (1 2 3), POINT Z (4 5 6))"
+        ));
+        assert!(!mixed("GEOMETRYCOLLECTION EMPTY"));
+    }
+
+    #[test]
+    fn push_guarded_returns_the_error_for_a_mixed_collection() {
+        let g =
+            wkt::Wkt::<f64>::from_str("GEOMETRYCOLLECTION (POINT (1 2), POINT Z (1 2 3))").unwrap();
+        let mut b = ColumnBuilder::new(None);
+        let err = b.push(Some(&g)).unwrap_err();
+        assert!(err.contains("cannot mix dimensions"), "{err}");
+    }
 }
