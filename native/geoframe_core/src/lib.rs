@@ -9,6 +9,7 @@ pub(crate) mod column;
 mod coverage;
 mod coverage_simplify;
 mod crs_convert;
+mod crs_datum_names;
 mod crs_extra;
 mod crs_names;
 mod crs_wkt;
@@ -99,6 +100,8 @@ mod coverage_simplify_tests;
 mod coverage_tests;
 #[cfg(test)]
 mod crs_convert_tests;
+#[cfg(test)]
+mod crs_esri_datum_tests;
 #[cfg(test)]
 mod crs_parity_tests;
 #[cfg(test)]

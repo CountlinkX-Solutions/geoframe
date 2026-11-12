@@ -408,6 +408,18 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
   identifier (as every definition PROJ or pyproj writes) shifts like the code. One that does
   not finds its geographic CRS by name in `crs_names.rs` (460 names, generated from the PROJ
   database), as PROJ identifies a CRS; a 3D geographic base (LUREF 3D) uses its 2D namesake.
+  Failing that it finds it by the name of its **datum** in `crs_datum_names.rs` (1 138 names:
+  the EPSG names and the EPSG and ESRI aliases of those 460 datums, `D_OSGB_1936`,
+  `D_North_American_1927`, `European_Datum_1950`, ...). That is what PROJ does with WKT1 text,
+  whatever the name of the GEOGCS: a Shapefile `.prj` (`GCS_...` / `D_...`, no authority) is
+  shifted like its EPSG code, and a datum name PROJ does not know leaves the text unshifted. On
+  the whole PROJ database (1 110 geographic and sampled projected CRSs written as WKT1_ESRI,
+  one point each) 716 differed from pyproj before and 32 do now, 30 of which are differences the
+  CRS has by code too (GDA2020, Minna, Saba, RD/83, ...); the rest are Paris- and Ferro-meridian
+  and Tokyo 1892 definitions. GDA94, GDA2020 and CR-SIRGAS names are left out on purpose:
+  PROJ runs a null operation first there and the Helmert table does not (1.7 m), which would
+  move a `.prj` that agrees with pyproj today. A definition whose projection ESRI names differently (`Double_Stereographic`, `Gauss_Kruger`) is still
+  refused: that is the converter, not the datum.
   Any other datum is left unshifted, which is PROJ's ballpark and what pyproj does for a custom
   datum.
 * **Labels.** A definition with an identifier that the tables have is that code (`EPSG:5515`). Any
