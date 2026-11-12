@@ -14,7 +14,7 @@ use geo::algorithm::buffer::{BufferStyle, LineCap, LineJoin};
 use geo::{
     AffineTransform, BoundingRect, Buffer, Centroid, ConvexHull, Coord, CoordsIter, Geometry,
     GeometryCollection, InteriorPoint, LineString, MakeValid, MultiLineString, MultiPoint,
-    MultiPolygon, Point, Polygon, SimplifyVwPreserve, Validation,
+    MultiPolygon, Point, Polygon, SimplifyVwPreserve,
 };
 use geo_traits::{GeometryTrait, GeometryType};
 use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
@@ -172,7 +172,7 @@ impl GeoColumn {
             // A valid geometry comes back unchanged (M included); repairing drops M and
             // averages the Z of the two segments at a new node.
             UnaryOp::MakeValid => {
-                self.map_geometry_model(|g, (z, m)| (z, m && g.is_valid()), apply)
+                self.map_geometry_model(|g, (z, m)| (z, m && crate::validity::is_valid(g)), apply)
             }
             // GEOS picks a vertex of a line; for points and areas the point is new (2D).
             UnaryOp::RepresentativePoint => {
@@ -285,7 +285,7 @@ fn type_name<G: GeometryTrait<T = f64>>(geom: &G) -> &'static str {
 }
 
 /// A single-part multipolygon becomes a polygon, as Shapely returns it.
-fn collapse(mut multi: MultiPolygon<f64>) -> Geometry<f64> {
+pub(crate) fn collapse(mut multi: MultiPolygon<f64>) -> Geometry<f64> {
     if multi.0.len() == 1 {
         Geometry::Polygon(multi.0.remove(0))
     } else if multi.0.is_empty() {
@@ -568,12 +568,15 @@ fn line_boundary(lines: &[LineString<f64>]) -> Geometry<f64> {
 }
 
 fn make_valid(geom: &Geometry<f64>) -> Option<Geometry<f64>> {
-    if geom.is_valid() {
+    if crate::validity::is_valid(geom) {
         return Some(geom.clone());
     }
+    let repair = |mp: MultiPolygon<f64>| mp.make_valid().ok().map(collapse);
     match geom {
-        Geometry::Polygon(p) => p.make_valid().ok().map(collapse),
-        Geometry::MultiPolygon(mp) => mp.make_valid().ok().map(collapse),
+        Geometry::Polygon(p) => crate::validity::repair_collapsed(std::slice::from_ref(p), repair)
+            .or_else(|| p.make_valid().ok().map(collapse)),
+        Geometry::MultiPolygon(mp) => crate::validity::repair_collapsed(&mp.0, repair)
+            .or_else(|| mp.make_valid().ok().map(collapse)),
         other => Some(other.clone()),
     }
 }

@@ -605,7 +605,8 @@ defmodule GeoFrame.GeoSeries do
     Repairs invalid polygons and multipolygons (self-intersections, bowties) into valid
     (multi)polygons, using `geo`'s triangulation-based repair, which differs from GEOS'
     `make_valid` in vertex detail but not in the area it yields for simple cases. Valid
-    geometries and non-polygons are returned unchanged. A repair that fails gives `nil`.
+    geometries and non-polygons are returned unchanged. A polygon whose ring is collinear (zero
+    area, invalid as in GEOS) collapses to its lines, as GEOS does. A repair that fails gives `nil`.
     """,
     representative_point: """
     A point guaranteed to lie within (or on) each geometry, unlike the centroid of a concave
