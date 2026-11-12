@@ -13,6 +13,9 @@ Writes into test/reference/fixtures/crs_datum/:
                       meridians, ellipsoidal projections, extra projections, Helmert by area).
 * crs_convert.json    CRS definitions as PROJJSON, WKT1 and WKT2 text (no identifier) with pyproj's
                       results, for the definition converter (issue #100).
+* crs_esri_datum.json (`esri_wkt` argument): WKT1_ESRI text of common CRSs (GEOGCS "GCS_...",
+                      DATUM "D_...", no identifier) with pyproj's results: PROJ identifies the datum
+                      by name and shifts it to WGS 84 like the code would.
 * native/geoframe_core/src/crs_extra.bin (`extra_table`): EPSG definitions missing from the
                       `crs-definitions` table, as compressed PROJJSON.
 * grids/              tiny synthetic NTv2 grids and pyproj results using the same files.
@@ -523,6 +526,95 @@ def generate_name_table():
     return len(lines)
 
 
+# -- ESRI WKT1 text: the datum identified by its name ---------------------------------------------
+
+# Common CRSs whose .prj text (WKT1_ESRI) names its datum `D_...` without an authority. The first
+# group has a datum shift in PROJ (Helmert by area; no grids are available to pyproj here), the
+# last ones agree already (WGS 84 compatible datums or a ballpark), as a regression guard.
+ESRI_WKT_CRS = [
+    4267, 26717, 32038, 26912, 4277, 27700, 4230, 23030, 4301, 4618, 4284, 4289, 31370,
+    4242, 24200, 4169, 3102, 4313, 2154, 4269, 26917, 4258, 25832, 4674, 4283, 28355,
+]
+
+
+def esri_wkt_cases():
+    import re
+    out = {}
+    for code in ESRI_WKT_CRS:
+        crs = CRS(code)
+        a = crs.area_of_use
+        wkt = crs.to_wkt("WKT1_ESRI")
+        # without the identifier of the whole CRS, if any, so it is read, not looked up
+        wkt = re.sub(r',AUTHORITY\["[A-Z]+","[A-Za-z0-9_]+"\]\]$', "]", wkt)
+        fwd = Transformer.from_crs(4326, crs, always_xy=True)
+        inv = Transformer.from_crs(wkt, 4326, always_xy=True)
+        pts = []
+        east = a.east + 360 if a.west > a.east else a.east
+        # the middle of the area of use, where PROJ's choice among the operations is not in doubt
+        for fx, fy in ((0.5, 0.5), (0.4, 0.45), (0.6, 0.55)):
+            lon = ((a.west + (east - a.west) * fx + 180) % 360) - 180
+            lat = a.south + (a.north - a.south) * fy
+            x, y, *_ = fwd.transform(lon, lat, 0.0)
+            ex, ey = inv.transform(x, y)
+            pts.append([x, y, ex, ey])
+        out[str(code)] = {"name": crs.name, "geographic": crs.is_geographic, "wkt": wkt, "pts": pts}
+    return out
+
+
+def generate_esri_wkt():
+    json.dump({"pyproj": pyproj.__version__, "proj": pyproj.proj_version_str, "crs": esri_wkt_cases()},
+              open(os.path.join(OUT, "crs_esri_datum.json"), "w"), separators=(",", ":"))
+    print("crs esri datum written")
+
+
+# GDA94 (4283), GDA2020 (7844) and CR-SIRGAS (8907): PROJ runs a null operation first (pyproj: no
+# shift, 3 m accuracy) where the Helmert table runs the 0.3 to 1.7 m step, a difference that exists
+# for the code too (EPSG:4283, 28355). A name must not move an `.prj` that agrees with pyproj today.
+NO_NAME_SHIFT = {4283, 7844, 8907}
+
+
+def generate_datum_name_table():
+    """Write native/geoframe_core/src/crs_datum_names.rs: the datum names (EPSG name, EPSG and ESRI
+    aliases: `D_North_American_1927`, `European_Datum_1950`) of the geographic 2D EPSG CRSs of
+    `crs_names.rs`, by lower-case name with `_` as a space, so a definition with no identifier finds
+    its datum shifts the way PROJ identifies the datum of a WKT1 text by its name. A name that two
+    datums share is left out."""
+    import re
+    import sqlite3
+    src = os.path.join(HERE, "..", "..", "native", "geoframe_core", "src")
+    codes = set(int(c) for c in re.findall(r'^    \("[^"]*", (\d+)\),', open(os.path.join(src, "crs_names.rs")).read(), re.M))
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    official, aliases = {}, {}
+    for code, datum in db.execute(
+        "select code, datum_code from geodetic_crs where auth_name='EPSG' and type='geographic 2D' "
+        "and datum_auth_name='EPSG' and deprecated=0"
+    ):
+        if int(code) not in codes:
+            continue
+        name = db.execute("select name from geodetic_datum where auth_name='EPSG' and code=?", (datum,)).fetchone()[0]
+        official.setdefault(name.lower().replace("_", " "), set()).add(int(code))
+        for (alt,) in db.execute(
+            "select alt_name from alias_name where table_name='geodetic_datum' and auth_name='EPSG' and code=?", (datum,)
+        ):
+            aliases.setdefault(alt.lower().replace("_", " "), set()).add(int(code))
+    rows = {k: min(v) for k, v in official.items() if len(v) == 1}
+    for k, v in aliases.items():
+        # an official name wins over an alias; an alias two datums share says nothing
+        if k not in official and len(v) == 1:
+            rows[k] = min(v)
+    for k in [k for k, v in rows.items() if v in NO_NAME_SHIFT]:
+        del rows[k]
+    lines = ['    ("%s", %d),' % (k.replace("\\", "\\\\").replace('"', '\\"'), rows[k]) for k in sorted(rows)]
+    header = (
+        "//! Generated by test/reference/generate_crs_datum.py (`datum_name_table`) from the PROJ database\n"
+        "//! (pyproj %s, PROJ %s): the datum names and aliases (EPSG and ESRI `D_...`) of the geographic CRSs\n"
+        "//! of `crs_names.rs`, lower-case with `_` as a space, to the EPSG code of that CRS.\n\n"
+        "pub(crate) const DATUM_NAMES: &[(&str, u32)] = &[\n" % (pyproj.__version__, pyproj.proj_version_str)
+    )
+    open(os.path.join(src, "crs_datum_names.rs"), "w").write(header + "\n".join(lines) + "\n];\n")
+    return len(lines)
+
+
 EXTRA_TYPES = ("GEOGRAPHIC_2D_CRS", "GEOGRAPHIC_3D_CRS", "GEODETIC_CRS", "PROJECTED_CRS", "COMPOUND_CRS")
 
 
@@ -744,6 +836,10 @@ if __name__ == "__main__":
         print("extra table: CRSs, bytes, compressed", generate_extra_table())
     if "name_table" in which:
         print("name table rows", generate_name_table())
+    if "datum_name_table" in which:
+        print("datum name table rows", generate_datum_name_table())
+    if "esri_wkt" in which:
+        generate_esri_wkt()
     if "helmert_table" in which:
         print("helmert table: CRSs, lists, ops, skipped ops", generate_helmert_table())
     if "grid_table" in which:
