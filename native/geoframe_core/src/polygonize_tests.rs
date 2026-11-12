@@ -136,11 +136,86 @@ fn cases() -> Vec<Case> {
             ],
             node: true,
             // GEOS keeps (10 10) and (10 0), where the two polygons met, as vertices of the
-            // merged ring; the union used here drops those collinear vertices.
+            // merged ring.
             polygons: &[
-                "POLYGON ((0 0, 0 10, 20 10, 20 0, 0 0), (4 2, 4 4, 2 4, 2 2, 4 2))",
-                "POLYGON ((4 2, 2 2, 2 4, 4 4, 4 2))",
+                "POLYGON ((0 0, 0 10, 10 10, 20 10, 20 0, 10 0, 0 0), (2 2, 4 2, 4 4, 2 4, 2 2))",
+                "POLYGON ((2 2, 2 4, 4 4, 4 2, 2 2))",
             ],
+            cuts: &[],
+            dangles: &[],
+            invalid: &[],
+        },
+        // The cases below come from GeoPandas 1.2 / Shapely 2.2 (GEOS 3.14):
+        //   GeoSeries([wkt.loads(w) for w in input]).polygonize(node=True)  (then `normalize`)
+        // The merged ring keeps every input vertex that lies on it, collinear or not, and the
+        // points where input edges cross or touch; vertices inside the merged area are gone.
+        Case {
+            name: "two squares sharing an edge keep the ends of the shared edge",
+            input: &[
+                "POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))",
+                "POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))",
+            ],
+            node: true,
+            polygons: &["POLYGON ((0 0, 0 1, 1 1, 2 1, 2 0, 1 0, 0 0))"],
+            cuts: &[],
+            dangles: &[],
+            invalid: &[],
+        },
+        Case {
+            name: "three squares meeting at a T keep the vertices on the outline only",
+            input: &[
+                "POLYGON ((0 0, 2 0, 2 1, 0 1, 0 0))",
+                "POLYGON ((0 1, 1 1, 1 2, 0 2, 0 1))",
+                "POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1))",
+            ],
+            node: true,
+            polygons: &["POLYGON ((0 0, 0 1, 0 2, 1 2, 2 2, 2 1, 2 0, 0 0))"],
+            cuts: &[],
+            dangles: &[],
+            invalid: &[],
+        },
+        Case {
+            name: "a polygon meeting the middle of an edge keeps its own corner there",
+            input: &[
+                "POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))",
+                "POLYGON ((2 1, 3 1, 3 3, 2 3, 2 1))",
+            ],
+            node: true,
+            polygons: &["POLYGON ((0 0, 0 2, 2 2, 2 3, 3 3, 3 1, 2 1, 2 0, 0 0))"],
+            cuts: &[],
+            dangles: &[],
+            invalid: &[],
+        },
+        Case {
+            name: "a line that starts on the outline and runs inside leaves its vertex there",
+            input: &[
+                "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))",
+                "LINESTRING (0 2, 2 2)",
+            ],
+            node: true,
+            polygons: &["POLYGON ((0 0, 0 2, 0 4, 4 4, 4 0, 0 0))"],
+            cuts: &[],
+            dangles: &[],
+            invalid: &[],
+        },
+        Case {
+            name: "lines that touch the outline from outside split it where they touch",
+            input: &[
+                "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))",
+                "LINESTRING (4 2, 6 2, 6 5)",
+                "LINESTRING (2 4, 2 6)",
+            ],
+            node: true,
+            polygons: &["POLYGON ((0 0, 0 4, 2 4, 4 4, 4 2, 4 0, 0 0))"],
+            cuts: &[],
+            dangles: &["LINESTRING (4 2, 6 2, 6 5)", "LINESTRING (2 4, 2 6)"],
+            invalid: &[],
+        },
+        Case {
+            name: "a collinear vertex of a single polygon stays",
+            input: &["POLYGON ((0 0, 1 0, 2 0, 2 2, 0 2, 0 0))"],
+            node: true,
+            polygons: &["POLYGON ((0 0, 0 2, 2 2, 2 0, 1 0, 0 0))"],
             cuts: &[],
             dangles: &[],
             invalid: &[],
