@@ -21,9 +21,10 @@
 //!    dropped). Every shell gives a polygon, also when it lies in another polygon's hole.
 //!
 //! Shells are output clockwise and holes counter-clockwise, as GEOS does. Which ring vertex
-//! comes first and the order of the polygons differ from GEOS, and where input polygons are
-//! merged first (`node = true`) the collinear vertices at which they met are dropped; the
-//! polygons themselves agree.
+//! comes first and the order of the polygons differ from GEOS; the polygons themselves agree.
+//! Where input polygons are merged first (`node = true`) every input vertex that lies on the
+//! merged outline stays, collinear ones included, as in a GEOS union (see
+//! `keep_input_vertices`).
 //!
 //! `build_area` makes the faces even-odd: the symmetric difference of the filled shells, so
 //! a ring inside a ring is a hole, a ring inside that an island again, and polygons that share
@@ -583,7 +584,7 @@ fn edges_of(rows: &[Geometry<f64>], node: bool) -> Result<Vec<Vec<C>>, String> {
             .iter()
             .map(|p| p.orient(Direction::Default))
             .collect();
-        unary_union(&oriented)
+        keep_input_vertices(unary_union(&oriented), &oriented, &work.lines)
     };
     let mut lines: Vec<LineString<f64>> = work.lines;
     if !area.0.is_empty() {
@@ -591,6 +592,73 @@ fn edges_of(rows: &[Geometry<f64>], node: bool) -> Result<Vec<Vec<C>>, String> {
     }
     lines.extend(area.0.iter().flat_map(rings).cloned());
     node_lines(&lines)
+}
+
+/// Puts back the vertices the union dropped. GEOS keeps every input vertex that lies on the
+/// outline of the merged area, collinear ones included (where polygons met, where a ring had a
+/// vertex in the middle of a straight run, where a line touches it); the union used here keeps only the corners.
+fn keep_input_vertices(
+    area: MultiPolygon<f64>,
+    inputs: &[Polygon<f64>],
+    lines: &[LineString<f64>],
+) -> MultiPolygon<f64> {
+    use geo::algorithm::kernels::{Kernel, Orientation, RobustKernel};
+
+    let outline: Vec<&LineString<f64>> = area.0.iter().flat_map(rings).collect();
+    let mut segments: Vec<(C, C, usize)> = Vec::new();
+    for (ring, line) in outline.iter().enumerate() {
+        segments.extend(line.0.windows(2).map(|w| (w[0], w[1], ring)));
+    }
+    let tree = RTree::bulk_load(
+        segments
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b, _))| GeomWithData::new(Rectangle::from_aabb(envelope(*a, *b)), i))
+            .collect(),
+    );
+    // For every segment of the outline, the input vertices that lie strictly inside it.
+    let mut inserts: HashMap<usize, Vec<C>> = HashMap::new();
+    let mut done: HashSet<Key> = HashSet::new();
+    let ring_vertices = inputs.iter().flat_map(rings).flat_map(|r| r.0.iter());
+    for &c in ring_vertices.chain(lines.iter().flat_map(|l| l.0.iter())) {
+        if !done.insert(key(c)) {
+            continue;
+        }
+        let point = AABB::from_point([c.x, c.y]);
+        for hit in tree.locate_in_envelope_intersecting(&point) {
+            let (a, b, _) = segments[hit.data];
+            if c != a && c != b && RobustKernel::orient2d(a, b, c) == Orientation::Collinear {
+                inserts.entry(hit.data).or_default().push(c);
+            }
+        }
+    }
+    if inserts.is_empty() {
+        return area;
+    }
+    let mut at = 0;
+    let mut rebuilt = |line: &LineString<f64>| -> LineString<f64> {
+        let mut out: Vec<C> = Vec::with_capacity(line.0.len());
+        for w in line.0.windows(2) {
+            out.push(w[0]);
+            if let Some(mut on) = inserts.remove(&at) {
+                on.sort_by(|p, q| fraction(w[0], w[1], *p).total_cmp(&fraction(w[0], w[1], *q)));
+                out.extend(on);
+            }
+            at += 1;
+        }
+        out.extend(line.0.last().copied());
+        LineString::new(out)
+    };
+    MultiPolygon::new(
+        area.0
+            .iter()
+            .map(|p| {
+                let exterior = rebuilt(p.exterior());
+                let holes = p.interiors().iter().map(&mut rebuilt).collect();
+                Polygon::new(exterior, holes)
+            })
+            .collect(),
+    )
 }
 
 fn column_of(template: &GeoColumn, rows: Vec<Geometry<f64>>) -> Result<GeoColumn, String> {

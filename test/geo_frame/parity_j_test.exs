@@ -232,6 +232,19 @@ defmodule GeoFrame.ParityJTest do
       assert result |> GeoSeries.geom_type() |> list() == List.duplicate("Polygon", 4)
     end
 
+    # GeoSeries([wkt.loads(w) for w in rows]).polygonize(node=True), Shapely 2.2 / GEOS 3.14:
+    # the merged ring keeps the vertices of the input that lie on it, collinear ones included.
+    test "node: true keeps the collinear vertices where input polygons met" do
+      series = s(["POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))", "POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))"])
+
+      result = GeoSeries.polygonize(series)
+
+      assert GeoSeries.size(result) == 1
+
+      assert result |> GeoSeries.normalize() |> GeoSeries.to_wkt() ==
+               [canon("POLYGON ((0 0, 0 1, 1 1, 2 1, 2 0, 1 0, 0 0))")]
+    end
+
     test "full: true also returns cut edges, dangles and invalid rings" do
       series =
         s([
@@ -278,6 +291,16 @@ defmodule GeoFrame.ParityJTest do
       result = GeoSeries.build_area(series)
       assert GeoSeries.size(result) == 1
       assert result |> GeoSeries.area() |> list() == [96.0]
+    end
+
+    # GeoSeries([...]).build_area(node=True), Shapely 2.2 / GEOS 3.14
+    test "node: true keeps the collinear vertices where input polygons met" do
+      series = s(["POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))", "POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))"])
+
+      assert series
+             |> GeoSeries.build_area()
+             |> GeoSeries.normalize()
+             |> GeoSeries.to_wkt() == [canon("POLYGON ((0 0, 0 1, 1 1, 2 1, 2 0, 1 0, 0 0))")]
     end
 
     test "merges faces that share an edge and ignores points" do
