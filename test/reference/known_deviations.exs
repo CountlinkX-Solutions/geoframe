@@ -610,7 +610,7 @@ zm_deviations ++
     },
     %{
       reason:
-        "set_precision on an INVALID multipolygon (parts that overlap or lie inside each other). GEOS' overlay keeps the parts it was given (including a polygon inside another one, or a hole, in an invalid result); GeoFrame merges parts that overlap after snapping. Valid input agrees in every case.",
+        "set_precision on an INVALID multipolygon (parts that overlap or lie inside each other). GEOS' overlay noder decides from edge contact after snapping: a part whose edges meet no other part's is kept (including a polygon inside another one in an invalid result), parts whose edges coincide are merged (i_mpoly_holes), and crossing edges make GEOS raise a TopologyException; GeoFrame merges parts that overlap after snapping and never raises. Valid input agrees in every case.",
       doc: "docs/parity.md#batch-i-hard--low-value-defer",
       op: "set_precision",
       cases: [
