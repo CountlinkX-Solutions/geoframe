@@ -166,3 +166,246 @@ fn supplementary_table_complements_the_bundled_one() {
         }
     }
 }
+
+// -- ESRI WKT1 StatePlane definitions in feet, issue #110 --------------------------------------
+
+/// ESRI WKT1 writes parameter names in mixed case (`False_Easting`, `Standard_Parallel_1`), the
+/// projection `Lambert_Conformal_Conic` for the 2SP method and the unit `Foot_US`/`Foot`.
+/// `(name, wkt, [(lon, lat, x, y, back_lon, back_lat)])`; the TM definition is the `.prj` of #110
+/// (ESRI:102649), the LCC one is ESRI:102739 (Texas Central), each also with the unit changed to
+/// the international `Foot`. Values from pyproj 3.8 / PROJ 9.8, `always_xy`:
+///
+/// ```python
+/// t = pyproj.Transformer.from_crs("EPSG:4326", wkt, always_xy=True)
+/// b = pyproj.Transformer.from_crs(wkt, "EPSG:4326", always_xy=True)
+/// x, y = t.transform(lon, lat); back = b.transform(x, y)
+/// ```
+type EsriCase = (&'static str, String, [(f64, f64, f64, f64, f64, f64); 3]);
+
+fn esri_cases() -> Vec<EsriCase> {
+    const TM: &str = r#"PROJCS["NAD_1983_StatePlane_Arizona_Central_FIPS_0202_Feet",GEOGCS["GCS_North_American_1983",DATUM["D_North_American_1983",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",699998.6],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",-111.9166666666667],PARAMETER["Scale_Factor",0.9999],PARAMETER["Latitude_Of_Origin",31.0],UNIT["Foot_US",0.3048006096012192]]"#;
+    const LCC: &str = r#"PROJCS["NAD_1983_StatePlane_Texas_Central_FIPS_4203_Feet",GEOGCS["GCS_North_American_1983",DATUM["D_North_American_1983",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",2296583.333333333],PARAMETER["False_Northing",9842500.0],PARAMETER["Central_Meridian",-100.3333333333333],PARAMETER["Standard_Parallel_1",30.11666666666667],PARAMETER["Standard_Parallel_2",31.88333333333333],PARAMETER["Latitude_Of_Origin",29.66666666666667],UNIT["Foot_US",0.3048006096012192]]"#;
+    let foot = |w: &str| {
+        w.replace(
+            r#"UNIT["Foot_US",0.3048006096012192]"#,
+            r#"UNIT["Foot",0.3048]"#,
+        )
+    };
+    vec![
+        (
+            "tm_foot_us",
+            TM.to_string(),
+            [
+                (
+                    -112.0,
+                    33.5,
+                    674595.8554291083,
+                    909458.6895101842,
+                    -112.0,
+                    33.5,
+                ),
+                (
+                    -111.5,
+                    34.2,
+                    825980.9492779631,
+                    1164416.8040223015,
+                    -111.5,
+                    34.2,
+                ),
+                (
+                    -112.6,
+                    32.8,
+                    490033.0867108226,
+                    655444.7621810915,
+                    -112.6,
+                    32.8,
+                ),
+            ],
+        ),
+        (
+            "tm_foot",
+            foot(TM),
+            [
+                (
+                    -112.0,
+                    33.5,
+                    674595.8046235174,
+                    909460.5084312009,
+                    -112.0,
+                    33.5,
+                ),
+                (
+                    -111.5,
+                    34.2,
+                    825981.2012431655,
+                    1164419.132860567,
+                    -111.5,
+                    34.2,
+                ),
+                (
+                    -112.6,
+                    32.8,
+                    490032.6667789561,
+                    655446.0730732374,
+                    -112.6,
+                    32.8,
+                ),
+            ],
+        ),
+        (
+            "lcc_foot_us",
+            LCC.to_string(),
+            [
+                (
+                    -100.0,
+                    31.0,
+                    2401015.348007461,
+                    10327585.26945426,
+                    -100.0,
+                    31.0,
+                ),
+                (
+                    -99.5,
+                    30.5,
+                    2559023.55561745,
+                    10146565.91195174,
+                    -99.5,
+                    30.5,
+                ),
+                (
+                    -101.2,
+                    31.5,
+                    2026479.268677063,
+                    10510340.943435503,
+                    -101.2,
+                    31.5,
+                ),
+            ],
+        ),
+        (
+            "lcc_foot",
+            foot(LCC),
+            [
+                (
+                    -100.0,
+                    31.0,
+                    2401015.5572052407,
+                    10327586.239626735,
+                    -100.0,
+                    31.0,
+                ),
+                (
+                    -99.5,
+                    30.5,
+                    2559024.0808322765,
+                    10146566.520084778,
+                    -99.5,
+                    30.5,
+                ),
+                (
+                    -101.2,
+                    31.5,
+                    2026478.728801186,
+                    10510342.279120063,
+                    -101.2,
+                    31.5,
+                ),
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn esri_wkt1_stateplane_in_feet_converts_to_projjson() {
+    for (name, wkt, _) in esri_cases() {
+        let json =
+            crate::crs_convert::wkt_to_projjson(&wkt).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(json["type"], "ProjectedCRS", "{name}");
+        crate::crs_convert::from_projjson(&json).unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+}
+
+#[test]
+fn esri_wkt1_stateplane_in_feet_reprojects_like_pyproj() {
+    // forward to 1e-3 ft (far below the 1e-2 m of the other PROJ comparisons), inverse to 1e-8
+    // degrees (about a millimetre; proj4rs differs from PROJ by 1e-9 degrees on the LCC inverse)
+    for (name, wkt, points) in esri_cases() {
+        for (lon, lat, x, y, back_lon, back_lat) in points {
+            let (gx, gy) = transform_xy("EPSG:4326", &wkt, lon, lat)
+                .unwrap_or_else(|e| panic!("{name} forward at {lon} {lat}: {e}"));
+            assert!(
+                (gx - x).abs() < 1e-3 && (gy - y).abs() < 1e-3,
+                "{name} forward: {gx} {gy} vs {x} {y}"
+            );
+            let (bx, by) = transform_xy(&wkt, "EPSG:4326", x, y)
+                .unwrap_or_else(|e| panic!("{name} inverse at {x} {y}: {e}"));
+            assert!(
+                (bx - back_lon).abs() < 1e-8 && (by - back_lat).abs() < 1e-8,
+                "{name} inverse: {bx} {by}"
+            );
+        }
+    }
+}
+
+/// ESRI writes the Lambert conformal conic 1SP method as `Lambert_Conformal_Conic` with
+/// `Standard_Parallel_1` equal to `Latitude_Of_Origin`, and a `Scale_Factor`. Exported by PROJ in the
+/// ESRI dialect: EPSG:8068 (NAD83(2011) PCCS zone 4, international foot, scale 0.9998), EPSG:7057
+/// (NAD83(2011) IaRCS zone 1, US survey foot) and EPSG:6794 (OCRS Bend-Redmond-Prineville, metre,
+/// scale 1.00012). Values from pyproj 3.8 / PROJ 9.8, `always_xy`, with
+/// `wkt = pyproj.CRS.from_epsg(code).to_wkt("WKT1_ESRI")`, three points around the middle of the
+/// area of use (`area_of_use.bounds`, offsets 0/0, 0.4/0.3, -0.3/-0.2 degrees), and the
+/// forward/inverse generator of `esri_cases`.
+fn esri_lcc_1sp_cases() -> Vec<EsriCase> {
+    vec![
+        ("EPSG:8068", r#"PROJCS["NAD_1983_(2011)_PCCS_zone_4_(ft)",GEOGCS["GCS_NAD_1983_2011",DATUM["D_NAD_1983_2011",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",30000.0],PARAMETER["False_Northing",-620000.0],PARAMETER["Central_Meridian",-110.75],PARAMETER["Standard_Parallel_1",30.5],PARAMETER["Scale_Factor",0.9998],PARAMETER["Latitude_Of_Origin",30.5],UNIT["foot",0.3048]]"#.to_string(), [
+            (-110.74, 32.41, 33087.39500246114, 74792.2770971437, -110.74, 32.410000000000004),
+            (-110.34, 32.71, 156186.32042808278, 184220.57170050306, -110.34, 32.709999999999994),
+            (-111.04, 32.21, -59721.33466125998, 2121.5876317461184, -111.04000000000002, 32.21),
+        ]),
+        ("EPSG:7057", r#"PROJCS["NAD_1983_(2011)_IaRCS_zone_1",GEOGCS["GCS_NAD_1983_2011",DATUM["D_NAD_1983_2011",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",11500000.0],PARAMETER["False_Northing",9600000.0],PARAMETER["Central_Meridian",-95.25],PARAMETER["Standard_Parallel_1",43.2],PARAMETER["Scale_Factor",1.000052],PARAMETER["Latitude_Of_Origin",43.2],UNIT["US survey foot",0.304800609601219]]"#.to_string(), [
+            (-95.285, 43.205, 11490667.421889808, 9601824.49455068, -95.28499999999998, 43.205),
+            (-94.885, 43.505, 11596848.265330981, 9711389.761714473, -94.885, 43.50499999999999),
+            (-95.585, 43.005, 11410382.351083523, 9529101.26818554, -95.585, 43.00500000000002),
+        ]),
+        ("EPSG:6794", r#"PROJCS["OCRS_Bend-Redmond-Prineville_NAD_1983_2011_LCC_Meters",GEOGCS["GCS_NAD_1983_2011",DATUM["D_NAD_1983_2011",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",80000.0],PARAMETER["False_Northing",130000.0],PARAMETER["Central_Meridian",-121.25],PARAMETER["Standard_Parallel_1",44.6666666666667],PARAMETER["Scale_Factor",1.00012],PARAMETER["Latitude_Of_Origin",44.6666666666667],UNIT["Meter",1.0]]"#.to_string(), [
+            (-120.835, 44.37, 113082.28849539903, 97113.81951633212, -120.835, 44.37),
+            (-120.435, 44.67, 144634.64296980045, 130693.6220876741, -120.43500000000002, 44.669999999999995),
+            (-121.135, 44.17, 89198.77900738984, 74809.37462896085, -121.13499999999999, 44.16999999999999),
+        ]),
+    ]
+}
+
+#[test]
+fn esri_lcc_1sp_reprojects_like_pyproj() {
+    for (name, wkt, points) in esri_lcc_1sp_cases() {
+        for (lon, lat, x, y, back_lon, back_lat) in points {
+            let (gx, gy) = transform_xy("EPSG:4326", &wkt, lon, lat)
+                .unwrap_or_else(|e| panic!("{name} forward at {lon} {lat}: {e}"));
+            assert!(
+                (gx - x).abs() < 1e-3 && (gy - y).abs() < 1e-3,
+                "{name} forward: {gx} {gy} vs {x} {y}"
+            );
+            let (bx, by) = transform_xy(&wkt, "EPSG:4326", x, y)
+                .unwrap_or_else(|e| panic!("{name} inverse at {x} {y}: {e}"));
+            assert!(
+                (bx - back_lon).abs() < 1e-8 && (by - back_lat).abs() < 1e-8,
+                "{name} inverse: {bx} {by} vs {back_lon} {back_lat}"
+            );
+        }
+    }
+}
+
+/// `Lambert_Conformal_Conic` with one standard parallel that is not the latitude of origin is not
+/// the 1SP method the table represents: it is refused, not reprojected.
+#[test]
+fn esri_lcc_with_a_lone_standard_parallel_off_the_origin_is_refused() {
+    let (_, wkt, _) = esri_lcc_1sp_cases().remove(2);
+    let off = wkt.replace(
+        r#"PARAMETER["Standard_Parallel_1",44.6666666666667]"#,
+        r#"PARAMETER["Standard_Parallel_1",45.5]"#,
+    );
+    assert_ne!(off, wkt);
+    let err = crate::crs_convert::wkt_to_projjson(&off).unwrap_err();
+    assert!(err.starts_with("unsupported WKT definition"), "{err}");
+    assert!(transform_xy("EPSG:4326", &off, -120.8, 44.4).is_err());
+}

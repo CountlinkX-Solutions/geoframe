@@ -685,8 +685,15 @@ fn method(
     projection: &str,
     has_scale: bool,
     east_first: bool,
+    two_parallels: bool,
 ) -> Option<(&'static str, u32, &'static [Param])> {
     Some(match projection {
+        // ESRI writes both Lambert Conformal Conic methods as `Lambert_Conformal_Conic`: the
+        // second standard parallel tells the 2SP from the 1SP.
+        "Lambert_Conformal_Conic" if two_parallels => {
+            ("Lambert Conic Conformal (2SP)", 9802, FALSE_ORIGIN)
+        }
+        "Lambert_Conformal_Conic" => ("Lambert Conic Conformal (1SP)", 9801, NATURAL_ORIGIN),
         "Transverse_Mercator" => ("Transverse Mercator", 9807, NATURAL_ORIGIN),
         "Transverse_Mercator_South_Orientated" => (
             "Transverse Mercator (South Orientated)",
@@ -740,28 +747,54 @@ fn method(
 fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
     let projection = node.child("PROJECTION")?.text(0)?;
     let parameters: Vec<&Node> = node.children("PARAMETER").collect();
+    // OGC WKT1 spells parameter names in lower case (`false_easting`), ESRI capitalises them
+    // (`False_Easting`, `Latitude_Of_Origin`); PROJ matches them without regard to case.
+    let name_of = |p: &Node| p.text(0).map(str::to_ascii_lowercase);
     // Polar Stereographic variant A is the one on a pole (UPS); variant B puts the origin of
     // scale on a standard parallel and has no scale factor (WKT1 may still list `1`).
     let on_a_pole = parameters
         .iter()
-        .find(|p| p.text(0) == Some("latitude_of_origin"))
+        .find(|p| name_of(p).as_deref() == Some("latitude_of_origin"))
         .and_then(|p| p.number(1))
         .is_some_and(|lat| lat.abs() == 90.0);
-    let has_scale = on_a_pole && parameters.iter().any(|p| p.text(0) == Some("scale_factor"));
+    let has_scale = on_a_pole
+        && parameters
+            .iter()
+            .any(|p| name_of(p).as_deref() == Some("scale_factor"));
     let east_first = node
         .child("AXIS")
         .and_then(|a| a.text(1))
         .is_some_and(|d| d.eq_ignore_ascii_case("east"));
-    let (method_name, method_code, table) = method(projection, has_scale, east_first)?;
+    let latitude_of_origin = parameters
+        .iter()
+        .find(|p| name_of(p).as_deref() == Some("latitude_of_origin"))
+        .and_then(|p| p.number(1))
+        .unwrap_or(0.0);
+    let two_parallels = parameters
+        .iter()
+        .any(|p| name_of(p).as_deref() == Some("standard_parallel_2"));
+    let (method_name, method_code, table) =
+        method(projection, has_scale, east_first, two_parallels)?;
     let angular = unit_value(base.child("UNIT")?, true)?;
 
     let mut out = Vec::new();
     for parameter in &parameters {
-        let name = parameter.text(0)?;
+        let name = name_of(parameter)?;
+        let name = name.as_str();
         let value = parameter.number(1)?;
         let entry = table.iter().find(|(names, ..)| names.contains(&name));
         let Some((_, epsg_name, code, kind)) = entry else {
             if name == "scale_factor" && value == 1.0 {
+                continue;
+            }
+            // ESRI repeats the latitude of origin as `Standard_Parallel_1` of a 1SP Lambert
+            // conformal conic. The method has no such parameter, so it is only dropped when it
+            // is that latitude; any other value is a different definition and stays refused.
+            if projection == "Lambert_Conformal_Conic"
+                && !two_parallels
+                && name == "standard_parallel_1"
+                && value == latitude_of_origin
+            {
                 continue;
             }
             // The Laborde grid angle is not an EPSG parameter of that method (PROJ drops it).
@@ -787,7 +820,7 @@ fn conversion(node: &Node, base: &Node, linear: &Value) -> Option<Value> {
     for (names, epsg_name, code, kind) in table {
         let given = parameters
             .iter()
-            .any(|p| p.text(0).is_some_and(|n| names.contains(&n)));
+            .any(|p| name_of(p).is_some_and(|n| names.contains(&n.as_str())));
         if given {
             continue;
         }
