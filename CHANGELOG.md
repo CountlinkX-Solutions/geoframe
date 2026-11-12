@@ -1,0 +1,75 @@
+# Changelog
+
+All notable changes to GeoFrame are documented in this file.
+
+The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/), and this
+project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The API may still
+change before 1.0.
+
+## [Unreleased]
+
+## [0.1.0] - 2026-11-12
+
+First tagged release. It is distributed through the `v0.1.0` git tag and GitHub release, not
+through Hex. The NIF is compiled on your machine, so you need a stable Rust toolchain; Elixir
+1.17 or later.
+
+### Added
+
+- **Core**: `GeoFrame.GeoSeries`, a GeoArrow geometry column held in Rust behind a Rustler
+  resource, and `GeoFrame.GeoDataFrame`, an Explorer `DataFrame` of attributes aligned with that
+  geometry. Row-changing operations apply the same row indices to both. A frame can carry
+  secondary geometry columns, each with its own CRS (#93).
+- **Reading and writing**: GeoParquet (with `bbox:` filter and write options), GeoJSON,
+  FlatGeobuf, Feather v2 and Arrow IPC, Shapefile (`.cpg`, `.prj`, zipped), GeoPackage (several
+  layers), and WKT/WKB. `read_file/2` and `write_file/3` pick the format from the extension;
+  `list_layers/2` and `read_file_info/2` describe a file. Files written by GeoPandas 1.2 read
+  directly, and GeoPandas reads what GeoFrame writes.
+- **PostGIS**: `read_postgis/3` and `to_postgis/4` over the optional `:postgrex` dependency,
+  with an EWKB Postgrex extension and exact `numeric` reads.
+- **Coordinate reference systems**: `set_crs/2`, `to_crs/2` and `estimate_utm_crs/2`, in pure
+  Rust on `proj4rs` (no PROJ install). EPSG codes plus PROJJSON and WKT1/WKT2 definitions
+  without a code; datum shifts through NTv2/GeoTIFF grids (`GeoFrame.Grids`, nothing is
+  downloaded) or the Helmert operation PROJ picks by area of use. `to_crs` agrees with pyproj
+  to 1e-6 projected units on the reference cases.
+- **Spatial joins and overlays**: `sjoin` and `sjoin_nearest` on an R-tree (every predicate,
+  `dwithin`, ties, `max_distance`), `sindex_query`, `sindex_nearest`, `dissolve` with attribute
+  aggregation, and `overlay` (all five `how`s), `clip`, `explode`, `union_all` and
+  `intersection_all`.
+- **Geometry operations** with GeoPandas parity: measures (planar, geodesic, haversine,
+  Hausdorff, Frechet), element-wise predicates, constructive operations (buffer, offset curve,
+  simplify, hulls, bounding shapes, Delaunay, Voronoi, polygonize, snap, set precision,
+  `make_valid`), linear referencing, affine transforms, coverage validation and simplification,
+  and `make_grid`. See [docs/parity.md](docs/parity.md) for the full GeoPandas parity matrix and
+  the documented deviations.
+- **Z and M coordinates**: XY, XYZ, XYM and XYZM geometries, `has_z/1`, `has_m/1`, `z/1`,
+  `m/1`, `force_2d/1`, `force_3d/1`, `from_xy(z:)` and `get_coordinates(include_z:, include_m:)`,
+  preserved through reprojection, affine operations, overlay and every I/O format (GeoJSON keeps
+  Z only, as RFC 7946 has no M).
+- **Explorer verbs on `GeoDataFrame`**: `select`, `discard`, `rename`, `put`, `pull`,
+  `filter_with`, `sort_with`, `mutate_with`, `head`, `tail`, `slice`, `sample`, `distinct`,
+  `drop_nil`, `join`/merge with a `DataFrame` or another `GeoDataFrame`, and `concat_rows`; the
+  geometry follows the rows.
+- **Livebook and Kino**: `GeoDataFrame` and `GeoSeries` render with Map, Table and Inspect
+  tabs; `GeoFrame.Kino.deck/2` is a deck.gl widget fed with binary geometry buffers (a million
+  features stay interactive) with hover tooltips, colour and size by column, a colour legend
+  and a scale bar; two Smart Cells, **Read spatial file** and **Spatial join**. Payloads are
+  capped by feature and vertex counts.
+- **Testing helpers**: `GeoFrame.Testing` assertions for geometry series and frames, including
+  secondary geometry columns.
+- **Quality**: a differential suite checks every operation shared with GeoPandas 1.2 /
+  Shapely 2.2 (18 864 reference cases: 18 131 agree, 733 are documented deviations), inputs are
+  bounded and files are written atomically,
+  and four notebooks (tour, deck.gl widget, GeoFrame vs GeoPandas, spike) run in CI.
+
+### Known issues
+
+- An ESRI WKT `.prj` for a StatePlane CRS in US survey feet (for example
+  `NAD_1983_StatePlane_Arizona_Central_FIPS_0202_Feet`) is not recognised, so
+  `GeoDataFrame.to_crs/2` and the Kino deck reprojection raise `ArgumentError`
+  ([#110](https://github.com/CountlinkX-Solutions/geoframe/issues/110)). Workaround:
+  `GeoDataFrame.set_crs(frame, "EPSG:2223")`, the same projection in international feet (about
+  2 ppm off, fine for maps).
+
+[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.1.0

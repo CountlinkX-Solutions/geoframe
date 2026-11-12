@@ -1,7 +1,7 @@
 defmodule GeoFrame.MixProject do
   use Mix.Project
 
-  @version "0.1.0-dev"
+  @version "0.1.0"
   @source_url "https://github.com/CountlinkX-Solutions/geoframe"
 
   def project do
@@ -24,9 +24,10 @@ defmodule GeoFrame.MixProject do
   defp docs do
     [
       main: "readme",
-      source_ref: "main",
+      source_ref: "v#{@version}",
       extras: [
         "README.md",
+        "CHANGELOG.md": [title: "Changelog"],
         "docs/parity.md": [title: "GeoPandas parity"],
         "notebooks/tour.livemd": [title: "Notebook: tour"],
         "notebooks/deck.livemd": [title: "Notebook: deck.gl widget"],
@@ -69,7 +70,7 @@ defmodule GeoFrame.MixProject do
       links: %{"GitHub" => @source_url},
       files: ~w(lib native/geoframe_core/src native/geoframe_core/Cargo.toml
                 native/geoframe_native/src native/geoframe_native/Cargo.toml
-                Cargo.toml Cargo.lock mix.exs README.md LICENSE NOTICE)
+                Cargo.toml Cargo.lock mix.exs README.md CHANGELOG.md LICENSE NOTICE)
     ]
   end
 
