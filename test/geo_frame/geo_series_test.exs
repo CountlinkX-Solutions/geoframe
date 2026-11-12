@@ -57,6 +57,23 @@ defmodule GeoFrame.GeoSeriesTest do
       assert GeoSeries.crs(s) == "EPSG:4326"
       assert GeoSeries.crs(GeoSeries.set_crs(s, nil)) == nil
     end
+
+    test "set_crs/2 accepts an integer EPSG code, stored as the EPSG string" do
+      s = GeoSeries.from_wkt!(["POINT (1 2)"], crs: "EPSG:4326")
+      moved = GeoSeries.set_crs(s, 3857)
+      assert GeoSeries.crs(moved) == "EPSG:3857"
+      assert GeoSeries.crs(moved) == GeoSeries.crs(GeoSeries.set_crs(s, "EPSG:3857"))
+      assert GeoSeries.to_wkt(moved) == GeoSeries.to_wkt(s)
+    end
+
+    test "set_crs/2 rejects a non-positive integer EPSG code with ArgumentError" do
+      s = GeoSeries.from_wkt!(["POINT (1 2)"], crs: "EPSG:4326")
+
+      for bad <- [0, -4326] do
+        assert_raise(ArgumentError, fn -> GeoSeries.to_crs(s, bad) end)
+        assert_raise(ArgumentError, ~r/positive integer/, fn -> GeoSeries.set_crs(s, bad) end)
+      end
+    end
   end
 
   describe "measures" do
