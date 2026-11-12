@@ -3,8 +3,9 @@
 GeoPandas-style geospatial dataframes for Elixir, powered by
 [GeoArrow](https://geoarrow.org) and Rust.
 
-> Status: pre-release (`0.1.0-dev`). Behaviour is checked against GeoPandas 1.2 / Shapely 2.2
-> on tens of thousands of cases, but the API may still change before the first Hex release.
+> Status: first tagged release, `0.1.0`, distributed from GitHub (not on Hex yet); see the
+> [changelog](CHANGELOG.md). Behaviour is checked against GeoPandas 1.2 / Shapely 2.2 on tens
+> of thousands of cases, but the API may still change before 1.0.
 
 Elixir has [Explorer](https://github.com/elixir-explorer/explorer) for dataframes, but no way
 to carry geometry with spatial semantics. GeoFrame adds it without forking Explorer:
@@ -33,7 +34,7 @@ to both the attributes and the geometry, so they never drift apart.
 ```elixir
 def deps do
   [
-    {:geoframe, "~> 0.1"},
+    {:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.1.0"},
     # optional
     {:kino, "~> 0.19"},           # Livebook rendering, deck.gl widget, Smart Cells
     {:kino_maplibre, "~> 0.1"},   # the Map tab (the deck.gl widget needs nothing extra)
@@ -43,8 +44,8 @@ def deps do
 end
 ```
 
-GeoFrame is not on Hex yet; until the first release use
-`{:geoframe, github: "CountlinkX-Solutions/geoframe"}` or a `path:` dependency. The NIF is
+GeoFrame is not on Hex yet, so depend on the `v0.1.0` git tag as above (or use a `path:`
+dependency on a checkout). The NIF is
 compiled on your machine by [Rustler](https://hex.pm/packages/rustler) (a dependency of
 GeoFrame; you do not add it), so you need a stable Rust toolchain. Elixir 1.17 or later;
 development uses Elixir 1.19 / OTP 28.
