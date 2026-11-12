@@ -48,12 +48,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # `priv/native` goes with `_build`: `_build/*/lib/geoframe/priv` is a symlink to the
+      # project's `priv`, where Rustler copies the NIF. Rustler only runs when Mix recompiles
+      # `GeoFrame.Native`, so a restored `_build` that is already up to date would otherwise
+      # leave the NIF missing (CI on main for 3d83621).
       - name: Cache deps and build
         uses: actions/cache@v4
         with:
           path: |
             deps
             _build
+            priv/native
           key: ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('mix.lock') }}
           restore-keys: ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-
 
