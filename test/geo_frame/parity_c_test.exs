@@ -257,6 +257,17 @@ defmodule GeoFrame.ParityCTest do
     end
   end
 
+  describe "project on an overlapping line" do
+    test "matches Shapely line_locate_point when a segment retraces an earlier one" do
+      # Reference: shapely.line_locate_point(line, line_interpolate_point(line, d)) == 107.14922302131022
+      # (the later pass), not the earlier ~44.64.
+      series = s(["LINESTRING (48 24, -24 48, 6 38)"])
+      point = GeoSeries.interpolate(series, 44.64010466677198)
+      assert [back] = list(GeoSeries.project(series, point))
+      assert_in_delta back, 107.14922302131022, 1.0e-9
+    end
+  end
+
   describe "properties" do
     defp coord, do: StreamData.integer(-50..50)
 
@@ -276,11 +287,12 @@ defmodule GeoFrame.ParityCTest do
         d = f * len
         point = GeoSeries.interpolate(series, d)
         [back] = list(GeoSeries.project(series, point))
-        # A self-crossing line may project to an earlier pass through the same point, so
-        # compare the located point rather than the distance.
+        # A self-crossing or self-overlapping line passes through the same point more than
+        # once, and GEOS picks the pass by float noise (first or last), exactly as Shapely
+        # does. So compare the located point and the range, not the distance.
         again = GeoSeries.interpolate(series, back)
         assert Enum.all?(list(GeoSeries.geom_equals_exact(point, again, 1.0e-6)))
-        assert back <= d + 1.0e-6
+        assert back >= 0.0 and back <= len + 1.0e-6
       end
     end
 
