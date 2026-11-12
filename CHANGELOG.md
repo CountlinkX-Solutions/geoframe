@@ -8,6 +8,44 @@ change before 1.0.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-12
+
+Like 0.1.0, it is distributed through the `v0.1.1` git tag and GitHub release, not through Hex.
+
+Results change in three places, each to match GEOS or PROJ: `is_valid` and `make_valid` on
+collinear (zero-area) rings, `polygonize` and `build_area` with `node: true`, and `to_crs` on
+ESRI WKT1 `.prj` files, which now get the datum shift PROJ applies.
+
+### Added
+
+- `set_crs/2` on `GeoSeries` and `GeoDataFrame` accepts a positive integer EPSG code, like
+  `to_crs/2` already did: `set_crs(series, 3857)` stores `"EPSG:3857"`, the same label as the
+  string input. A non-positive integer raises `ArgumentError`
+  ([#116](https://github.com/CountlinkX-Solutions/geoframe/pull/116)).
+
+### Changed
+
+- A polygon ring whose vertices are all collinear (zero area) is now invalid, as in GEOS:
+  `is_valid` is false (reason `Self-intersection[...]` or `Too few points in geometry
+  component[...]`) and `make_valid` collapses it to linework (`MULTILINESTRING`, `LINESTRING` or
+  `POINT`) instead of returning it unchanged. A valid polygon with a collinear hole, or a
+  multipolygon with a collinear part, becomes a `GEOMETRYCOLLECTION` of the polygon and the
+  linework ([#117](https://github.com/CountlinkX-Solutions/geoframe/pull/117)). The reference
+  suite is now 18 134 agree and 730 documented deviations out of 18 864.
+- `polygonize` and `build_area` with `node: true` keep every input vertex that lies on the merged
+  outline, as GeoPandas does (`shapely.polygonize([union_all()])`). Two squares sharing an edge
+  now give `POLYGON ((0 0, 0 1, 1 1, 2 1, 2 0, 1 0, 0 0))` instead of dropping the collinear
+  vertices. On a 400-case fuzz against GEOS, `polygonize` mismatches fell from 232 to 8 and
+  `build_area` from 245 to 134, with no case worse
+  ([#119](https://github.com/CountlinkX-Solutions/geoframe/pull/119)).
+- An ESRI WKT1 `.prj` (`GCS_...` / `D_...` names, no `AUTHORITY`) now gets the datum shift PROJ
+  applies, identified by the DATUM name instead of the GEOGCS name: ED50 about 138 m, OSGB36
+  about 109 m, Tokyo about 463 m, NAD27 UTM about 20 m. Before, `to_crs/2` returned the unshifted
+  coordinates for that text. Against pyproj on 1 110 CRSs written as WKT1_ESRI, mismatches over
+  5 cm fell from 716 to 60, with no case worse. GDA94, GDA2020 and CR-SIRGAS are not covered, and
+  a definition with a non-Greenwich prime meridian (Ferro, Paris, Rome, ...) keeps its previous
+  result ([#122](https://github.com/CountlinkX-Solutions/geoframe/pull/122)).
+
 ### Fixed
 
 - An ESRI WKT1 `.prj` for a StatePlane CRS (for example ESRI:102649, Arizona Central in US
@@ -19,6 +57,24 @@ change before 1.0.
   otherwise; a lone standard parallel that differs from the origin is still refused.
   `Foot_US` and `Foot` units are honoured. Reprojection matches pyproj
   ([#110](https://github.com/CountlinkX-Solutions/geoframe/issues/110)).
+- Mixed-dimension geometry collections (XY, XYZ, XYM and XYZM members together) no longer print
+  GeoArrow panic messages on stderr. The error returned is the same and behaviour is unchanged
+  ([#120](https://github.com/CountlinkX-Solutions/geoframe/pull/120)).
+
+### Documentation
+
+- The description of GEOS `set_precision` on invalid multipolygons in `docs/parity.md` is
+  corrected: GEOS keeps a part whose edges meet no other part's, merges parts with coinciding
+  edges, and raises `TopologyException` on crossing edges
+  ([#118](https://github.com/CountlinkX-Solutions/geoframe/pull/118)).
+
+### Internal
+
+- CI caches the compiled NIF together with `_build`
+  ([#113](https://github.com/CountlinkX-Solutions/geoframe/pull/113)).
+- The linear-referencing property test no longer asserts that `project` returns the earliest
+  pass on overlapping lines, which GEOS does not guarantee either
+  ([#121](https://github.com/CountlinkX-Solutions/geoframe/pull/121)).
 
 ## [0.1.0] - 2026-11-12
 
@@ -83,5 +139,6 @@ through Hex. The NIF is compiled on your machine, so you need a stable Rust tool
   `GeoDataFrame.set_crs(frame, "EPSG:2223")`, the same projection in international feet (about
   2 ppm off, fine for maps).
 
-[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.1.1
 [0.1.0]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.1.0
