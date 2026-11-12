@@ -377,8 +377,11 @@ defmodule GeoFrame.GeoDataFrame do
   @spec crs(t()) :: String.t() | nil
   def crs(%__MODULE__{geometry: geometry}), do: GeoSeries.crs(geometry)
 
-  @doc "Replaces the CRS metadata without reprojecting."
-  @spec set_crs(t(), String.t() | nil) :: t()
+  @doc """
+  Replaces the CRS metadata without reprojecting; `crs` is a string, an integer EPSG code or
+  `nil`. See `GeoFrame.GeoSeries.set_crs/2`.
+  """
+  @spec set_crs(t(), String.t() | pos_integer() | nil) :: t()
   def set_crs(%__MODULE__{geometry: geometry} = gdf, crs) do
     %{gdf | geometry: GeoSeries.set_crs(geometry, crs)}
   end

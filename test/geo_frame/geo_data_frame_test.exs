@@ -182,6 +182,10 @@ defmodule GeoFrame.GeoDataFrameTest do
       gdf = GeoDataFrame.set_crs(sample(), "EPSG:3857")
       assert GeoDataFrame.crs(gdf) == "EPSG:3857"
     end
+
+    test "set_crs/2 accepts an integer EPSG code" do
+      assert GeoDataFrame.crs(GeoDataFrame.set_crs(sample(), 3857)) == "EPSG:3857"
+    end
   end
 
   describe "spatial measures" do

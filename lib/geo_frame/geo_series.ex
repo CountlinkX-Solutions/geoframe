@@ -430,12 +430,19 @@ defmodule GeoFrame.GeoSeries do
   Replaces the CRS metadata without touching coordinates (no reprojection).
 
   `crs` is stored as given: `"EPSG:<code>"`, `"OGC:CRS84"`, or a PROJJSON or WKT definition
-  (see `to_crs/2` for what a definition may hold).
+  (see `to_crs/2` for what a definition may hold). An integer EPSG code is accepted as in
+  `to_crs/2` (a positive integer; `4326` is stored as `"EPSG:4326"`). `nil` clears the CRS.
   """
-  @spec set_crs(t(), String.t() | nil) :: t()
-  def set_crs(%__MODULE__{ref: ref}, crs) when is_binary(crs) or is_nil(crs) do
-    %__MODULE__{ref: Native.set_crs(ref, crs)}
+  @spec set_crs(t(), String.t() | pos_integer() | nil) :: t()
+  def set_crs(%__MODULE__{ref: ref}, crs) when is_binary(crs) or (is_integer(crs) and crs > 0) do
+    %__MODULE__{ref: Native.set_crs(ref, crs_label(crs))}
   end
+
+  def set_crs(%__MODULE__{}, crs) when is_integer(crs) do
+    raise ArgumentError, "an EPSG code must be a positive integer, got: #{crs}"
+  end
+
+  def set_crs(%__MODULE__{ref: ref}, nil), do: %__MODULE__{ref: Native.set_crs(ref, nil)}
 
   @doc """
   Selects rows by zero-based position; repeats and reordering are allowed.
