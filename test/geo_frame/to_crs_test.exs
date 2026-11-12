@@ -171,5 +171,23 @@ defmodule GeoFrame.ToCrsTest do
       # 0.1 x 0.1 degrees near 25.75 N is about 11.1 km x 10.0 km.
       assert_in_delta area, 1.11e8, 0.02 * 1.11e8
     end
+
+    # The `.prj` of issue #110 (ESRI:102649, StatePlane Arizona Central, US survey feet).
+    # Expected values: pyproj 3.8 / PROJ 9.8, `Transformer.from_crs("EPSG:4326", wkt,
+    # always_xy=True).transform(-112.0, 33.5)` and the inverse.
+    @esri_prj ~s(PROJCS["NAD_1983_StatePlane_Arizona_Central_FIPS_0202_Feet",GEOGCS["GCS_North_American_1983",DATUM["D_North_American_1983",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",699998.6],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",-111.9166666666667],PARAMETER["Scale_Factor",0.9999],PARAMETER["Latitude_Of_Origin",31.0],UNIT["Foot_US",0.3048006096012192]])
+
+    test "an ESRI WKT1 StatePlane CRS in US survey feet reprojects both ways (#110)" do
+      geo = GeoDataFrame.new(Explorer.DataFrame.new(name: ["a"]), s(["POINT (-112.0 33.5)"]))
+
+      projected = GeoDataFrame.to_crs(geo, @esri_prj)
+      {x, y} = projected.geometry |> xy()
+      assert_in_delta x, 674_595.8554291083, 1.0e-3
+      assert_in_delta y, 909_458.6895101842, 1.0e-3
+
+      {lon, lat} = projected |> GeoDataFrame.to_crs("EPSG:4326") |> Map.fetch!(:geometry) |> xy()
+      assert_in_delta lon, -112.0, 1.0e-9
+      assert_in_delta lat, 33.5, 1.0e-9
+    end
   end
 end
