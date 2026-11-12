@@ -66,24 +66,40 @@ fn type_of(value: &Value) -> Result<&str, String> {
 }
 
 /// The EPSG code of a geographic CRS: its identifier, else (as PROJ identifies a CRS) the CRS of
-/// that name that has datum shifts.
+/// that name that has datum shifts, else the one whose datum has that name. PROJ identifies the
+/// datum of a WKT1 text by its name (`D_OSGB_1936` of a Shapefile `.prj`, `European_Datum_1950`
+/// of GDAL's text, through the EPSG and ESRI aliases) and shifts it like the code, whatever the
+/// name of the CRS.
 fn geographic_code(value: &Value) -> Option<u32> {
     let id = epsg_code(value);
     // A 3D geographic CRS (LUREF 3D) has no operations of its own: its 2D namesake has them.
     id.filter(|code| crate::datum::has_operations(*code))
         .or_else(|| {
-            let name = value
-                .get("name")?
-                .as_str()?
-                .to_ascii_lowercase()
-                .replace('_', " ");
-            let table = crate::crs_names::CRS_NAMES;
-            table
-                .binary_search_by(|(n, _)| (*n).cmp(name.as_str()))
-                .ok()
-                .map(|i| table[i].1)
+            let name = value.get("name")?.as_str()?;
+            lookup(crate::crs_names::CRS_NAMES, name)
+        })
+        .or_else(|| {
+            let datum = value.get("datum")?;
+            // The table is Greenwich-based: a definition with another prime meridian (Ferro,
+            // Paris, Rome, ...) keeps the result it had without the lookup.
+            if datum.get("prime_meridian").is_some() {
+                return None;
+            }
+            lookup(
+                crate::crs_datum_names::DATUM_NAMES,
+                datum.get("name")?.as_str()?,
+            )
         })
         .or(id)
+}
+
+/// The code a sorted name table gives `name` (lower case, `_` as a space).
+fn lookup(table: &[(&str, u32)], name: &str) -> Option<u32> {
+    let name = name.to_ascii_lowercase().replace('_', " ");
+    table
+        .binary_search_by(|(n, _)| (*n).cmp(name.as_str()))
+        .ok()
+        .map(|i| table[i].1)
 }
 
 fn epsg_code(value: &Value) -> Option<u32> {
