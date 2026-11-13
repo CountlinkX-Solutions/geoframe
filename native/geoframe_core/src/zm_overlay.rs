@@ -540,6 +540,7 @@ impl Aligned {
 pub(crate) enum Resolver {
     Model(Model),
     Aligned(Aligned),
+    Noded(Noded),
 }
 
 impl Resolver {
@@ -547,7 +548,120 @@ impl Resolver {
         match self {
             Self::Model(model) => model.at(c),
             Self::Aligned(aligned) => aligned.at(c),
+            Self::Noded(noded) => noded.at(c),
         }
+    }
+}
+
+/// Z of the vertices `buffer(0)` gives a polygon it repairs (`simplify` without topology), as
+/// GEOS's noder computes them (`LineIntersector::computeIntersect`): a vertex of the noded
+/// rings keeps its own Z; one with a NaN Z that lies on another segment takes the Z
+/// interpolated along that segment (`zGetOrInterpolate`); a new crossing node takes the mean of
+/// the Z interpolated along the first two segments through it, in ring order (`zInterpolate`,
+/// a NaN side giving the other). M is dropped. Without `rings` (no repair) every vertex keeps
+/// its own Z.
+pub(crate) struct Noded {
+    /// Z of the first input vertex at each XY.
+    vertices: HashMap<Key, f64>,
+    /// The segments of the rings that were noded, in ring order, with their vertices' Z.
+    segments: Vec<Segment>,
+    tolerance_2: f64,
+}
+
+/// The rings (and lines) of `g`, in storage order.
+fn ring_lines<'a>(g: &'a Geometry<f64>, out: &mut Vec<&'a geo::LineString<f64>>) {
+    match g {
+        Geometry::LineString(l) => out.push(l),
+        Geometry::MultiLineString(m) => out.extend(&m.0),
+        Geometry::Polygon(p) => {
+            out.push(p.exterior());
+            out.extend(p.interiors());
+        }
+        Geometry::MultiPolygon(m) => {
+            for p in &m.0 {
+                out.push(p.exterior());
+                out.extend(p.interiors());
+            }
+        }
+        Geometry::GeometryCollection(c) => c.0.iter().for_each(|m| ring_lines(m, out)),
+        _ => {}
+    }
+}
+
+impl Noded {
+    pub(crate) fn new(source: &Source, rings: Option<&Geometry<f64>>) -> Self {
+        let input = |c: &Coord<f64>| {
+            source
+                .vertices
+                .get(&key(c.x, c.y))
+                .map_or(f64::NAN, |v| v.0)
+        };
+        let vertex = |c: &Coord<f64>| Vertex {
+            x: c.x,
+            y: c.y,
+            z: input(c),
+            m: f64::NAN,
+        };
+        let mut lines = Vec::new();
+        if let Some(g) = rings {
+            ring_lines(g, &mut lines);
+        }
+        let segments = lines
+            .iter()
+            .flat_map(|line| line.0.windows(2))
+            .map(|w| Segment {
+                a: vertex(&w[0]),
+                b: vertex(&w[1]),
+            })
+            .collect();
+        // The vertices of the noded rings: an input vertex Douglas-Peucker removed is a new
+        // node for the repair, not a vertex.
+        let vertices: HashMap<Key, f64> = match rings {
+            Some(_) => lines
+                .iter()
+                .flat_map(|line| line.0.iter())
+                .map(|c| (key(c.x, c.y), input(c)))
+                .collect(),
+            None => source.vertices.iter().map(|(k, v)| (*k, v.0)).collect(),
+        };
+        let span = source
+            .extent
+            .map_or(0.0, |e| (e[2] - e[0]).max(e[3] - e[1]));
+        let tolerance = NEAR * span;
+        Self {
+            vertices,
+            segments,
+            tolerance_2: tolerance * tolerance,
+        }
+    }
+
+    fn at(&self, c: Coord<f64>) -> (f64, f64) {
+        let through = |s: &&Segment| s.distance_2(&[c.x, c.y]) <= self.tolerance_2;
+        let z = match self.vertices.get(&key(c.x, c.y)) {
+            Some(&z) if !z.is_nan() => z,
+            // A NaN vertex becomes a node on another ring's segment (not its own).
+            Some(_) => self
+                .segments
+                .iter()
+                .filter(|s| !(c.x == s.a.x && c.y == s.a.y) && !(c.x == s.b.x && c.y == s.b.y))
+                .find(through)
+                .map_or(f64::NAN, |s| interpolate(0, c.x, c.y, s)),
+            None => {
+                let mut sides = self.segments.iter().filter(through);
+                let p = sides
+                    .next()
+                    .map_or(f64::NAN, |s| interpolate(0, c.x, c.y, s));
+                let q = sides
+                    .next()
+                    .map_or(f64::NAN, |s| interpolate(0, c.x, c.y, s));
+                match (p.is_nan(), q.is_nan()) {
+                    (true, _) => q,
+                    (_, true) => p,
+                    _ => (p + q) / 2.0,
+                }
+            }
+        };
+        (z, f64::NAN)
     }
 }
 
@@ -714,6 +828,26 @@ impl GeoColumn {
             Some(RowPlan {
                 dims,
                 resolver: Resolver::Model(Model::new(order, fill)),
+            })
+        })
+    }
+
+    /// [`rebuild`](Self::rebuild) for `simplify` without topology: `noded[i]` holds the
+    /// Douglas-Peucker rings of row `i` when `buffer(0)` had to repair them (see [`Noded`]).
+    pub(crate) fn rebuild_repaired(
+        &self,
+        rows: &[Option<Geometry<f64>>],
+        noded: &[Option<Geometry<f64>>],
+    ) -> Result<Self, String> {
+        if !self.any_zm() {
+            return self.rebuild(rows);
+        }
+        let sources = self.zm_sources();
+        self.emit_zm(rows, |i| {
+            let source = sources.get(i)?.as_ref()?;
+            Some(RowPlan {
+                dims: (source.dims.0, false),
+                resolver: Resolver::Noded(Noded::new(source, noded.get(i)?.as_ref())),
             })
         })
     }
