@@ -1,8 +1,9 @@
 name: Precompiled NIFs
 
 # Builds the `geoframe_native` NIF for every target GeoFrame.Native lists and, on a `v*` tag,
-# attaches the archives to the GitHub release of that tag. `workflow_dispatch` only uploads
-# workflow artifacts (a dry run, nothing is published).
+# attaches the archives to the GitHub release of that tag. `workflow_dispatch` and
+# `pull_request` (only when the release setup changes) just upload workflow artifacts: a dry
+# run, nothing is published.
 #
 # Keep `matrix.job.target` and `matrix.nif` in sync with `targets` and `nif_versions` in
 # lib/geo_frame/native.ex.
@@ -12,6 +13,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - ".cargo/config.toml"
+      - "native/geoframe_native/Cargo.toml"
 
 permissions:
   contents: read
