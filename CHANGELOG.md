@@ -44,8 +44,8 @@ Breaking changes.
   semantics, pandas `groupby.head`), keeping the original row order, with the geometry aligned.
   Migration: call `ungroup/2` first to get the old global behaviour. Ungrouped frames are
   unchanged ([#143](https://github.com/CountlinkX-Solutions/geoframe/pull/143)).
-- **`summarise` with `:n_distinct` no longer counts nulls** (pandas `nunique`). Migration: add one
-  to the result for groups where you counted the null as a value
+- **`summarise` with `:n_distinct` no longer counts nulls** (pandas `nunique`). Migration: the
+  previous value is the new one plus one for each group whose column holds a null
   ([#143](https://github.com/CountlinkX-Solutions/geoframe/pull/143)).
 
 ### Added
@@ -130,10 +130,11 @@ Breaking changes.
 - `is_valid_reason` follows GEOS's check order and wording (`Self-intersection[2 2]`,
   `Hole lies outside shell[...]`, `Too few points in geometry component[...]`, and so on)
   ([#132](https://github.com/CountlinkX-Solutions/geoframe/pull/132)).
-- `polygonize` and `build_area` with `node: true` and lines crossing polygons match GEOS: no extra
-  small face, and the crossing point is a vertex of the merged ring. On a 2 000-case fuzz,
-  `polygonize` mismatches fell from 46 to 2 (and 54 to 3 on a second seed), with no case worse
-  ([#137](https://github.com/CountlinkX-Solutions/geoframe/pull/137)).
+- `polygonize` with `node: true` and lines crossing polygons matches GEOS: no extra small face,
+  and the crossing point is a vertex of the merged ring. On a 2 000-case fuzz, `polygonize`
+  mismatches fell from 46 to 2 (and 54 to 3 on a second seed), with no case worse; `build_area`
+  improves too (495 to 472 and 474 to 450) but still differs from GEOS where GEOS drops collinear
+  vertices ([#137](https://github.com/CountlinkX-Solutions/geoframe/pull/137)).
 
 ### Documentation
 
