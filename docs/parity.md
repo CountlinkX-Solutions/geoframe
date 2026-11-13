@@ -296,26 +296,55 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 Issue #62. `to_crs` moves a datum that is not WGS 84 the way PROJ does when it has no network:
 a grid if one is installed, else a Helmert (`+towgs84`) set. GeoFrame never downloads a grid.
 
-* **Helmert by area of use (default).** Without a grid PROJ runs the best Helmert operation whose
-  area of use holds the point, and a ballpark transformation (no shift) where none does.
-  GeoFrame has the same list per datum: `datum_helmert.rs`, generated from the PROJ database
-  by `test/reference/generate_crs_datum.py helmert_table` (`TransformerGroup` of every geographic
-  2D EPSG CRS to WGS 84: 460 CRSs, 302 distinct lists, 722 operations, about 115 KB). Operations
-  are tried in this order: not for an offshore-only area first (PROJ prefers an area whose name
-  is not "offshore" without "onshore", whatever the accuracies), then known accuracy, best first,
-  then smaller area, then PROJ's own order. Over about 2 800 random points of every CRS with two
-  or more operations this picks PROJ's operation for 99.2 % (97.9 % with the former rule, which
-  left out the offshore preference; the remaining misses are the ED50 and AGD66 areas whose
-  names mix on- and offshore). Molodensky-Badekas operations are folded into an equivalent Helmert
-  set (pivot in the translation), inverse steps are inverted and several Helmert steps are
-  composed into one (Garoua, Kousseri, Mhast (offshore): two small-angle steps, 1e-11 relative).
-  A `geogoffset` operation (Anguilla 1957: 18" and 4.4" of latitude and longitude; the Greek
-  datum: an offset of -5.86" and 0.28" followed by a translation on GRS80) is a second kind in
-  the table: the coordinates go from the CRS to geographic ones on its ellipsoid, are moved,
-  and are read as WGS 84 (or GRS80 with the translation) before going to the target, in both
-  directions (`reproject.rs`, `via_wgs84`). `+datum=NAD27` and NZGD49, which `proj4rs` refuses
-  to build without grid files, are covered the same way. A CRS that PROJ transforms only with a
-  ballpark gets no shift, even if the bundled table lists a `+towgs84` (RD/83, ...).
+* **Helmert by area of use (default).** Without a grid PROJ runs the best operation whose area
+  of use holds the point, and a ballpark transformation (no shift) where none does and its list
+  has a ballpark entry. GeoFrame has the same list per datum: `datum_helmert.rs`, generated from
+  the PROJ database by `test/reference/generate_crs_datum.py helmert_table` (`TransformerGroup`
+  of every geographic 2D EPSG CRS to WGS 84: 606 CRSs, 307 distinct lists, 833 operations, about
+  135 KB). Operations are tried in this order: not for an offshore area first (an area name that
+  says "offshore" before it says "onshore", whatever the accuracies: "Norway - offshore north of
+  62°N. Also Svalbard - onshore and offshore." is offshore, "Nigeria - onshore and offshore." is
+  not), then known accuracy, best first, then smaller area, then PROJ's own order. Against
+  `Transformer.get_last_used_operation` at about 5 500 sampled points of every CRS with two or
+  more operations this picks PROJ's operation for 95.4 % (the former rule, "offshore without
+  onshore", 95.3 %, but it left the onshore Norwegian and Finnish Lapland on an offshore
+  operation: Tromso, Rovaniemi); the remaining misses are offshore areas with several
+  operations of the same accuracy. Molodensky-Badekas operations are folded into an equivalent
+  Helmert set (pivot in the translation), inverse steps are inverted and several Helmert steps
+  are composed into one (Garoua, Kousseri, Mhast (offshore): two small-angle steps, 1e-11
+  relative). Four more kinds of operation:
+  * a **geographic offset** (`geogoffset`: Anguilla 1957, 18" and 4.4" of latitude and longitude;
+    the Greek datum, an offset of -5.86" and 0.28" followed by a translation on GRS80): the
+    coordinates go from the CRS to geographic ones on its ellipsoid, are moved, and are read as
+    WGS 84 (or GRS80 with the translation) before going to the target, in both directions
+    (`reproject.rs`, `via_wgs84`);
+  * a **null operation** (`noop`) is the same offset with zeros: PROJ runs it first for GDA94 and
+    GDA2020 (EPSG "to WGS 84 (1)", accuracy 3 m, the same accuracy as the 1.7 m Helmert step the
+    table used to run instead), and the table holds one for 162 CRSs (18 lists): GDA94 and its 42
+    MGA, Vicgrid and Albers CRSs, GDA2020 and its 41, CR-SIRGAS, Anguilla 1957, Madrid 1870 and
+    others, which now answer like pyproj (1.2 to 1.8 m before for the Australian ones). A
+    geocentric step between two ellipsoids with no Helmert between (GSK-2011) is a zero
+    `+towgs84`;
+  * an **exact Helmert** (`helmert exact`, Saba, Sint Eustatius, Bonaire: rotations of 2e-3 rad,
+    where the small-angle `+towgs84` formula of `proj4rs` is 9 m off): the exact rotation matrix
+    on geocentric coordinates, in both directions (`datum.rs`, `ExactHelmert`);
+  * an operation PROJ runs although the table of `TransformerGroup` lists only a ballpark: RD/83
+    and PD/83 have a direct operation that needs a grid, and PROJ then composes the Helmert to
+    ETRS89 with the null step to WGS 84 (182 m before).
+
+  When no operation holds the point, PROJ keeps its ballpark if its list has one (ED50, AGD66) and
+  otherwise runs the first operation of its list: a geographic CRS with no ballpark entry has that
+  operation last in the table, with the whole world as its area (Minna at 40E 10N, DHDN in the
+  North Sea), and a datum with one operation applies it everywhere (RD/83, Saba). For a projected
+  CRS PROJ first keeps the operations that meet the area of use of that CRS and orders them by it
+  (ED50 / UTM zone 30N at 8W 42N runs the Spanish north-west operation, not the Portuguese one;
+  Minna / UTM zone 31N runs the 7 m offshore operation, not the 15 m onshore and offshore one):
+  GeoFrame does not know that area, so it orders by the geographic CRS and keeps the lone operation
+  but not the first-operation fallback. That is the 1 to 12 m left for ED50 / TM and UTM CRSs,
+  Minna / UTM (12.4 m), Aratu, Batavia, Accra and Carthage projected CRSs, and the NAD27 UTM zones
+  that need grids. `+datum=NAD27` and NZGD49, which `proj4rs` refuses to build without grid files,
+  are covered the same way. A CRS that PROJ transforms only with a ballpark gets no shift, even
+  if the bundled table lists a `+towgs84`.
 * **Grids.** NTv2 (`.gsb`) and the GeoTIFF grids of PROJ-data (`.tif`: NTv2 and NADCON
   conversions) are read by `proj4rs`. `GeoFrame.Grids` points at the directories holding them
   (`set_dirs/1`, `config :geoframe, grid_dirs: [...]`, or the `PROJ_NADGRIDS` / `PROJ_DATA`
@@ -379,6 +408,24 @@ a grid if one is installed, else a Helmert (`+towgs84`) set. GeoFrame never down
   and 5 892 within 5 m, 17 between 50 m and 1 km, none over 1 km, one failure (Local
   Orthographic).
 
+  v0.1.2 (C2, null operations, exact Helmert, RD/83, the offshore rule), the same 5 934 CRSs, three
+  points each, by code, against pyproj 3.8.0 / PROJ 9.8.1 with no grids installed (the pyproj
+  data directory holds `proj.db` and its ini and list files, no `.gsb` or `.tif`):
+
+  | | v0.1.1 | v0.1.2 |
+  |---|---|---|
+  | within 5 cm | 5 639 | 5 838 |
+  | 5 cm to 5 m | 252 | 66 |
+  | 5 m to 50 m | 25 | 22 |
+  | 50 m to 1 km | 17 | 7 |
+  | fail | 1 | 1 |
+
+  No CRS got worse. The 7 between 50 m and 1 km are legacy or PROJ-specific: MGI (Ferro), the three
+  Tokyo 1892 Korea belts (prime meridian step), Pampa del Castillo and Pulkovo 1942(83) zone 8
+  (the sampled point is outside the area of use of the only operation, which PROJ tests in
+  projected coordinates), ED50 / UTM zone 37N. RD/83, PD/83 and the Gauss-Kruger CRSs on them, GDA94
+  and GDA2020 (83 CRSs), GSK-2011 (89), Saba, Sint Eustatius and Bonaire agree now.
+
 ## CRS definitions and codes outside the table
 
 Issue #100. `to_crs` and `set_crs` take a CRS as `EPSG:<code>`, `OGC:CRS84`, or a definition:
@@ -408,24 +455,40 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
   identifier (as every definition PROJ or pyproj writes) shifts like the code. One that does
   not finds its geographic CRS by name in `crs_names.rs` (460 names, generated from the PROJ
   database), as PROJ identifies a CRS; a 3D geographic base (LUREF 3D) uses its 2D namesake.
-  Failing that it finds it by the name of its **datum** in `crs_datum_names.rs` (1 138 names:
-  the EPSG names and the EPSG and ESRI aliases of those 460 datums, `D_OSGB_1936`,
-  `D_North_American_1927`, `European_Datum_1950`, ...). That is what PROJ does with WKT1 text,
-  whatever the name of the GEOGCS: a Shapefile `.prj` (`GCS_...` / `D_...`, no authority) is
-  shifted like its EPSG code, and a datum name PROJ does not know leaves the text unshifted. On
-  the whole PROJ database (1 110 geographic and sampled projected CRSs written as WKT1_ESRI,
-  one point each) 716 differed from pyproj before and 60 do now, and none got worse. 27 of those
-  60 are differences the CRS has by code too (GDA2020, Minna, Saba, RD/83, ...); 31 are CRSs
-  with a prime meridian other than Greenwich, and two are Tokyo 1892 and Rassadiran. A
-  definition with a prime meridian other than Greenwich (Ferro, Paris, Rome, Jakarta, Oslo,
-  Athens, Lisbon, Bern, Bogota: `MGI (Ferro)`, `NTF (Paris)`, `Monte Mario (Rome)`, ...) is not
-  looked up by its datum name, because the Helmert operations are written for Greenwich
-  longitudes and the lookup made MGI (Ferro) worse (81 m to 306 m): it keeps the result it had,
-  which is the unshifted one, 33 to 496 m off pyproj (178 km for ATF (Paris)). They are
-  documented deviations, not pursued.
-  GDA94, GDA2020 and CR-SIRGAS names are left out on purpose:
-  PROJ runs a null operation first there and the Helmert table does not (1.7 m), which would
-  move a `.prj` that agrees with pyproj today. ESRI names several
+  Failing that it finds it by the name of its **datum** in `crs_datum_names.rs` (1 465 names:
+  the EPSG names and the EPSG and ESRI aliases of those 606 datums, `D_OSGB_1936`,
+  `D_North_American_1927`, `European_Datum_1950`, `D_GDA_1994`, ...). That is what PROJ does with
+  WKT1 text, whatever the name of the GEOGCS: a Shapefile `.prj` (`GCS_...` / `D_...`, no
+  authority) is shifted like its EPSG code (GDA94, GDA2020 and CR-SIRGAS included now that their
+  null operation is in the table), and a datum name PROJ does not know leaves the text unshifted.
+  The datum name is keyed by the longitude of its **prime meridian** (generated from the PROJ
+  database with the meridian of each geographic CRS), so `D_MGI` on the Ferro meridian is MGI
+  (Ferro) (4805) and not MGI (4312), and NTF on the Paris meridian is NTF (Paris) (4807). A text
+  on another meridian answers through that CRS like its EPSG code: Lisbon (Lisbon) 4803, CH1903
+  (Bern) 4801, S-JTSK (Ferro) 4818, Batavia (Jakarta) 4813, Segara (Jakarta) 4820, Oslo,
+  Tananarive, Carthage (Paris), and the projected CRSs on them (NTF Lambert zones, Austria GK,
+  Portuguese grids, NGO 1948, the Jakarta NEIEZ grids, LV03C) agree with pyproj. Two geographic
+  texts are refused (`unsupported WKT CRS: the datum ... has a prime meridian at ... degrees and no
+  identifier, and PROJ shifts it to WGS 84; GeoFrame's answer for that CRS differs from PROJ's ...`):
+  MGI (Ferro), whose answer by code is 305 m off pyproj (PROJ counts the Ferro meridian as
+  17.6628 W), and Monte Mario (Rome), which PROJ shifts as the Greenwich datum from text but not by
+  code (72 m). Which geographic CRSs those are is generated, not listed: a flag of the table, false
+  where the by-code sweep or the text sweep of that geographic CRS differs from pyproj by more than
+  5 cm (`CRS_SWEEP_OUT`, `CRS_ESRI_SWEEP_OUT` of `datum_name_table`); a projected CRS on them is
+  answered either way. A text whose datum name is known only on another meridian (`D_S_JTSK` is
+  Greenwich; S-JTSK (Ferro) East North, EPSG:5221) is refused as well when PROJ shifts that datum.
+  A datum name PROJ does not know, or a datum it does not shift (BD50 Brussels, RT38 Stockholm,
+  Voirol 1879, the Gusterberg and St. Stephen Ferro systems), keeps its answer. Over 1 337
+  geographic and sampled projected CRSs written as WKT1_ESRI (one point each) the differences from
+  pyproj were 65 after C1 and are 12 (225 refused on origin/main, 2 now), and over the 5 330
+  projected EPSG CRSs (area-of-use centre, one point each) 115 on origin/main and 30 (1 007 refused,
+  36 now, 35 of them the projection names listed below); no text that was correct on origin/main is
+  wrong or refused now. The 30 left are the ones the CRS has by code too (see the sweep above)
+  apart from the two Ferro grids of Gusterberg and St. Stephen (9 and 4 m: the Cassini-Soldner
+  series of `proj4rs` 1.4 degrees from the central meridian). ATF (Paris) as geographic text, in
+  grads, is 178 km off (its unit, not its datum) and Tokyo 1892 and Rassadiran differ for their own
+  PROJ-specific operations: documented deviations, not pursued.
+  ESRI names several
   projections differently from EPSG, and these are read as the EPSG method PROJ maps them to:
   `Double_Stereographic` (Oblique Stereographic, RD New), `Gauss_Kruger` (Transverse Mercator),
   `Albers` (Albers Equal Area), `Cassini`, `Stereographic_North_Pole` / `Stereographic_South_Pole`

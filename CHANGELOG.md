@@ -8,6 +8,43 @@ change before 1.0.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-12
+
+Like 0.1.1, it is distributed through the `v0.1.2` git tag and GitHub release, not through Hex.
+
+CRS handling now follows PROJ more closely. Results change in two places, each to match
+pyproj 3.8 / PROJ 9.8: the datum operation chosen for some EPSG codes, and ESRI WKT1 `.prj`
+files that were refused or answered without the right datum shift.
+
+### Changed
+
+- The datum operation to WGS 84 is chosen as PROJ chooses it: a null operation listed first
+  wins (GDA94 and GDA2020 no longer get a 1.7 m Helmert step), operations whose area is offshore
+  come before onshore ones, a datum with one operation applies it everywhere, and `helmert exact`
+  operations are applied exactly (Saba, Sint Eustatius, Bonaire). By EPSG code, CRSs more than
+  5 cm from pyproj fell from 294 to 95 of 5 934 (GDA94 / GDA2020 1.7 m, RD/83 and PD/83 182 m,
+  Saba 9 m now agree). Operations PROJ orders by a projected CRS's own area of use are not
+  modelled yet (for example Minna / UTM 12 m, ED50 / UTM up to 1.6 m)
+  ([#126](https://github.com/CountlinkX-Solutions/geoframe/pull/126)).
+- An ESRI WKT1 `.prj` on a non-Greenwich prime meridian resolves through its EPSG geographic CRS,
+  identified by the datum name and the prime meridian, and reprojects like pyproj: NTF (Paris) /
+  Lambert zone II, Lisbon, CH1903 (Bern), S-JTSK (Ferro), Batavia and Gunung Segara (Jakarta),
+  MGI (Ferro) Austria grids. Text that GeoFrame cannot reproject correctly is refused with a clear
+  error instead of answered tens to hundreds of metres off: MGI (Ferro) and Monte Mario (Rome)
+  geographic text, and EPSG:5221 written as ESRI text
+  ([#126](https://github.com/CountlinkX-Solutions/geoframe/pull/126)).
+
+### Fixed
+
+- ESRI WKT1 projection names that were refused with `unsupported WKT definition` are read, onto
+  methods GeoFrame already had: `Gauss_Kruger`, `Albers`, `Cassini`, `Double_Stereographic`
+  (RD New, EPSG:28992), polar `Stereographic` variants, Hotine and Rectified Skew Orthomorphic
+  variants, Mercator variant B, Krovak with `X_Scale` / `Y_Scale` / `XY_Plane_Rotation`, LCC 2SP
+  Michigan, `Equal_Earth`, Lambert azimuthal equal area and a few more. Of 5 330 projected EPSG
+  CRSs written as WKT1_ESRI, 36 are still refused (was 1 007), and 30 are more than 5 cm from
+  pyproj (was 115) ([#125](https://github.com/CountlinkX-Solutions/geoframe/pull/125),
+  [#126](https://github.com/CountlinkX-Solutions/geoframe/pull/126)).
+
 ## [0.1.1] - 2026-11-12
 
 Like 0.1.0, it is distributed through the `v0.1.1` git tag and GitHub release, not through Hex.
@@ -139,6 +176,7 @@ through Hex. The NIF is compiled on your machine, so you need a stable Rust tool
   `GeoDataFrame.set_crs(frame, "EPSG:2223")`, the same projection in international feet (about
   2 ppm off, fine for maps).
 
-[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.1.2
 [0.1.1]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.1.1
 [0.1.0]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.1.0
