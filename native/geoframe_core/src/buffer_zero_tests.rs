@@ -43,6 +43,35 @@ const BUFFER_ZERO: &[(&str, &str)] = &[
      "POLYGON ((0 4, 6 6, 2 2, 0 4))"),
 ];
 
+const SIMPLIFY: &[(&str, f64, &str)] = &[
+    // s_bowtie_ring
+    ("POLYGON ((0 0, 10 0, 0 10, 10 10, 0 0))", 0.0,
+     "POLYGON ((0 10, 10 10, 5 5, 0 10))"),
+    // s_bowtie_ring
+    ("POLYGON ((0 0, 10 0, 0 10, 10 10, 0 0))", 0.05,
+     "POLYGON ((0 10, 10 10, 5 5, 0 10))"),
+    // s_bowtie_ring
+    ("POLYGON ((0 0, 10 0, 0 10, 10 10, 0 0))", 1.0,
+     "POLYGON ((0 10, 10 10, 5 5, 0 10))"),
+    // s_cross
+    ("POLYGON ((0 0, 10 0, 10 10, 5 -3, 0 10, 0 0))", 0.0,
+     "MULTIPOLYGON (((6.153846153846154 0, 10 10, 10 0, 6.153846153846154 0)), ((0 0, 0 10, 3.8461538461538463 0, 0 0)))"),
+    // s_cross
+    ("POLYGON ((0 0, 10 0, 10 10, 5 -3, 0 10, 0 0))", 0.05,
+     "MULTIPOLYGON (((6.153846153846154 0, 10 10, 10 0, 6.153846153846154 0)), ((0 0, 0 10, 3.8461538461538463 0, 0 0)))"),
+    // s_cross
+    ("POLYGON ((0 0, 10 0, 10 10, 5 -3, 0 10, 0 0))", 1.0,
+     "MULTIPOLYGON (((6.153846153846154 0, 10 10, 10 0, 6.153846153846154 0)), ((0 0, 0 10, 3.8461538461538463 0, 0 0)))"),
+    // s_touching
+    ("MULTIPOLYGON (((0 0, 4 0, 4 4, 0 4, 0 0)), ((4 0, 8 0, 8 4, 4 4, 4 0)))", 0.0,
+     "POLYGON ((0 0, 0 4, 4 4, 8 4, 8 0, 4 0, 0 0))"),
+    // s_touching
+    ("MULTIPOLYGON (((0 0, 4 0, 4 4, 0 4, 0 0)), ((4 0, 8 0, 8 4, 4 4, 4 0)))", 0.05,
+     "POLYGON ((0 0, 0 4, 4 4, 8 4, 8 0, 4 0, 0 0))"),
+    // s_touching
+    ("MULTIPOLYGON (((0 0, 4 0, 4 4, 0 4, 0 0)), ((4 0, 8 0, 8 4, 4 4, 4 0)))", 1.0,
+     "POLYGON ((0 0, 0 4, 4 4, 8 4, 8 0, 4 0, 0 0))"),
+];
 
 fn normalized(wkt: &str) -> String {
     let column = GeoColumn::from_wkt(&[Some(wkt)], None).expect("wkt");
@@ -62,6 +91,36 @@ fn buffer_zero_matches_geos() {
             "buffer(0) of {input}"
         );
     }
+}
+
+#[test]
+fn simplify_repairs_invalid_results_as_geos() {
+    for (input, tolerance, expected) in SIMPLIFY {
+        let column = GeoColumn::from_wkt(&[Some(*input)], None).expect("wkt");
+        let out = column.simplify(*tolerance, false).unwrap();
+        let got = out.normalize().unwrap().to_wkt().unwrap()[0]
+            .clone()
+            .unwrap();
+        assert_eq!(
+            got,
+            normalized(expected),
+            "simplify({tolerance}) of {input}"
+        );
+    }
+}
+
+#[test]
+fn simplify_leaves_a_valid_result_alone() {
+    let input = "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))";
+    let column = GeoColumn::from_wkt(&[Some(input)], None).unwrap();
+    let out = column
+        .simplify(1.0, false)
+        .unwrap()
+        .normalize()
+        .unwrap()
+        .to_wkt()
+        .unwrap();
+    assert_eq!(out[0].clone().unwrap(), normalized(input));
 }
 
 /// Fuzz harness, run by hand against Shapely (see `test/reference/fuzz_simplify_repair.py`):

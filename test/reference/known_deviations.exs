@@ -764,13 +764,10 @@ zm_deviations ++
       doc: "docs/parity.md#reference-testing",
       op: "simplify",
       cases: [
-        "simplify(0.0, preserve_topology=false, collapse):s_bowtie_ring",
         "simplify(0.0, preserve_topology=false, collapse):s_cross",
         "simplify(0.0, preserve_topology=false, collapse):s_touching",
-        "simplify(0.05, preserve_topology=false, collapse):s_bowtie_ring",
         "simplify(0.05, preserve_topology=false, collapse):s_cross",
         "simplify(0.05, preserve_topology=false, collapse):s_touching",
-        "simplify(1.0, preserve_topology=false, collapse):s_bowtie_ring",
         "simplify(1.0, preserve_topology=false, collapse):s_cross",
         "simplify(1.0, preserve_topology=false, collapse):s_touching"
       ]
