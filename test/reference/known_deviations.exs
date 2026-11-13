@@ -514,10 +514,10 @@ zm_deviations ++
     },
     %{
       reason:
-        "is_valid_reason, a hole ring that disconnects the interior by touching the shell at two or more points: geo's validation (and so is_valid) accepts it, GEOS reports Interior is disconnected.",
+        "is_valid_reason, a disconnected interior with several touches (a hole touching the shell at four vertices): is_valid and the text Interior is disconnected agree, the reported coordinate is the touch that closes the cycle in ring order, GEOS' is the first one its traversal meets.",
       doc: "docs/parity.md#reference-testing",
       op: "is_valid_reason",
-      cases: ["is_valid_reason:vr_disc2", "is_valid_reason:vr_shell_hole_touch_two"]
+      cases: ["is_valid_reason:vr_disc2"]
     },
     %{
       reason:

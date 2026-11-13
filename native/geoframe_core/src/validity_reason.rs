@@ -28,6 +28,30 @@ pub(crate) fn geos_reason(geom: &Geometry<f64>) -> Option<String> {
     }
 }
 
+/// GEOS' `Interior is disconnected[x y]` for the first polygon of `geom` whose holes split
+/// its interior; `None` when every interior is connected. Only polygons with holes are
+/// analysed, one by one (touches between polygons never matter), so a column of hole-free
+/// polygons costs nothing. Other errors are left to `geo`'s validation.
+pub(crate) fn disconnected_reason(geom: &Geometry<f64>) -> Option<String> {
+    let single = |p: &Polygon<f64>| {
+        if p.interiors().is_empty() {
+            return None;
+        }
+        let one = std::slice::from_ref(p);
+        let mut touches = Vec::new();
+        match area_intersections(one, &mut touches) {
+            None => disconnected_interior(one, &touches),
+            Some(_) => None,
+        }
+    };
+    match geom {
+        Geometry::Polygon(p) => single(p),
+        Geometry::MultiPolygon(mp) => mp.0.iter().find_map(single),
+        Geometry::GeometryCollection(gc) => gc.0.iter().find_map(disconnected_reason),
+        _ => None,
+    }
+}
+
 fn number(v: f64) -> String {
     if v.is_nan() {
         "nan".to_string()
@@ -337,10 +361,22 @@ fn disconnected_interior(polygons: &[Polygon<f64>], touches: &[Touch]) -> Option
         }
         x
     }
+    // Segment pairs meeting at one vertex report the same touch several times.
+    let mut seen: Vec<(usize, usize, u64, u64)> = Vec::new();
     for t in touches {
         if polygon_of[t.rings.0] != polygon_of[t.rings.1] {
             continue;
         }
+        let key = (
+            t.rings.0.min(t.rings.1),
+            t.rings.0.max(t.rings.1),
+            t.at.x.to_bits(),
+            t.at.y.to_bits(),
+        );
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
         let (a, b) = (root(&mut parent, t.rings.0), root(&mut parent, t.rings.1));
         if a == b {
             return Some(at("Interior is disconnected", t.at));

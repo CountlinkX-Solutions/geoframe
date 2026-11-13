@@ -204,3 +204,81 @@ fn the_reason_is_geos_text_and_coordinate() {
         .collect();
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+// -- a disconnected interior is invalid, as in GEOS -------------------------------------------
+//
+// `geo` accepts a polygon whose holes touch the shell (or each other) so that the interior
+// splits in two; GEOS rejects it with `Interior is disconnected[x y]`. Expected values:
+//
+// ```python
+// import shapely
+// from shapely import wkt
+// g = wkt.loads("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 5, 5 2, 10 5, 5 8, 0 5))")
+// shapely.is_valid(g)          # False
+// shapely.is_valid_reason(g)   # 'Interior is disconnected[10 5]'
+// ```
+
+/// (WKT, GEOS `is_valid_reason`).
+const DISCONNECTED: &[(&str, &str)] = &[
+    // hole touching the shell at two vertices
+    ("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 5, 5 2, 10 5, 5 8, 0 5))", "Interior is disconnected[10 5]"),
+    // the same inside a MultiPolygon
+    ("MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0), (0 5, 5 2, 10 5, 5 8, 0 5)), ((20 20, 21 20, 21 21, 20 20)))", "Interior is disconnected[10 5]"),
+    // Z variant
+    ("POLYGON Z ((0 0 1, 10 0 1, 10 10 1, 0 10 1, 0 0 1), (0 5 2, 5 2 2, 10 5 2, 5 8 2, 0 5 2))", "Interior is disconnected[10 5]"),
+    // three holes touching in a cycle
+    ("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (3 5, 5 3, 5 5, 3 5), (5 5, 7 5, 5 7, 5 5), (5 3, 7 5, 7 3, 5 3))", "Interior is disconnected[7 5]"),
+];
+
+/// A chain shell - hole A - hole B - shell cuts the interior (GEOS `[5 5]`).
+const DISCONNECTED_CHAIN: &str =
+    "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 5, 3 3, 5 5, 3 7, 0 5), (5 5, 7 3, 10 5, 7 7, 5 5))";
+
+/// Touching rings that leave the interior connected stay valid (GEOS: `Valid Geometry`).
+const CONNECTED: &[&str] = &[
+    "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 5, 5 2, 5 8, 0 5))",
+    "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 5 2, 5 5, 2 5, 2 2), (5 5, 8 5, 8 8, 5 8, 5 5))",
+    "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((10 10, 20 10, 20 20, 10 20, 10 10)))",
+];
+
+#[test]
+fn a_disconnected_interior_is_invalid() {
+    for (wkt, _) in DISCONNECTED {
+        assert_eq!(valid(wkt), Some(false), "{wkt}");
+    }
+}
+
+#[test]
+fn is_valid_and_is_valid_reason_agree_on_a_disconnected_interior() {
+    // The text is GEOS'. The coordinate is the touch that closes the cycle in GeoFrame's
+    // order and may differ from GEOS' (docs/parity.md), so it is not compared.
+    for (wkt, expected) in DISCONNECTED {
+        let (text, _) = expected.split_once('[').unwrap();
+        assert_eq!(reason(wkt).split_once('[').unwrap().0, text, "{wkt}");
+    }
+    assert_eq!(valid(DISCONNECTED_CHAIN), Some(false));
+    assert!(reason(DISCONNECTED_CHAIN).starts_with("Interior is disconnected["));
+    for wkt in CONNECTED {
+        assert_eq!(valid(wkt), Some(true), "{wkt}");
+        assert_eq!(reason(wkt), "Valid Geometry", "{wkt}");
+    }
+}
+
+#[test]
+fn null_out_invalid_drops_a_disconnected_interior() {
+    let c = col(&[Some(DISCONNECTED[0].0), Some(CONNECTED[0])]);
+    let out = c.null_out_invalid().unwrap().to_wkt().unwrap();
+    assert_eq!(out[0], None);
+    assert!(out[1].is_some(), "{out:?}");
+}
+
+#[test]
+fn make_valid_splits_a_disconnected_interior_into_two_polygons() {
+    // Shapely: make_valid(g, method="linework") is a MultiPolygon of the two halves the hole
+    // cuts the polygon into; vertex order differs, so only the shape of the result is checked.
+    for (wkt, _) in DISCONNECTED {
+        let fixed = repaired(wkt);
+        assert!(fixed.starts_with("MULTIPOLYGON"), "{wkt}: {fixed}");
+        assert_eq!(valid(&fixed), Some(true), "{fixed}");
+    }
+}

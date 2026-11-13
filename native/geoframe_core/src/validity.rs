@@ -8,9 +8,12 @@ use geo::{
     Point, Polygon, Validation,
 };
 
-/// `geo`'s validity, plus: no polygon ring is collinear (zero area).
+/// `geo`'s validity, plus: no polygon ring is collinear (zero area) and no polygon's holes
+/// disconnect its interior (GEOS' `Interior is disconnected`, which `geo` accepts).
 pub(crate) fn is_valid(geom: &Geometry<f64>) -> bool {
-    geom.is_valid() && collapsed_reason(geom).is_none()
+    geom.is_valid()
+        && collapsed_reason(geom).is_none()
+        && crate::validity_reason::disconnected_reason(geom).is_none()
 }
 
 /// GEOS-style reason for the first collapsed ring of `geom`, if any.
