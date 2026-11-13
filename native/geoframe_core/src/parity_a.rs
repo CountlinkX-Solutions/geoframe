@@ -14,7 +14,7 @@ use geo::{
 };
 use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 
-use crate::zm_bridge::Keep;
+use crate::zm_bridge::{Keep, Restore};
 use crate::zm_overlay::z_only;
 use crate::GeoColumn;
 
@@ -41,6 +41,16 @@ pub(crate) fn parts(geom: &Geometry<f64>) -> Vec<Geometry<f64>> {
         Geometry::GeometryCollection(c) => c.0,
         single => vec![single],
     }
+}
+
+/// Part `n` (negative from the end) of `parts`; `None` when out of range.
+fn nth_part(parts: Vec<Geometry<f64>>, n: i64) -> Option<Geometry<f64>> {
+    let index = if n < 0 {
+        parts.len().checked_sub(n.unsigned_abs() as usize)?
+    } else {
+        n as usize
+    };
+    parts.into_iter().nth(index)
 }
 
 /// Vertices for [`GeoColumn::mean_coordinate`]: every coordinate except the closing vertex
@@ -153,15 +163,31 @@ impl GeoColumn {
     /// The `n`th part of each geometry; negative `n` counts from the end. A single geometry
     /// is its own part 0. Out-of-range indices give null.
     pub fn get_geometry(&self, n: i64) -> Result<Self, String> {
-        self.map_geometry_zm(Keep::Both, |g| {
-            let parts = parts(g);
-            let index = if n < 0 {
-                parts.len().checked_sub(n.unsigned_abs() as usize)?
-            } else {
-                n as usize
-            };
-            parts.into_iter().nth(index)
-        })
+        self.map_geometry_zm(Keep::Both, |g| nth_part(parts(g), n))
+    }
+
+    /// [`get_geometry`](Self::get_geometry) with one index per row (`None` gives a null row).
+    pub fn get_geometry_rows(&self, indices: &[Option<i64>]) -> Result<Self, String> {
+        if indices.len() != self.len() {
+            return Err(format!(
+                "index has {} entries but the series has {} rows",
+                indices.len(),
+                self.len()
+            ));
+        }
+        let rows: Vec<Option<Geometry<f64>>> = self
+            .geo_rows()
+            .iter()
+            .zip(indices)
+            .map(|(row, n)| {
+                let (g, n) = (row.as_ref()?, (*n)?);
+                catch_unwind(AssertUnwindSafe(|| nth_part(parts(g), n)))
+                    .ok()
+                    .flatten()
+            })
+            .collect();
+        let source: Vec<usize> = (0..rows.len()).collect();
+        self.rebuild_zm(&rows, &source, &Restore::keep(Keep::Both))
     }
 
     /// The holes of each polygon as a `MultiLineString` (empty for a polygon without holes);
