@@ -561,6 +561,11 @@ fn get_geometry(column: Handle, n: i64) -> Result<Handle, String> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn get_geometry_rows(column: Handle, indices: Vec<Option<i64>>) -> Result<Handle, String> {
+    column.0.get_geometry_rows(&indices).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn interiors(column: Handle) -> Result<Handle, String> {
     column.0.interiors().map(wrap)
 }
