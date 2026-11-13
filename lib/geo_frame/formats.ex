@@ -280,7 +280,7 @@ defmodule GeoFrame.Formats do
   # -- streaming ------------------------------------------------------------------------
 
   @default_batch_size 65_536
-  @streamable [:parquet, :flatgeobuf]
+  @streamable [:parquet, :flatgeobuf, :feather]
 
   def stream_file(path, opts) do
     {driver, opts} = driver_for(path, opts)
@@ -327,6 +327,13 @@ defmodule GeoFrame.Formats do
     fn -> Native.open_flatgeobuf_reader(path, bbox, batch_size) end
   end
 
+  defp stream_opener(:feather, path, opts, batch_size) do
+    validate_options!(opts, [:columns, :geometry])
+    columns = opts |> Keyword.get(:columns) |> normalize_columns()
+    geometry = opts |> Keyword.get(:geometry) |> optional_string()
+    fn -> Native.open_feather_reader(path, columns, geometry, batch_size) end
+  end
+
   defp unwrap_open!({:ok, reader}), do: reader
   defp unwrap_open!({:error, message}), do: raise(ArgumentError, message)
 
@@ -337,7 +344,8 @@ defmodule GeoFrame.Formats do
     end
   end
 
-  defp unwrap_batch!({ref, name, ipc, secondary}, :parquet, _opts) do
+  defp unwrap_batch!({ref, name, ipc, secondary}, driver, _opts)
+       when driver in [:parquet, :feather] do
     case assemble_named(ref, name, ipc) do
       {:ok, gdf} -> put_secondary(gdf, secondary)
       {:error, message} -> raise ArgumentError, message

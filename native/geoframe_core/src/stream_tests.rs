@@ -230,3 +230,109 @@ fn readers_are_counted_until_dropped() {
     let _ = BatchReader::open_geoparquet(&path(&dir, "nope.parquet"), None, None, 2);
     assert_eq!(open_batch_readers(), before);
 }
+
+// -- Feather / Arrow IPC ------------------------------------------------------------------
+
+use crate::{read_feather, write_feather, FeatherCompression, GeometryEncoding};
+
+fn feather_file(dir: &TempDir, rows: usize, record_batch: Option<usize>) -> String {
+    let (geometry, attributes) = grid(rows, Some("EPSG:3857"));
+    let file = path(dir, "s.feather");
+    write_feather(
+        &file,
+        &geometry,
+        "geometry",
+        &attributes,
+        GeometryEncoding::Wkb,
+        FeatherCompression::Uncompressed,
+    )
+    .unwrap();
+    if let Some(size) = record_batch {
+        rechunk(&file, size);
+    }
+    file
+}
+
+/// Rewrites a Feather file with record batches of `size` rows (the writer emits one).
+fn rechunk(file: &str, size: usize) {
+    use arrow_ipc::reader::FileReader;
+    use arrow_ipc::writer::FileWriter;
+    let reader = FileReader::try_new(std::fs::File::open(file).unwrap(), None).unwrap();
+    let schema = reader.schema();
+    let batches: Vec<_> = reader.map(|b| b.unwrap()).collect();
+    let mut writer = FileWriter::try_new(std::fs::File::create(file).unwrap(), &schema).unwrap();
+    for batch in &batches {
+        let mut offset = 0;
+        while offset < batch.num_rows() {
+            let length = size.min(batch.num_rows() - offset);
+            writer.write(&batch.slice(offset, length)).unwrap();
+            offset += length;
+        }
+    }
+    writer.finish().unwrap();
+}
+
+#[test]
+fn feather_batches_concatenate_to_the_whole_read() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = feather_file(&dir, 10, None);
+    let whole = read_feather(&file, None, None).unwrap();
+
+    let batches = drain(BatchReader::open_feather(&file, None, None, 4).unwrap());
+    assert_eq!(sizes(&batches), vec![4, 4, 2]);
+    assert_eq!(all_wkt(&batches), wkt(&whole.geometry));
+    assert_eq!(all_ids(&batches), (0..10).collect::<Vec<i64>>());
+    for batch in &batches {
+        assert_eq!(batch.geometry.crs().as_deref(), Some("EPSG:3857"));
+        assert_eq!(batch.geometry_column.as_deref(), Some("geometry"));
+    }
+}
+
+#[test]
+fn feather_batch_size_ignores_the_record_batch_size() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = feather_file(&dir, 10, Some(3));
+    // Larger than a record batch: batches are stitched together.
+    let batches = drain(BatchReader::open_feather(&file, None, None, 4).unwrap());
+    assert_eq!(sizes(&batches), vec![4, 4, 2]);
+    assert_eq!(all_ids(&batches), (0..10).collect::<Vec<i64>>());
+    // Smaller than a record batch: batches are re-sliced.
+    let batches = drain(BatchReader::open_feather(&file, None, None, 2).unwrap());
+    assert_eq!(sizes(&batches), vec![2, 2, 2, 2, 2]);
+    let batches = drain(BatchReader::open_feather(&file, None, None, 100).unwrap());
+    assert_eq!(sizes(&batches), vec![10]);
+}
+
+#[test]
+fn feather_columns_projection_and_errors() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = feather_file(&dir, 5, Some(2));
+    let columns = vec!["name".to_string()];
+    let batches = drain(BatchReader::open_feather(&file, Some(&columns), None, 2).unwrap());
+    for batch in &batches {
+        assert_eq!(crate::test_support::names(&batch.attributes_ipc), ["name"]);
+    }
+    assert_eq!(all_wkt(&batches).len(), 5);
+
+    let missing = vec!["nope".to_string()];
+    assert!(BatchReader::open_feather(&file, Some(&missing), None, 2).is_err());
+    assert!(BatchReader::open_feather(&file, None, Some("nope"), 2).is_err());
+    assert!(BatchReader::open_feather(&path(&dir, "nope.feather"), None, None, 2).is_err());
+    assert!(BatchReader::open_feather(&file, None, None, 0).is_err());
+}
+
+#[test]
+fn feather_empty_file_yields_no_batches_and_is_counted() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = feather_file(&dir, 0, None);
+    let before = open_batch_readers();
+    let mut reader = BatchReader::open_feather(&file, None, None, 4).unwrap();
+    assert_eq!(open_batch_readers(), before + 1);
+    assert!(reader.next_batch().unwrap().is_none());
+    drop(reader);
+    assert_eq!(open_batch_readers(), before);
+}

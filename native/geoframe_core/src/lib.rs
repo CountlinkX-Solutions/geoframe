@@ -21,6 +21,7 @@ mod datum_helmert;
 mod dbf;
 mod deck;
 mod ewkb;
+mod feather_stream;
 mod flatgeobuf_io;
 mod flatgeobuf_nulls;
 mod geojson_io;

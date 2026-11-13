@@ -1418,6 +1418,19 @@ fn open_flatgeobuf_reader(
     BatchReader::open_flatgeobuf(&path, bbox, batch_size).map(new_reader)
 }
 
+/// Opens a Feather v2 / Arrow IPC file for batched reading (`columns` and `geometry` as
+/// `read_feather_file`).
+#[rustler::nif(schedule = "DirtyIo")]
+fn open_feather_reader(
+    path: String,
+    columns: Option<Vec<String>>,
+    geometry: Option<String>,
+    batch_size: usize,
+) -> Result<Reader, String> {
+    BatchReader::open_feather(&path, columns.as_deref(), geometry.as_deref(), batch_size)
+        .map(new_reader)
+}
+
 type NextBatch<'a> = Option<(Handle, Option<String>, Binary<'a>, Secondary)>;
 
 /// The next batch as `{geometry, geometry_column | nil, attributes_ipc, secondary}`, or `nil`
