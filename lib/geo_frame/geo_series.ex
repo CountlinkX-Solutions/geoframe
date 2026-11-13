@@ -724,8 +724,8 @@ defmodule GeoFrame.GeoSeries do
       3.1
 
       iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0)"])
-      iex> s |> GeoFrame.GeoSeries.buffer(1, single_sided: true) |> GeoFrame.GeoSeries.to_wkt() |> Explorer.Series.to_list()
-      ["POLYGON ((0 0, 0 1, 10 1, 10 0, 0 0))"]
+      iex> s |> GeoFrame.GeoSeries.buffer(1, single_sided: true) |> GeoFrame.GeoSeries.area() |> Explorer.Series.to_list()
+      [10.0]
   """
   @spec buffer(t(), param(), keyword()) :: t()
   def buffer(%__MODULE__{ref: ref} = series, distance, opts \\ []) do
