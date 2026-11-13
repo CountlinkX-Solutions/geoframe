@@ -901,3 +901,29 @@ fn small_integer_columns_widen_instead_of_nulling_out_of_range_values() {
     let values: Vec<Option<i64>> = a.as_primitive::<Int64Type>().iter().collect();
     assert_eq!(values, [Some(1), Some(100_000)]);
 }
+
+#[test]
+fn supplementary_epsg_codes_store_their_wkt1_definition() {
+    let dir = TempDir::new().unwrap();
+    let file = path(&dir, "a.gpkg");
+    let warnings = write_gpkg(
+        &file,
+        &sample_points(Some("EPSG:3144")),
+        &id_ipc(3),
+        "pts",
+        WRITE,
+    )
+    .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let conn = Connection::open(&file).unwrap();
+    let definition: String = conn
+        .query_row(
+            "SELECT definition FROM gpkg_spatial_ref_sys WHERE srs_id = 3144",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(definition.starts_with("PROJCS["), "{definition}");
+    let read = read_gpkg(&file, None).unwrap();
+    assert_eq!(read.vector.geometry.crs().as_deref(), Some("EPSG:3144"));
+}

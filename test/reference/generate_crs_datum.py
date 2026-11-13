@@ -18,6 +18,9 @@ Writes into test/reference/fixtures/crs_datum/:
                       by name and shifts it to WGS 84 like the code would.
 * native/geoframe_core/src/crs_extra.bin (`extra_table`): EPSG definitions missing from the
                       `crs-definitions` table, as compressed PROJJSON.
+* native/geoframe_core/src/crs_extra_wkt1.bin (`extra_wkt1`): OGC WKT1 (GDAL flavour, with
+                      AUTHORITY nodes) of the codes of crs_extra.bin that PROJ can write as WKT1, for
+                      Shapefile `.prj` and GeoPackage definitions.
 * grids/              tiny synthetic NTv2 grids and pyproj results using the same files.
 """
 import json
@@ -786,6 +789,27 @@ def generate_extra_table():
     return len(defs), len(raw), len(packed)
 
 
+def generate_extra_wkt1():
+    """Write native/geoframe_core/src/crs_extra_wkt1.bin: `code<TAB>WKT1_GDAL` lines, deflate-
+    compressed, for the codes of crs_extra.bin. Codes PROJ cannot write as WKT1 (Krovak Modified,
+    3D, compound...) are left out."""
+    import zlib
+    core = os.path.join(HERE, "..", "..", "native", "geoframe_core", "src")
+    codes = [int(line.split("\t")[0]) for line in zlib.decompress(open(os.path.join(core, "crs_extra.bin"), "rb").read()).decode().splitlines()]
+    out = {}
+    for c in sorted(codes):
+        try:
+            wkt = CRS.from_epsg(c).to_wkt("WKT1_GDAL")
+        except Exception:
+            continue
+        if wkt:
+            out[c] = wkt
+    raw = "".join("%d\t%s\n" % (c, w) for c, w in out.items()).encode("utf-8")
+    packed = zlib.compress(raw, 9)
+    open(os.path.join(core, "crs_extra_wkt1.bin"), "wb").write(packed)
+    return len(codes), len(out), len(raw), len(packed)
+
+
 # -- synthetic NTv2 / GeoTIFF grids ----------------------------------------------------------------
 
 GRID_WEST, GRID_EAST, GRID_SOUTH, GRID_NORTH, GRID_STEP = 135.0, 141.0, 33.0, 37.0, 0.25
@@ -946,6 +970,8 @@ if __name__ == "__main__":
         generate_convert()
     if "extra_table" in which:
         print("extra table: CRSs, bytes, compressed", generate_extra_table())
+    if "extra_wkt1" in which:
+        print("extra wkt1: codes, with wkt1, bytes, compressed", generate_extra_wkt1())
     if "name_table" in which:
         print("name table rows", generate_name_table())
     if "datum_name_table" in which:

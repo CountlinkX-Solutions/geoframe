@@ -44,6 +44,12 @@ pub(crate) fn epsg_definition(code: i64) -> Option<&'static str> {
     crs_definitions::from_code(code).map(|def| def.wkt)
 }
 
+/// The OGC WKT1 definition of an EPSG code from the bundled table or, failing that, from the
+/// supplementary table (`None` for the few codes PROJ cannot write as WKT1).
+pub(crate) fn epsg_wkt1(code: i64) -> Option<&'static str> {
+    epsg_definition(code).or_else(|| crate::crs_extra::wkt1(u32::try_from(code).ok()?))
+}
+
 /// The authority and numeric code a CRS string names: `EPSG:4326`, `OGC:CRS84` (as EPSG 4326),
 /// PROJJSON with an `id`, or WKT that maps to an EPSG code. `None` for anything else.
 pub(crate) fn crs_to_authority(crs: &str) -> Option<(String, i64)> {
@@ -90,7 +96,7 @@ pub(crate) fn crs_to_prj_wkt(crs: &str) -> Option<String> {
     if authority != "EPSG" {
         return None;
     }
-    epsg_definition(code).map(str::to_string)
+    epsg_wkt1(code).map(str::to_string)
 }
 
 /// The CRS string for a `.prj` / `srs` WKT definition; see the module documentation.

@@ -63,7 +63,9 @@ use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, Connection, OpenFlags};
 
 use crate::attributes::{ipc_from_columns, Cell, Table};
-use crate::crs_wkt::{crs_to_authority, epsg_definition, looks_like_wkt, prj_wkt_to_crs};
+use crate::crs_wkt::{
+    crs_to_authority, epsg_definition, epsg_wkt1, looks_like_wkt, prj_wkt_to_crs,
+};
 use crate::{GeoColumn, VectorRead};
 
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -513,7 +515,7 @@ fn resolve_srs(
             return Ok(id);
         }
         let definition = if organization == "EPSG" {
-            epsg_definition(code)
+            epsg_wkt1(code)
         } else {
             None
         };
