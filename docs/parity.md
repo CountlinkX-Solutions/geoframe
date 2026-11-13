@@ -16,7 +16,7 @@ Note: GeoFrame has no GeoDataFrame-level delegation of GeoSeries methods other t
 Since batch V every operation GeoFrame shares with GeoPandas is checked against the real library:
 `test/reference/generate.py` (dev-only; GeoPandas 1.2.0, Shapely 2.2.0, GEOS 3.14.1, pyproj 3.8.0) computes
 the results for a fixed corpus and commits them as JSON in `test/reference/fixtures/`;
-`test/geo_frame/reference_test.exs` compares GeoFrame with them in CI without Python (18 864 cases
+`test/geo_frame/reference_test.exs` compares GeoFrame with them in CI without Python (18 924 cases
 across 114 operations, including sjoin, sjoin_nearest, dissolve and union_all on small frames and, since batch B,
 `overlay` (all five `how`s, with and without `keep_geom_type`, on polygon, line and point frames), `clip`, `clip_by_rect`,
 `explode` and `intersection_all`; since batch E also concave hull, bounding shapes, inscribed circle, Delaunay,
@@ -213,7 +213,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
-| `buffer` | no | `buffer/3` | 🟡 | cap/join/quad_segs/mitre; no `single_sided`; no per-row distance series; planar; reference-tested area within 2 %, mitre/bevel joins on acute closed-line corners differ from GEOS |
+| `buffer` | no | `buffer/3` | 🟡 | cap/join/quad_segs/mitre; `distance` is a number or one value per row (list or `Explorer.Series`, `nil` gives a null row where Shapely raises); `single_sided: true` (own code: the band between a line and its offset on the left for a positive distance, the right for a negative one, flat ends, outside corners by join style; a point gives its buffer for a positive distance, a polygon the band around its rings, a polygon eroded completely is left out (GEOS has no stable rule for polygons: it gives that band when the side is at most 4 times the distance, otherwise the polygon itself for a positive distance and the ordinary negative buffer for a negative one, with exceptions for holed polygons; probed over squares of side 2 to 20, five holed polygons and two multipolygons); a closed line is flat at its start as in GEOS), reference-tested over 10 geometries (60 cases, 55 agree; the 5 others are a polygon with a hole, where GEOS's output follows no single rule; a band that overlaps itself, for example a U-shaped line buffered by more than half its width, can differ from GEOS); planar; reference-tested area within 2 %, mitre/bevel joins on acute closed-line corners differ from GEOS |
 | `centroid` | `centroid` yes | `centroid/1` | ✅ | |
 | `convex_hull` | `convex_hull` yes | `convex_hull/1` | ✅ | Keeps Z (vertices are copied), drops M; see [Z and M](#z-and-m) |
 | `envelope` | via `bounds`/`to_polygon` | `envelope/1` | ✅ | horizontal/vertical line gives a line; GEOS 3.14 gives a zero-area polygon |

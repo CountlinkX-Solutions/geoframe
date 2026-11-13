@@ -48,13 +48,83 @@ defmodule GeoFrame.UnaryOpsTest do
       assert abs(fine - :math.pi()) < abs(coarse - :math.pi())
     end
 
+    # gpd.GeoSeries([Point(0, 0), Point(5, 5), None, square10, LineString([(0, 0), (10, 0)])])
+    #   .buffer([1, 2, 3, -1, 0.5]).area
+    #   -> [3.136548, 12.546194, nil, 64.0, 10.784137]
+    test "a list or a series gives one distance per row; nil gives a null row" do
+      src =
+        s([
+          "POINT (0 0)",
+          "POINT (5 5)",
+          nil,
+          "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))",
+          "LINESTRING (0 0, 10 0)"
+        ])
+
+      want = [3.136548, 12.546194, nil, 64.0, 10.784137]
+
+      for distance <- [[1, 2, 3, -1, 0.5], Explorer.Series.from_list([1, 2, 3, -1, 0.5])] do
+        got = src |> GeoSeries.buffer(distance) |> GeoSeries.area() |> list()
+
+        Enum.zip(got, want)
+        |> Enum.each(fn
+          {nil, nil} -> :ok
+          {g, w} -> assert_in_delta g, w, w * 0.01
+        end)
+      end
+
+      out = GeoSeries.buffer(s(["POINT (0 0)", "POINT (1 1)"]), [1.0, nil])
+      assert [area, nil] = out |> GeoSeries.area() |> list()
+      assert area > 3.0
+    end
+
+    test "a distance list of the wrong length or with other values raises" do
+      p = s(["POINT (0 0)", "POINT (1 1)"])
+      assert_raise ArgumentError, ~r/length/, fn -> GeoSeries.buffer(p, [1.0]) end
+      assert_raise ArgumentError, ~r/numbers or nil/, fn -> GeoSeries.buffer(p, [1.0, "a"]) end
+    end
+
+    # shapely.buffer(LineString([(0, 0), (10, 0), (10, 10)]), d, single_sided=True, quad_segs=8,
+    #   join_style=...).area -> d=1: 19.0; d=-1: round 20.780361, mitre 21.0, bevel 20.5
+    test "single_sided buffers the left (positive) or right (negative) of a line" do
+      line = s(["LINESTRING (0 0, 10 0, 10 10)"])
+
+      area = fn d, opts ->
+        line
+        |> GeoSeries.buffer(d, [single_sided: true] ++ opts)
+        |> GeoSeries.area()
+        |> list()
+        |> hd()
+      end
+
+      assert_in_delta area.(1, quad_segs: 8), 19.0, 1.0e-9
+      assert_in_delta area.(-1, quad_segs: 8), 20.780361, 0.42
+      assert_in_delta area.(-1, join_style: :mitre), 21.0, 1.0e-9
+      assert_in_delta area.(-1, join_style: :bevel), 20.5, 1.0e-9
+
+      band = GeoSeries.buffer(s(["LINESTRING (0 0, 10 0)"]), 1, single_sided: true)
+      assert equal?(band, ["POLYGON ((0 0, 0 1, 10 1, 10 0, 0 0))"]) == [true]
+    end
+
+    test "single_sided with per-row distances, a polygon and a point" do
+      src = s(["LINESTRING (0 0, 10 0)", "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))", "POINT (1 1)"])
+      out = GeoSeries.buffer(src, [-1, 1, -1], single_sided: true, join_style: :mitre)
+
+      assert equal?(out, [
+               "POLYGON ((0 0, 10 0, 10 -1, 0 -1, 0 0))",
+               "POLYGON ((-1 -1, -1 5, 5 5, 5 -1, -1 -1), (0 0, 4 0, 4 4, 0 4, 0 0))",
+               "POLYGON EMPTY"
+             ]) == [true, true, true]
+    end
+
     test "invalid options raise ArgumentError" do
       p = s(["POINT (0 0)"])
       assert_raise ArgumentError, fn -> GeoSeries.buffer(p, 1, cap_style: :pointy) end
       assert_raise ArgumentError, fn -> GeoSeries.buffer(p, 1, join_style: :pointy) end
       assert_raise ArgumentError, fn -> GeoSeries.buffer(p, 1, quad_segs: 0) end
       assert_raise ArgumentError, fn -> GeoSeries.buffer(p, 1, mitre_limit: 0.5) end
-      assert_raise FunctionClauseError, fn -> GeoSeries.buffer(p, "1") end
+      assert_raise ArgumentError, fn -> GeoSeries.buffer(p, "1") end
+      assert_raise ArgumentError, fn -> GeoSeries.buffer(p, 1, single_sided: :left) end
       assert_raise ArgumentError, fn -> GeoSeries.buffer(p, 1, bogus: 1) end
     end
   end

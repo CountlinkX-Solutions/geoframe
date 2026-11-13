@@ -81,7 +81,7 @@ defmodule GeoFrame.Native do
   def explode(_ref), do: err()
   def clip_by_rect(_ref, _xmin, _ymin, _xmax, _ymax), do: err()
   def unary(_ref, _name), do: err()
-  def buffer(_ref, _distance, _cap, _join, _quad_segs, _mitre_limit), do: err()
+  def buffer(_ref, _distances, _cap, _join, _quad_segs, _mitre_limit, _single_sided), do: err()
   def simplify(_ref, _tolerance, _preserve_topology), do: err()
   def translate(_ref, _xoff, _yoff, _zoff), do: err()
   def scale(_ref, _xfact, _yfact, _zfact, _origin, _ox, _oy), do: err()

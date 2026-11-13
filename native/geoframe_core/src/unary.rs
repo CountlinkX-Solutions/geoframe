@@ -19,6 +19,8 @@ use geo::{
 use geo_traits::{GeometryTrait, GeometryType};
 use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 
+use crate::buffer_single_sided::{single_sided_geometry, Sided};
+use crate::predicates::guarded;
 use crate::zm_bridge::{Affine3, Keep};
 use crate::zm_overlay::z_only;
 use crate::GeoColumn;
@@ -60,6 +62,8 @@ pub struct BufferOptions {
     pub quad_segs: u32,
     /// Mitre ratio limit (Shapely `mitre_limit`): longest mitre as a multiple of the distance.
     pub mitre_limit: f64,
+    /// Buffer only one side of a line (Shapely `single_sided`); see [`crate::buffer_single_sided`].
+    pub single_sided: bool,
 }
 
 impl Default for BufferOptions {
@@ -69,12 +73,13 @@ impl Default for BufferOptions {
             join: "round".to_string(),
             quad_segs: 16,
             mitre_limit: 5.0,
+            single_sided: false,
         }
     }
 }
 
 impl BufferOptions {
-    fn style(&self, distance: f64) -> Result<BufferStyle<f64>, String> {
+    pub(crate) fn style(&self, distance: f64) -> Result<BufferStyle<f64>, String> {
         if self.quad_segs == 0 {
             return Err("quad_segs must be positive".to_string());
         }
@@ -132,11 +137,45 @@ fn is_linear(g: &Geometry<f64>) -> bool {
 impl GeoColumn {
     /// Buffers every geometry by `distance` (negative shrinks polygons).
     pub fn buffer(&self, distance: f64, options: &BufferOptions) -> Result<Self, String> {
-        let style = options.style(distance)?;
-        self.map_geometry(|g| {
-            let buffered = g.buffer_with_style(style.clone());
-            Some(collapse(buffered))
-        })
+        self.buffer_rows(&vec![Some(distance); self.len()], options)
+    }
+
+    /// Buffers every geometry by the distance of its row (`None` nulls the row). With
+    /// `options.single_sided` only one side of a line is buffered, see
+    /// [`crate::buffer_single_sided`].
+    pub fn buffer_rows(
+        &self,
+        distances: &[Option<f64>],
+        options: &BufferOptions,
+    ) -> Result<Self, String> {
+        if distances.len() != self.len() {
+            return Err(format!(
+                "distance has {} entries but the column has {} rows",
+                distances.len(),
+                self.len()
+            ));
+        }
+        // Validates the style names and limits once, whatever the distances are.
+        options.style(1.0)?;
+        let sided = Sided::new(options)?;
+        let rows: Vec<Option<Geometry<f64>>> = self
+            .geo_rows()
+            .iter()
+            .zip(distances)
+            .map(|(g, d)| match (g, d) {
+                (Some(g), Some(d)) => guarded(|| {
+                    if options.single_sided {
+                        single_sided_geometry(g, *d, &sided, options)
+                    } else {
+                        let style = options.style(*d).ok()?;
+                        Some(collapse(g.buffer_with_style(style)))
+                    }
+                })
+                .flatten(),
+                _ => None,
+            })
+            .collect();
+        self.rebuild(&rows)
     }
 
     /// Simplifies lines and polygon rings. `preserve_topology` selects Visvalingam-Whyatt with
