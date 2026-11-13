@@ -419,6 +419,20 @@ defmodule GeoFrame.ParityATest do
              ]
     end
 
+    # Shapely 2.2 / GEOS 3.14: is_valid False, is_valid_reason "Interior is disconnected[10 5]"
+    # for a hole touching the shell at (0 5) and (10 5); a hole touching it once is valid.
+    test "a disconnected interior is invalid, in is_valid, is_valid_reason and null_out_invalid" do
+      bad = "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 5, 5 2, 10 5, 5 8, 0 5))"
+      ok = "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 5, 5 2, 5 8, 0 5))"
+      series = s([bad, ok])
+
+      assert list(GeoSeries.is_valid(series)) == [false, true]
+      assert [reason, "Valid Geometry"] = list(GeoSeries.is_valid_reason(series))
+      assert String.starts_with?(reason, "Interior is disconnected[")
+      assert list(GeoSeries.isna(GeoSeries.null_out_invalid(series))) == [true, false]
+      assert list(GeoSeries.is_valid(GeoSeries.make_valid(series))) == [true, true]
+    end
+
     test "is_valid_reason and null_out_invalid" do
       series = s([@square, @bowtie, nil])
       assert [valid, reason, nil] = list(GeoSeries.is_valid_reason(series))
