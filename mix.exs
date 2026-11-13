@@ -97,17 +97,21 @@ defmodule GeoFrame.MixProject do
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
-  defp force_build?, do: System.get_env("GEOFRAME_BUILD") in ["1", "true"]
+  # Build the NIF from source (so Rustler is needed) when forced, or when the package has no
+  # checksum file: git/path dependencies and checkouts. Same rule as in GeoFrame.Native.
+  defp build_from_source? do
+    System.get_env("GEOFRAME_BUILD") in ["1", "true"] or Mix.env() in [:dev, :test] or
+      not File.exists?(Path.join(__DIR__, "checksum-Elixir.GeoFrame.Native.exs"))
+  end
 
   defp deps do
     [
       # Hex has no rustler 0.39 yet; the crate is 0.39 (native/geoframe_native/Cargo.toml).
       # "~> 0.38" admits 0.39 once published, so only the lock needs bumping then.
-      # Only needed to build the NIF from source: a checkout in :dev / :test, or
-      # `GEOFRAME_BUILD=true` (same rule as in GeoFrame.Native). Everyone else gets a precompiled
-      # NIF through rustler_precompiled, so it stays optional for them.
-      {:rustler, "~> 0.38",
-       optional: not (Mix.env() in [:dev, :test] or force_build?()), runtime: false},
+      # Only needed to build the NIF from source (see `build_from_source?/0`). The Hex package
+      # ships the checksum file and gets a precompiled NIF through rustler_precompiled, so it
+      # stays optional there.
+      {:rustler, "~> 0.38", optional: not build_from_source?(), runtime: false},
       {:rustler_precompiled, "~> 0.8"},
       {:explorer, "~> 0.13"},
       {:jason, "~> 1.4"},
