@@ -15,6 +15,7 @@ mod crs_datum_names;
 mod crs_extra;
 mod crs_names;
 mod crs_wkt;
+mod curves;
 mod datum;
 mod datum_grids;
 #[allow(clippy::approx_constant)] // generated data: a bounding box edge reads 3.14
@@ -122,6 +123,8 @@ mod crs_esri_projection_tests;
 mod crs_null_operation_tests;
 #[cfg(test)]
 mod crs_parity_tests;
+#[cfg(test)]
+mod curves_tests;
 #[cfg(test)]
 mod datum_tests;
 #[cfg(test)]

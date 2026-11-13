@@ -270,6 +270,13 @@ impl GeoColumn {
                 Err(e) if e == crate::ewkb::NESTING_ERROR => {
                     return Err(format!("invalid WKB at row {i}: {e}"))
                 }
+                // A malformed curve cannot be handed to the reader, which has no curve types.
+                Err(e)
+                    if crate::curves::peek_base(bytes.as_ref(), 0)
+                        .is_ok_and(|b| (8..=12).contains(&b)) =>
+                {
+                    return Err(format!("invalid WKB at row {i}: {e}"))
+                }
                 Err(_) => converted.push(Some(bytes.as_ref().to_vec())),
             }
         }
