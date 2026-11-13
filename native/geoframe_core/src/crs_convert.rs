@@ -82,18 +82,47 @@ fn geographic_code(value: &Value) -> Option<u32> {
     geographic_code_without_datum_name(value)
         .or_else(|| {
             let datum = value.get("datum")?;
-            // The table is Greenwich-based: a definition with another prime meridian (Ferro,
-            // Paris, Rome, ...) keeps the result it had without the lookup (when PROJ shifts
-            // its datum it is refused, see `unshiftable_prime_meridian`).
-            if datum.get("prime_meridian").is_some() {
-                return None;
-            }
-            lookup(
-                crate::crs_datum_names::DATUM_NAMES,
-                datum.get("name")?.as_str()?,
-            )
+            let pm = prime_meridian_degrees(datum);
+            // The CRS of the datum on that prime meridian (MGI on Ferro is MGI (Ferro), not MGI).
+            // A geographic text whose answer by that code differs from pyproj is refused before
+            // this point (see `unshiftable_prime_meridian`).
+            datum_lookup(datum.get("name")?.as_str()?, pm).map(|(code, _)| code)
         })
         .or(id)
+}
+
+/// The longitude of the prime meridian of a datum in degrees (0 for Greenwich or none).
+fn prime_meridian_degrees(datum: &Value) -> f64 {
+    let Some(longitude) = datum
+        .get("prime_meridian")
+        .and_then(|pm| pm.get("longitude"))
+    else {
+        return 0.0;
+    };
+    match longitude {
+        Value::Number(n) => n.as_f64().unwrap_or(0.0),
+        other => quantity(other).map_or(0.0, |q| q / DEGREE),
+    }
+}
+
+/// The CRS (and whether its by-code answer agrees with pyproj) of a datum name on a prime meridian.
+fn datum_lookup(name: &str, pm: f64) -> Option<(u32, bool)> {
+    let name = name.to_ascii_lowercase().replace('_', " ");
+    let table = crate::crs_datum_names::DATUM_NAMES;
+    let start = table.partition_point(|(n, ..)| *n < name.as_str());
+    table[start..]
+        .iter()
+        .take_while(|(n, ..)| *n == name)
+        .find(|(_, p, ..)| (p - pm).abs() < 5e-6)
+        .map(|(_, _, code, agrees)| (*code, *agrees))
+}
+
+/// A CRS with that datum name on any prime meridian.
+fn datum_known(name: &str) -> Option<u32> {
+    let name = name.to_ascii_lowercase().replace('_', " ");
+    let table = crate::crs_datum_names::DATUM_NAMES;
+    let start = table.partition_point(|(n, ..)| *n < name.as_str());
+    table.get(start).filter(|(n, ..)| *n == name).map(|r| r.2)
 }
 
 /// The code from the identifier or the name of the CRS, before the datum name is tried.
@@ -115,6 +144,10 @@ fn geographic_code_without_datum_name(value: &Value) -> Option<u32> {
 /// (Brussels, Stockholm, Voirol 1879) keeps its answer, and so does a definition with `TOWGS84`
 /// (a bound CRS) or one that is looked up by its EPSG code or its name.
 fn unshiftable_prime_meridian(value: &Value) -> Option<String> {
+    let geographic_top = matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("GeographicCRS" | "GeodeticCRS")
+    );
     let crs = match value.get("type").and_then(Value::as_str)? {
         "ProjectedCRS" => value.get("base_crs")?,
         "CompoundCRS" => value.get("components")?.as_array()?.first()?,
@@ -128,22 +161,33 @@ fn unshiftable_prime_meridian(value: &Value) -> Option<String> {
         return unshiftable_prime_meridian(crs);
     }
     let datum = crs.get("datum")?;
-    let pm = datum.get("prime_meridian")?;
-    let degrees = match pm.get("longitude")? {
-        Value::Number(n) => n.as_f64()?,
-        other => quantity(other).ok()? / DEGREE,
-    };
+    datum.get("prime_meridian")?;
+    let degrees = prime_meridian_degrees(datum);
     if degrees == 0.0 || geographic_code_without_datum_name(crs).is_some() {
         return None;
     }
     let name = datum.get("name")?.as_str()?;
-    let code = lookup(crate::crs_datum_names::DATUM_NAMES, name)?;
+    let (code, why) = match datum_lookup(name, degrees) {
+        // answered through the CRS of the datum on that meridian
+        Some((_, true)) => return None,
+        // a geographic text whose own answer through that CRS differs from pyproj's (MGI (Ferro)
+        // by code, Monte Mario (Rome) by text): refused where PROJ shifts the datum; a projected
+        // CRS on it agrees with pyproj and is answered
+        Some((code, false)) if geographic_top => {
+            (code, "GeoFrame's answer for that CRS differs from PROJ's")
+        }
+        Some(_) => return None,
+        // the name is known, but not on this meridian
+        None => (
+            datum_known(name)?,
+            "no CRS has that datum on that prime meridian",
+        ),
+    };
     crate::datum::shifts_to_wgs84(code).then(|| {
         format!(
             "the datum {name:?} has a prime meridian at {degrees} degrees and no identifier, and \
-             PROJ shifts it to WGS 84; GeoFrame finds that shift by the datum name only for a \
-             Greenwich-based definition, so the CRS is refused rather than answered off by the \
-             datum shift (give it as its EPSG code)"
+             PROJ shifts it to WGS 84; {why}, so the CRS is refused rather than answered off by \
+             the datum shift (give it as its EPSG code)"
         )
     })
 }

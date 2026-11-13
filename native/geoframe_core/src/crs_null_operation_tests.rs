@@ -397,50 +397,108 @@ fn esri_text_on_a_datum_with_a_null_or_helmert_operation_answers_like_pyproj() {
     );
 }
 
-/// A projected CRS on a non-Greenwich prime meridian whose datum PROJ shifts is refused from its
-/// text (it was answered 55 to 316 m off, or after C1 refused for another reason): NTF (Paris)
-/// Lambert zone II, CH1903 (Bern) LV03C, Makassar (Jakarta) NEIEZ and MGI (Ferro) Austria West.
-/// The texts are `pyproj.CRS.from_epsg(code).to_wkt("WKT1_ESRI")` without the identifier, the
-/// point is the centre of the area of use. Giving the same CRS by its EPSG code works.
-const PRIME_MERIDIAN_CASES: &[(&str, &str, f64, f64)] = &[
+/// Projected CRSs on a non-Greenwich prime meridian, from their ESRI text with no identifier: the
+/// datum name and the meridian find the geographic CRS (NTF (Paris) 4807, Lisbon (Lisbon) 4803,
+/// CH1903 (Bern) 4801, S-JTSK (Ferro) 4818, Batavia (Jakarta) 4813, Segara (Jakarta) 4820, MGI (Ferro) 4805 for the projected Austria grid), and the
+/// text answers like its EPSG code, which is pyproj's answer. The texts are
+/// `pyproj.CRS.from_epsg(code).to_wkt("WKT1_ESRI")` without the identifier, the point is the centre
+/// of the area of use, the longitude and latitude are pyproj's for the text:
+///
+/// ```python
+/// pyproj.Transformer.from_crs(wkt, 4326, always_xy=True).transform(x, y)
+/// ```
+/// CRS label, ESRI text, a point `(x, y)` and pyproj's `(lon, lat)` for it.
+type PmCase = (&'static str, &'static str, f64, f64, f64, f64);
+
+const PRIME_MERIDIAN_ANSWERED: &[PmCase] = &[
     (
         "EPSG:27572",
         r#"PROJCS["NTF_Paris_Lambert_Zone_II",GEOGCS["GCS_NTF_Paris",DATUM["Nouvelle_Triangulation_Francaise_(Paris)",SPHEROID["Clarke_1880_IGN",6378249.2,293.466021293627]],PRIMEM["Paris",2.33722917],UNIT["Grad",0.0157079632679489]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",600000.0],PARAMETER["False_Northing",2200000.0],PARAMETER["Central_Meridian",0.0],PARAMETER["Standard_Parallel_1",52.0],PARAMETER["Scale_Factor",0.99987742],PARAMETER["Latitude_Of_Origin",52.0],UNIT["Meter",1.0]]"#,
         549826.6306522982,
         2192990.7121902495,
+        1.6800000049463422,
+        46.735000000375535,
+    ),
+    (
+        "EPSG:20790",
+        r#"PROJCS["Portuguese_National_Grid",GEOGCS["GCS_Lisbon_Lisbon",DATUM["Lisbon_1937_(Lisbon)",SPHEROID["International_1924",6378388.0,297.0]],PRIMEM["Lisbon",-9.13190611111111],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",200000.0],PARAMETER["False_Northing",300000.0],PARAMETER["Central_Meridian",1.0],PARAMETER["Scale_Factor",1.0],PARAMETER["Latitude_Of_Origin",39.6666666666667],UNIT["Meter",1.0]]"#,
+        222183.05231374054,
+        287456.8232101228,
+        -7.8749999866575315,
+        39.554999987895854,
     ),
     (
         "EPSG:21780",
         r#"PROJCS["Bern_1898_Bern_LV03C",GEOGCS["GCS_Bern_1898_Bern",DATUM["CH1903_(Bern)",SPHEROID["Bessel_1841",6377397.155,299.1528128]],PRIMEM["Bern",7.43958333333333],UNIT["Degree",0.0174532925199433]],PROJECTION["Hotine_Oblique_Mercator_Azimuth_Center"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Scale_Factor",1.0],PARAMETER["Azimuth",90.0],PARAMETER["Longitude_Of_Center",0.0],PARAMETER["Latitude_Of_Center",46.9524055555556],UNIT["Meter",1.0]]"#,
         60019.11185791911,
         -15383.832160137368,
+        8.2250000082406,
+        46.810000010046,
+    ),
+    (
+        "EPSG:2065",
+        r#"PROJCS["S-JTSK_Ferro_Krovak",GEOGCS["GCS_S_JTSK_Ferro",DATUM["System_of_the_Unified_Trigonometrical_Cadastral_Network_(Ferro)",SPHEROID["Bessel_1841",6377397.155,299.1528128]],PRIMEM["Ferro",-17.6666666666667],UNIT["Degree",0.0174532925199433]],PROJECTION["Krovak"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Pseudo_Standard_Parallel_1",78.5],PARAMETER["Scale_Factor",0.9999],PARAMETER["Azimuth",30.2881397527778],PARAMETER["Longitude_Of_Center",42.5],PARAMETER["Latitude_Of_Center",49.5],PARAMETER["X_Scale",1.0],PARAMETER["Y_Scale",1.0],PARAMETER["XY_Plane_Rotation",0.0],UNIT["Meter",1.0]]"#,
+        1144001.6436666406,
+        544005.2586631232,
+        17.324999965845997,
+        49.39500004662224,
     ),
     (
         "EPSG:5329",
         r#"PROJCS["Gunung_Segara_Jakarta_NEIEZ",GEOGCS["GCS_Gunung_Segara_Jakarta",DATUM["Gunung_Segara_(Jakarta)",SPHEROID["Bessel_1841",6377397.155,299.1528128]],PRIMEM["Jakarta",106.807719444444],UNIT["Degree",0.0174532925199433]],PROJECTION["Mercator"],PARAMETER["False_Easting",3900000.0],PARAMETER["False_Northing",900000.0],PARAMETER["Central_Meridian",3.19228055555556],PARAMETER["Standard_Parallel_1",4.45405154589748],UNIT["Meter",1.0]]"#,
         4655117.850513344,
         902715.2093693333,
+        116.8049999962171,
+        0.024999996953905663,
+    ),
+    (
+        "EPSG:5330",
+        r#"PROJCS["Batavia_Jakarta_NEIEZ",GEOGCS["GCS_Batavia_Jakarta",DATUM["Batavia_(Jakarta)",SPHEROID["Bessel_1841",6377397.155,299.1528128]],PRIMEM["Jakarta",106.807719444444],UNIT["Degree",0.0174532925199433]],PROJECTION["Mercator"],PARAMETER["False_Easting",3900000.0],PARAMETER["False_Northing",900000.0],PARAMETER["Central_Meridian",3.19228055555556],PARAMETER["Standard_Parallel_1",4.45405154589748],UNIT["Meter",1.0]]"#,
+        3396557.718291195,
+        737974.8396461087,
+        105.46499999536442,
+        -1.4699999991223336,
     ),
     (
         "EPSG:31281",
         r#"PROJCS["Austria_West_Zone",GEOGCS["GCS_MGI_Ferro",DATUM["Militar-Geographische_Institut_(Ferro)",SPHEROID["Bessel_1841",6377397.155,299.1528128]],PRIMEM["Ferro",-17.6666666666667],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",28.0],PARAMETER["Scale_Factor",1.0],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#,
         26674.954644996207,
         5227959.912575018,
+        10.684999994422041,
+        47.19000000602836,
     ),
 ];
 
 #[test]
-fn esri_text_on_a_shifted_datum_with_another_prime_meridian_is_refused() {
-    for (code, wkt, x, y) in PRIME_MERIDIAN_CASES {
-        let err = transform_xy(wkt, "EPSG:4326", *x, *y)
-            .expect_err(&format!("{code} from text must be refused"));
-        assert!(
-            err.starts_with("unsupported WKT CRS") && err.contains("prime meridian"),
-            "{code}: {err}"
-        );
-        assert!(
-            transform_xy(code, "EPSG:4326", *x, *y).is_ok(),
-            "{code} by code"
-        );
+fn esri_text_on_another_prime_meridian_answers_like_pyproj() {
+    let mut failures = Vec::new();
+    for (code, wkt, x, y, lon, lat) in PRIME_MERIDIAN_ANSWERED {
+        match transform_xy(wkt, "EPSG:4326", *x, *y) {
+            Err(e) => failures.push(format!("{code}: {e}")),
+            Ok((gx, gy)) if (gx - lon).abs() > 1e-6 || (gy - lat).abs() > 1e-6 => {
+                failures.push(format!("{code}: {gx} {gy} vs pyproj {lon} {lat}"));
+            }
+            Ok(_) => {}
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// MGI (Ferro) as geographic text finds EPSG:4805, but GeoFrame's answer for that code is 305 m off
+/// pyproj (PROJ counts the Ferro meridian as 17.6628 W), so the text is refused, not answered. The
+/// projected CRSs on it (Austria GK, EPSG:31281 text in the cases above) agree with pyproj.
+#[test]
+fn esri_text_whose_epsg_answer_differs_from_pyproj_is_refused() {
+    let wkt = r#"GEOGCS["GCS_MGI_Ferro",DATUM["Militar-Geographische_Institut_(Ferro)",SPHEROID["Bessel_1841",6377397.155,299.1528128]],PRIMEM["Ferro",-17.6666666666667],UNIT["Degree",0.0174532925199433]]"#;
+    let err = transform_xy(wkt, "EPSG:4326", 33.95267527192182, 44.935142793206516)
+        .expect_err("MGI (Ferro) text");
+    assert!(
+        err.starts_with("unsupported WKT CRS") && err.contains("prime meridian"),
+        "{err}"
+    );
 }

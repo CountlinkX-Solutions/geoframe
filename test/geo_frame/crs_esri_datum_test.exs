@@ -67,11 +67,25 @@ defmodule GeoFrame.CrsEsriDatumTest do
                   |> File.read!()
                   |> Jason.decode!()
 
-  # PROJ shifts the datum of MGI (Ferro), Monte Mario (Rome) and NTF (Paris) to WGS 84, which
-  # GeoFrame finds by the datum name only for a Greenwich-based definition: refused (C2) rather
-  # than answered 53 to 81 m off.
-  for code <- ["4805", "4806", "4807"] do
-    test "EPSG:#{code} as ESRI text with another prime meridian and a shifted datum is refused" do
+  # The datum name and the prime meridian find the geographic CRS (C2): NTF (Paris) answers like
+  # pyproj; MGI (Ferro) (305 m off by code) and Monte Mario (Rome) (72 m off as text) are refused.
+  for code <- ["4807"] do
+    test "EPSG:#{code} as ESRI text with another prime meridian answers like pyproj" do
+      e = get_in(@prime_meridian, ["crs", unquote(code)])
+      [px, py] = e["pyproj"]
+
+      {gx, gy} =
+        GeoSeries.from_wkt!(["POINT (#{e["x"]} #{e["y"]})"], crs: e["wkt"])
+        |> GeoSeries.to_crs("EPSG:4326")
+        |> xy()
+
+      assert_in_delta gx, px, 1.0e-6
+      assert_in_delta gy, py, 1.0e-6
+    end
+  end
+
+  for code <- ["4805", "4806"] do
+    test "EPSG:#{code} as geographic ESRI text is refused" do
       e = get_in(@prime_meridian, ["crs", unquote(code)])
 
       assert_raise ArgumentError, ~r/unsupported WKT CRS: .*prime meridian/, fn ->

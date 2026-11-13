@@ -461,26 +461,34 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
   WKT1 text, whatever the name of the GEOGCS: a Shapefile `.prj` (`GCS_...` / `D_...`, no
   authority) is shifted like its EPSG code (GDA94, GDA2020 and CR-SIRGAS included now that their
   null operation is in the table), and a datum name PROJ does not know leaves the text unshifted.
-  Over 1 337 geographic and sampled projected CRSs written as WKT1_ESRI (one point each) the
-  differences from pyproj were 65 after C1 and are 12, and over the 5 330 projected EPSG CRSs
-  (area-of-use centre, one point each) 137 and 30; none got worse than on origin/main (a correct
-  answer was never turned into a wrong answer or a refusal). The 30 left are the ones the CRS has
-  by code too (see the sweep above) apart from the two Ferro grids of Gusterberg and St. Stephen
-  (9 and 4 m: the Cassini-Soldner series of `proj4rs` 1.4 degrees from the central meridian).
-  **A definition with a prime meridian other than Greenwich** (Ferro, Paris, Rome, Jakarta, Oslo,
-  Athens, Lisbon, Bern, Bogota: `MGI (Ferro)`, `NTF (Paris)`, `Monte Mario (Rome)`, ...) and no
-  identifier is not looked up by its datum name, because the Helmert operations are written for
-  Greenwich longitudes (the lookup made MGI (Ferro) worse, 81 m to 306 m). Where PROJ shifts that
-  datum to WGS 84 the definition is now **refused** (`unsupported WKT CRS: the datum ... has a
-  prime meridian at ... degrees and no identifier, and PROJ shifts it to WGS 84 ...`) instead of
-  answered unshifted, 33 to 496 m off pyproj: 31 geographic and 35 projected `.prj` texts
-  (NTF (Paris) Lambert, MGI (Ferro) Austria, NGO 1948 (Oslo), Lisbon, Tananarive, S-JTSK (Ferro)
-  Krovak, the Jakarta NEIEZ grids, CH1903 (Bern) LV03C), of which 6 had just become answerable
-  with C1. A datum PROJ does not shift (BD50 Brussels, RT38 Stockholm, Voirol 1879, ATF Paris RGS,
-  the Gusterberg and St. Stephen Ferro systems) keeps its answer, and so does a definition with a
-  `TOWGS84` (bound CRS) or an identifier; the same CRS given as its EPSG code works. ATF (Paris) as
-  geographic text, in grads, is 178 km off (its unit, not its datum) and Tokyo 1892 and Rassadiran
-  differ for their own PROJ-specific operations: documented deviations, not pursued.
+  The datum name is keyed by the longitude of its **prime meridian** (generated from the PROJ
+  database with the meridian of each geographic CRS), so `D_MGI` on the Ferro meridian is MGI
+  (Ferro) (4805) and not MGI (4312), and NTF on the Paris meridian is NTF (Paris) (4807). A text
+  on another meridian answers through that CRS like its EPSG code: Lisbon (Lisbon) 4803, CH1903
+  (Bern) 4801, S-JTSK (Ferro) 4818, Batavia (Jakarta) 4813, Segara (Jakarta) 4820, Oslo,
+  Tananarive, Carthage (Paris), and the projected CRSs on them (NTF Lambert zones, Austria GK,
+  Portuguese grids, NGO 1948, the Jakarta NEIEZ grids, LV03C) agree with pyproj. Two geographic
+  texts are refused (`unsupported WKT CRS: the datum ... has a prime meridian at ... degrees and no
+  identifier, and PROJ shifts it to WGS 84; GeoFrame's answer for that CRS differs from PROJ's ...`):
+  MGI (Ferro), whose answer by code is 305 m off pyproj (PROJ counts the Ferro meridian as
+  17.6628 W), and Monte Mario (Rome), which PROJ shifts as the Greenwich datum from text but not by
+  code (72 m). Which geographic CRSs those are is generated, not listed: a flag of the table, false
+  where the by-code sweep or the text sweep of that geographic CRS differs from pyproj by more than
+  5 cm (`CRS_SWEEP_OUT`, `CRS_ESRI_SWEEP_OUT` of `datum_name_table`); a projected CRS on them is
+  answered either way. A text whose datum name is known only on another meridian (`D_S_JTSK` is
+  Greenwich; S-JTSK (Ferro) East North, EPSG:5221) is refused as well when PROJ shifts that datum.
+  A datum name PROJ does not know, or a datum it does not shift (BD50 Brussels, RT38 Stockholm,
+  Voirol 1879, the Gusterberg and St. Stephen Ferro systems), keeps its answer. Over 1 337
+  geographic and sampled projected CRSs written as WKT1_ESRI (one point each) the differences from
+  pyproj were 65 after C1 and are 12 (225 refused on origin/main, 2 now), and over the 5 330
+  projected EPSG CRSs (area-of-use centre, one point each) 115 on origin/main and 30 (1 007 refused,
+  36 now, 35 of them the projection names listed below); no text that was correct on origin/main is
+  wrong or refused now. The 30 left are the ones the CRS has by code too (see the sweep above)
+  apart from the two Ferro grids of Gusterberg and St. Stephen (9 and 4 m: the Cassini-Soldner
+  series of `proj4rs` 1.4 degrees from the central meridian). ATF (Paris) as geographic text, in
+  grads, is 178 km off (its unit, not its datum) and Tokyo 1892 and Rassadiran differ for their own
+  PROJ-specific operations: documented deviations, not pursued.
+  ESRI names several
   projections differently from EPSG, and these are read as the EPSG method PROJ maps them to:
   `Double_Stereographic` (Oblique Stereographic, RD New), `Gauss_Kruger` (Transverse Mercator),
   `Albers` (Albers Equal Area), `Cassini`, `Stereographic_North_Pole` / `Stereographic_South_Pole`

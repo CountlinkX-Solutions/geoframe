@@ -55,15 +55,14 @@ fn esri_wkt_shifts_its_datum_like_pyproj() {
     );
 }
 
-/// A definition with a prime meridian other than Greenwich (Ferro, Paris, Rome) is not moved by
-/// the datum-name lookup, and when PROJ shifts its datum to WGS 84 (MGI, Monte Mario, NTF) it is
-/// refused instead of answered without the shift (v0.1.2 C2; GeoFrame answered 53 to 81 m off). A
-/// datum PROJ does not shift (ATF Paris RGS) keeps its answer (fixture
-/// `crs_esri_prime_meridian.json`: GeoFrame on origin/main).
+/// A definition with a prime meridian other than Greenwich finds the CRS of its datum on that
+/// meridian (NTF (Paris) 4807) and answers like pyproj; MGI (Ferro), whose answer by code is 305 m
+/// off pyproj, and Monte Mario (Rome), whose text PROJ shifts as the Greenwich datum but its code
+/// not (72 m), are refused as geographic text; ATF (Paris), whose datum PROJ does not shift,
+/// keeps its previous answer (fixture `crs_esri_prime_meridian.json`: GeoFrame on origin/main, and
+/// pyproj).
 #[test]
-fn esri_wkt_with_another_prime_meridian_is_refused_where_proj_shifts_it() {
-    // MGI (Ferro), Monte Mario (Rome), NTF (Paris): PROJ shifts them, by 53 to 81 m
-    const SHIFTED: [&str; 3] = ["4805", "4806", "4807"];
+fn esri_wkt_with_another_prime_meridian_is_answered_through_its_crs() {
     let text = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../test/reference/fixtures/crs_datum/crs_esri_prime_meridian.json"
@@ -77,19 +76,20 @@ fn esri_wkt_with_another_prime_meridian_is_refused_where_proj_shifts_it() {
             num(&e["x"]),
             num(&e["y"]),
         );
-        let [bx, by] = [0, 1].map(|i| num(&e["before"][i]));
-        if SHIFTED.contains(&code.as_str()) {
-            let err = result.expect_err(&format!("{code} must be refused"));
+        // the expected answer: pyproj's, except for ATF (Paris) (grads: unchanged)
+        let key = if code == "4901" { "before" } else { "pyproj" };
+        let [ex, ey] = [0, 1].map(|i| num(&e[key][i]));
+        if code == "4805" || code == "4806" {
+            let err = result.expect_err("geographic text must be refused");
             assert!(
                 err.starts_with("unsupported WKT CRS") && err.contains("prime meridian"),
                 "{code}: {err}"
             );
         } else {
-            // PROJ keeps the coordinates of this datum too: the answer stays what it was
             let (gx, gy) = result.unwrap_or_else(|e| panic!("{code}: {e}"));
             assert!(
-                (gx - bx).abs() < 1e-9 && (gy - by).abs() < 1e-9,
-                "{code}: got {gx} {gy}, before {bx} {by}"
+                (gx - ex).abs() < 1e-6 && (gy - ey).abs() < 1e-6,
+                "{code}: got {gx} {gy}, expected {ex} {ey}"
             );
         }
     }
