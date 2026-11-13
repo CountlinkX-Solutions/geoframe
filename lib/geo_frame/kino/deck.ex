@@ -45,6 +45,12 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       * `:tooltip` - list of attribute columns shown on hover (needs a `GeoFrame.GeoDataFrame`).
         Values are sent as JSON, strings cut at #{200} characters, and at most
         #{2_000_000} cells (rows x columns) are allowed.
+      * `:popup` - `true` or a list of attribute columns shown in a closable card anchored at
+        the clicked feature, like `explore(popup=True)` of GeoPandas (needs a
+        `GeoFrame.GeoDataFrame`). `true` lists every attribute column (at most #{20}); a list takes
+        at most #{20} columns. It shares the tooltip's cell and string caps and coexists with it:
+        the tooltip appears on hover, the popup on click. Values are inserted as plain text, never
+        as HTML. Default: off.
       * `:max_features` - maximum number of rows, default #{1_000_000}. A larger input raises
         `ArgumentError`; filter or sample it, or raise the option.
       * `:max_vertices` - maximum number of vertices (coordinates of all non-empty geometries),
@@ -84,6 +90,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     @max_tooltip_cells 2_000_000
     @max_tooltip_chars 200
     @max_tooltip_columns 10
+    @max_popup_columns 20
     @default_basemap "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
     @default_color [35, 120, 200, 255]
     @missing_color [179, 179, 179, 255]
@@ -95,6 +102,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       :width,
       :opacity,
       :tooltip,
+      :popup,
       :max_features,
       :max_vertices,
       :basemap,
@@ -171,7 +179,9 @@ if Code.ensure_loaded?(Kino.JS.Live) do
         size_style(frame, opts[:width], 2, @width_range, :width, :linear)
 
       {buffers, skipped} = build_buffers(geometry, colors, radius_sizes, width_sizes)
-      tooltip = tooltip(frame, opts[:tooltip], GeoSeries.size(geometry))
+      rows = GeoSeries.size(geometry)
+      tooltip = tooltip(frame, opts[:tooltip], rows)
+      popup = popup(frame, opts[:popup], rows)
       {entries, binary} = pack(buffers)
 
       info = %{
@@ -196,6 +206,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
         }
       }
 
+      info = if popup, do: Map.put(info, :popup, popup), else: info
       {:binary, info, binary}
     end
 
@@ -555,19 +566,35 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       {entries, IO.iodata_to_binary(iodata)}
     end
 
-    # -- tooltip ---------------------------------------------------------------------------
+    # -- tooltip and popup -----------------------------------------------------------------
 
-    defp tooltip(_frame, nil, _rows), do: nil
-    defp tooltip(_frame, [], _rows), do: nil
+    defp tooltip(frame, columns, rows),
+      do: attributes(frame, columns, rows, :tooltip, @max_tooltip_columns)
 
-    defp tooltip(frame, columns, rows) when is_list(columns) do
-      if length(columns) > @max_tooltip_columns,
-        do: raise(ArgumentError, ":tooltip takes at most #{@max_tooltip_columns} columns")
+    # `true` shows every attribute column (the geometry is not one of them).
+    defp popup(%GeoDataFrame{} = frame, true, rows),
+      do:
+        attributes(frame, Explorer.DataFrame.names(frame.data), rows, :popup, @max_popup_columns)
+
+    defp popup(frame, true, rows),
+      do: attributes(frame, [:popup], rows, :popup, @max_popup_columns)
+
+    defp popup(_frame, false, _rows), do: nil
+
+    defp popup(frame, columns, rows),
+      do: attributes(frame, columns, rows, :popup, @max_popup_columns)
+
+    defp attributes(_frame, nil, _rows, _option, _max), do: nil
+    defp attributes(_frame, [], _rows, _option, _max), do: nil
+
+    defp attributes(frame, columns, rows, option, max) when is_list(columns) do
+      if length(columns) > max,
+        do: raise(ArgumentError, ":#{option} takes at most #{max} columns")
 
       if rows * length(columns) > @max_tooltip_cells do
         raise ArgumentError,
-              "tooltip data would be #{rows * length(columns)} cells (limit #{@max_tooltip_cells}); " <>
-                "use fewer :tooltip columns or a smaller :max_features"
+              "#{option} data would be #{rows * length(columns)} cells (limit #{@max_tooltip_cells}); " <>
+                "use fewer :#{option} columns or a smaller :max_features"
       end
 
       values =
@@ -576,8 +603,11 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       %{columns: Enum.map(columns, &to_string/1), values: values}
     end
 
-    defp tooltip(_frame, other, _rows),
-      do: raise(ArgumentError, "invalid :tooltip #{inspect(other)}; expected a list of columns")
+    defp attributes(_frame, other, _rows, option, _max) do
+      raise ArgumentError,
+            "invalid :#{option} #{inspect(other)}; expected a list of columns" <>
+              if(option == :popup, do: " or true", else: "")
+    end
 
     defp json_value(v) when is_nil(v) or is_boolean(v) or is_integer(v), do: v
     defp json_value(v) when is_float(v), do: v

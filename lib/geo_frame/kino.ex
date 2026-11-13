@@ -110,7 +110,7 @@ if Code.ensure_loaded?(Kino) do
     scales to a million features.
 
     See `GeoFrame.Kino.Deck` for the options (`:color`, `:radius`, `:width`, `:opacity`,
-    `:tooltip`, `:max_features`, `:max_vertices`, `:basemap`, `:height`) and how the data is transferred. Unlike
+    `:tooltip`, `:popup`, `:max_features`, `:max_vertices`, `:basemap`, `:height`) and how the data is transferred. Unlike
     `map/2` it needs no extra packages, only internet access in the browser.
     """
     @spec deck(GeoDataFrame.t() | GeoSeries.t(), keyword()) :: Kino.JS.Live.t()

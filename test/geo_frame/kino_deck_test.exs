@@ -328,6 +328,63 @@ defmodule GeoFrame.Kino.DeckTest do
     end
   end
 
+  describe "payload/2 popup" do
+    test "is absent unless requested, so the single-frame payload is unchanged" do
+      {:binary, info, _} = Deck.payload(gdf(["POINT (0 0)"], n: [1]), tooltip: [:n])
+      refute Map.has_key?(info, :popup)
+    end
+
+    test "a column list sends JSON-able values aligned with rows" do
+      frame = gdf(["POINT (0 0)", "POINT (1 1)"], name: ["<b>a</b>", nil], n: [1.5, :nan])
+      {:binary, info, _} = Deck.payload(frame, popup: [:name, "n"])
+
+      assert info.popup == %{columns: ["name", "n"], values: [["<b>a</b>", nil], [1.5, nil]]}
+      assert {:ok, _} = Jason.encode(info)
+    end
+
+    test "true shows every attribute column except the geometry" do
+      frame = gdf(["POINT (0 0)"], a: [1], b: ["x"])
+      {:binary, info, _} = Deck.payload(frame, popup: true)
+      assert info.popup.columns == ["a", "b"]
+    end
+
+    test "coexists with the tooltip" do
+      frame = gdf(["POINT (0 0)"], a: [1], b: ["x"])
+      {:binary, info, _} = Deck.payload(frame, tooltip: [:a], popup: [:b])
+      assert info.tooltip.columns == ["a"]
+      assert info.popup.columns == ["b"]
+    end
+
+    test "false, nil and an empty list draw no popup" do
+      frame = gdf(["POINT (0 0)"], a: [1])
+
+      for popup <- [false, nil, []] do
+        {:binary, info, _} = Deck.payload(frame, popup: popup)
+        refute Map.has_key?(info, :popup)
+      end
+    end
+
+    test "long strings are cut" do
+      frame = gdf(["POINT (0 0)"], s: [String.duplicate("x", 500)])
+      {:binary, info, _} = Deck.payload(frame, popup: [:s])
+      assert info.popup.values == [[String.duplicate("x", 200)]]
+    end
+
+    test "invalid popups raise" do
+      frame = gdf(["POINT (0 0)"], n: [1])
+      assert_raise ArgumentError, ~r/missing/, fn -> Deck.payload(frame, popup: [:missing]) end
+      assert_raise ArgumentError, ~r/:popup/, fn -> Deck.payload(frame, popup: "n") end
+      assert_raise ArgumentError, ~r/GeoDataFrame/, fn -> Deck.payload(points(), popup: [:a]) end
+      assert_raise ArgumentError, ~r/GeoDataFrame/, fn -> Deck.payload(points(), popup: true) end
+    end
+
+    test "at most 20 columns" do
+      columns = for i <- 1..21, do: {:"c#{i}", [i]}
+      frame = gdf(["POINT (0 0)"], columns)
+      assert_raise ArgumentError, ~r/at most 20/, fn -> Deck.payload(frame, popup: true) end
+    end
+  end
+
   describe "payload/2 limits and validation" do
     test "raises above :max_features with a clear message" do
       assert_raise ArgumentError, ~r/max_features/, fn ->
