@@ -183,9 +183,30 @@ impl GeoColumn {
     /// GEOS's Ramer-Douglas-Peucker (own code, `tolerance` is a *distance*): rings that collapse
     /// are removed. Points are unchanged.
     pub fn simplify(&self, tolerance: f64, preserve_topology: bool) -> Result<Self, String> {
-        self.map_geometry_zm(Keep::Z, |g| {
-            Some(simplify_geometry(g, tolerance, preserve_topology))
-        })
+        if preserve_topology || !self.any_zm() {
+            return self.map_geometry_zm(Keep::Z, |g| {
+                Some(simplify_geometry(g, tolerance, preserve_topology))
+            });
+        }
+        // GEOS repairs an invalid Douglas-Peucker result with `buffer(0)`, whose new nodes take
+        // their Z from the noded rings: keep those rings for the rows that were repaired.
+        let (rows, noded): (Vec<_>, Vec<_>) = self
+            .geo_rows()
+            .iter()
+            .map(|row| {
+                row.as_ref()
+                    .and_then(|g| {
+                        guarded(|| {
+                            let rough = douglas_peucker_geometry(g, tolerance, false);
+                            let result = douglas_peucker_geometry(g, tolerance, true);
+                            let repaired = (rough != result).then_some(rough);
+                            (Some(result), repaired)
+                        })
+                    })
+                    .unwrap_or((None, None))
+            })
+            .unzip();
+        self.rebuild_repaired(&rows, &noded)
     }
 
     /// Applies a parameterless constructive operation.
@@ -336,7 +357,7 @@ pub(crate) fn collapse(mut multi: MultiPolygon<f64>) -> Geometry<f64> {
 
 fn simplify_geometry(geom: &Geometry<f64>, tolerance: f64, preserve: bool) -> Geometry<f64> {
     if !preserve {
-        return douglas_peucker_geometry(geom, tolerance);
+        return douglas_peucker_geometry(geom, tolerance, true);
     }
     match geom {
         Geometry::LineString(g) => Geometry::LineString(g.simplify_vw_preserve(tolerance)),
@@ -499,7 +520,9 @@ fn create_valid_area(rough: Geometry<f64>) -> Geometry<f64> {
 /// `shapely.simplify(preserve_topology=False)`: GEOS `DouglasPeuckerSimplifier`. An invalid
 /// polygonal result is repaired with `buffer(0)` as GEOS does: per polygon, but a multipolygon
 /// as a whole (`DPTransformer::transformPolygon` leaves it to the parent).
-fn douglas_peucker_geometry(geom: &Geometry<f64>, tolerance: f64) -> Geometry<f64> {
+/// GEOS `DouglasPeuckerSimplifier`; `repair` applies `createValidArea` to polygonal parts.
+fn douglas_peucker_geometry(geom: &Geometry<f64>, tolerance: f64, repair: bool) -> Geometry<f64> {
+    let valid = |g: Geometry<f64>| if repair { create_valid_area(g) } else { g };
     match geom {
         Geometry::LineString(l) => Geometry::LineString(dp_line(l, tolerance)),
         Geometry::MultiLineString(m) => {
@@ -512,14 +535,14 @@ fn douglas_peucker_geometry(geom: &Geometry<f64>, tolerance: f64) -> Geometry<f6
                 Geometry::MultiLineString(MultiLineString::new(p))
             })
         }
-        Geometry::Polygon(p) => create_valid_area(Geometry::Polygon(dp_polygon(p, tolerance))),
+        Geometry::Polygon(p) => valid(Geometry::Polygon(dp_polygon(p, tolerance))),
         Geometry::MultiPolygon(m) => {
             let parts: Vec<Polygon<f64>> =
                 m.0.iter()
                     .map(|p| dp_polygon(p, tolerance))
                     .filter(|p| !p.exterior().0.is_empty())
                     .collect();
-            create_valid_area(from_parts(parts, Geometry::Polygon, |p| {
+            valid(from_parts(parts, Geometry::Polygon, |p| {
                 Geometry::MultiPolygon(MultiPolygon::new(p))
             }))
         }
@@ -527,7 +550,7 @@ fn douglas_peucker_geometry(geom: &Geometry<f64>, tolerance: f64) -> Geometry<f6
             Geometry::GeometryCollection(GeometryCollection::new_from(
                 members
                     .iter()
-                    .map(|m| douglas_peucker_geometry(m, tolerance))
+                    .map(|m| douglas_peucker_geometry(m, tolerance, repair))
                     .filter(|m| !is_empty_result(m))
                     .collect(),
             ))

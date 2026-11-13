@@ -163,6 +163,39 @@ defmodule GeoFrame.ZmTest do
       assert point |> GeoSeries.to_crs(3857) |> GeoSeries.has_m() |> list() == [false]
     end
 
+    test "simplify's repair gives a new crossing node the mean Z of its two segments (GEOS)" do
+      # Shapely 2.2 / GEOS 3.14: shapely.simplify(g, 0, preserve_topology=False). The bowtie
+      # node (2 2) is halfway along 0 0 1 -> 4 4 2 and 4 0 3 -> 0 4 4: (1.5 + 3.5) / 2.
+      series =
+        s([
+          "POLYGON Z ((0 0 1, 4 4 2, 4 0 3, 0 4 4, 0 0 1))",
+          "MULTIPOLYGON Z (((0 0 0, 4 0 4, 4 4 4, 0 4 0, 0 0 0)), " <>
+            "((2 0 10, 6 0 20, 6 2 20, 2 2 10, 2 0 10)))",
+          "POLYGON ZM ((0 0 1 10, 4 4 2 20, 4 0 3 30, 0 4 4 40, 0 0 1 10))"
+        ])
+
+      assert series |> GeoSeries.simplify(0, preserve_topology: false) |> GeoSeries.to_wkt() == [
+               "POLYGON Z((2 2 2.5,4 4 2,4 0 3,2 2 2.5))",
+               "POLYGON Z((0 0 0,0 4 0,4 4 4,4 2 9.5,6 2 20,6 0 20,4 0 4,2 0 10,0 0 0))",
+               "POLYGON Z((2 2 2.5,4 4 2,4 0 3,2 2 2.5))"
+             ]
+
+      # POLYGON Z ((0 0 1, 4 4 NaN, 4 0 3, 0 4 4, 0 0 1)) as ISO WKB: a segment with one NaN
+      # end gives the Z of its other end (1), so the node is (1 + 3.5) / 2.
+      nan_end =
+        Base.decode16!(
+          "01EB030000010000000500000000000000000000000000000000000000000000000000F03F" <>
+            "00000000000010400000000000001040000000000000F87F0000000000001040" <>
+            "0000000000000000000000000000084000000000000000000000000000001040" <>
+            "000000000000104000000000000000000000000000000000000000000000F03F"
+        )
+
+      assert [nan_end]
+             |> GeoSeries.from_wkb!()
+             |> GeoSeries.simplify(0, preserve_topology: false)
+             |> GeoSeries.to_wkt() == ["POLYGON Z((2 2 2.25,4 4 NaN,4 0 3,2 2 2.25))"]
+    end
+
     test "centroid and envelope stay 2D" do
       series = s(["POLYGON Z ((0 0 1, 4 0 2, 4 4 3, 0 0 1))"])
       assert series |> GeoSeries.envelope() |> GeoSeries.has_z() |> list() == [false]
