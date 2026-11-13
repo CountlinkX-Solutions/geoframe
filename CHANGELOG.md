@@ -8,6 +8,77 @@ change before 1.0.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-13
+
+Like earlier releases, it is distributed through the `v0.3.0` git tag and GitHub release, not
+through Hex yet; the release attaches precompiled NIFs for nine targets. A git dependency builds
+the NIF from source (a stable Rust toolchain is required).
+
+This release closes the GEOS and GDAL parity gaps left from 0.2.0. GeoFrame now reads curved
+geometries and collections whose members mix dimensions, and follows GEOS for single-sided
+polygon buffers and simplify's repair. No public function changes its signature. The results that change are
+listed under Changed and Fixed.
+
+### Added
+
+- Curved geometries are read linearized, as GDAL reads them: `CircularString`, `CompoundCurve`,
+  `CurvePolygon`, `MultiCurve` and `MultiSurface` (ISO WKB, PostGIS EWKB and GeoPackage
+  binary, with Z, M or both, either byte order) become `LineString`, `Polygon`,
+  `MultiLineString` and `MultiPolygon`. GDAL 3.12's arc stroking is ported (4° steps,
+  `OGR_ARC_STEPSIZE` honoured, full circles and collinear arcs), so vertices match pyogrio bit
+  for bit on 30 fixture cases and within 3e-12 on 26 000 fuzzed arcs. It covers GeoPackage
+  (`read_file` and `stream_file`), `read_postgis`, `GeoSeries.from_wkb` and GeoParquet / Feather
+  WKB columns, and `read_file_info` / `list_layers` report the linear type. Before, one curve
+  row aborted the whole read. WKT curves are still an error
+  ([#149](https://github.com/CountlinkX-Solutions/geoframe/pull/149)).
+- A `GEOMETRYCOLLECTION` whose members have different dimensions (a 2D point next to a Z point)
+  is read as GEOS reads it instead of raising. The collection has Z when any member has Z and M
+  when any has M, whatever the WKB header says. A GeoArrow collection holds one dimension, so
+  the members are promoted with `NaN` for the ordinates they lack, which is what Shapely's
+  `get_coordinates` reports. `has_z`, `has_m`, `z`, `m` and `force_2d` agree with GeoPandas,
+  but the promoted member's WKT and WKB carry `Z NaN`. In WKT, a member of another dimension
+  inside a collection tagged `Z`, `M` or `ZM` is still an error, as in GEOS
+  ([#153](https://github.com/CountlinkX-Solutions/geoframe/pull/153)).
+
+### Changed
+
+- `buffer(single_sided: true)` on polygons follows GEOS. The polygon gets the ordinary buffer,
+  the input and buffer boundaries are noded, and the largest face is kept when there is more
+  than one. For a square of side `s`, a positive distance `d` now returns the polygon itself
+  from `s/d ≈ 4.68`, and a negative one returns the ordinary negative buffer from about 6.83;
+  the old guide of "about four times the distance" was wrong. 2 700 fuzzed cases agree with
+  Shapely within 2 % area. Lines and points are unchanged
+  ([#148](https://github.com/CountlinkX-Solutions/geoframe/pull/148)).
+- `simplify(preserve_topology: false)` repairs an invalid Douglas-Peucker result with GEOS's
+  `buffer(0)`, ported to Rust (`DPTransformer::createValidArea`: per polygon, once per
+  multipolygon). A self-crossing ring keeps its positive-winding lobes, and overlapping or
+  edge-touching parts dissolve. Results match Shapely vertex for vertex, including ring start,
+  direction and part order: 15 475 fuzzed repairs, the 50 European countries of the tour at 2, 5
+  and 20 km, and 242 countries at 50 km. Valid results are untouched
+  ([#150](https://github.com/CountlinkX-Solutions/geoframe/pull/150)).
+- On a polygon with Z, the vertices that repair adds take GEOS's Z instead of `NaN`. A new
+  crossing node gets the mean of the Z interpolated along its two segments, and a `NaN` Z lying
+  on another ring is interpolated along it. 1 390 of 1 504 fuzzed repairs agree on every Z; the
+  rest are points where three or more rings meet
+  ([#154](https://github.com/CountlinkX-Solutions/geoframe/pull/154)).
+
+### Fixed
+
+- `dissolve(observed: false)` takes each key's levels from its own values. It used
+  `Explorer.Series.categories/1`, which in Explorer 0.13 returns every string categorized
+  anywhere in the process, so unrelated categories (and, under concurrency, values from other
+  frames) could appear as groups. Unobserved combinations of several keys are still added, as
+  pandas does ([#151](https://github.com/CountlinkX-Solutions/geoframe/pull/151)).
+
+### Documentation
+
+- `set_precision` on an invalid multipolygon keeps its merged, valid result in `valid_output`
+  and `keep_collapsed` where GEOS raises `TopologyException` (about half of random invalid
+  multipolygons). This is a decision, pinned by a test
+  ([#152](https://github.com/CountlinkX-Solutions/geoframe/pull/152)).
+- The reference suite has 19 118 cases: 18 393 agree with GeoPandas / Shapely, 725 are
+  documented deviations and none is unexplained (0.2.0: 18 379 agree, 739 documented).
+
 ## [0.2.0] - 2026-11-13
 
 Like 0.1.x, it is distributed through the `v0.2.0` git tag and GitHub release, not through Hex
@@ -316,7 +387,8 @@ through Hex. The NIF is compiled on your machine, so you need a stable Rust tool
   `GeoDataFrame.set_crs(frame, "EPSG:2223")`, the same projection in international feet (about
   2 ppm off, fine for maps).
 
-[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.0
 [0.2.0]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.2.0
 [0.1.2]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.1.2
 [0.1.1]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.1.1
