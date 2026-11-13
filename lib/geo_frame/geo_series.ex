@@ -692,8 +692,11 @@ defmodule GeoFrame.GeoSeries do
   @join_styles ~w(round mitre bevel)a
 
   @doc """
-  Buffers each geometry by `distance` (a number, in CRS units; negative shrinks polygons and
-  can empty them). The result is a polygon or multipolygon.
+  Buffers each geometry by `distance` (in CRS units; negative shrinks polygons and can empty
+  them). The result is a polygon or multipolygon.
+
+  `distance` is a number, or one distance per row as a list (numbers or `nil`) or an
+  `Explorer.Series` of the same length as the series; a `nil` distance gives a `nil` row.
 
   Options (Shapely names):
 
@@ -705,28 +708,41 @@ defmodule GeoFrame.GeoSeries do
       as those bounds.
     * `:mitre_limit` - for `:mitre` joins, the longest mitre as a multiple of `distance`,
       default `5.0`, at least `1.0`.
+    * `:single_sided` - default `false`. Buffers only one side of a line: the left of its
+      direction for a positive distance, the right for a negative one. Ends are flat (the
+      cap style is ignored) and outside corners use the join style. A point gives its
+      buffer for a positive distance and an empty polygon otherwise; a polygon gives only
+      the band around its rings (its buffer without the polygon, or the polygon without its
+      eroded part for a negative distance). GEOS' result for a closed line, a polygon with
+      holes or a band that overlaps itself is not reproduced (see `docs/parity.md`).
 
-  `single_sided` is not supported. Invalid options raise `ArgumentError`.
+  Invalid options raise `ArgumentError`.
 
       iex> s = GeoFrame.GeoSeries.from_wkt!(["POINT (0 0)"])
       iex> [area] = s |> GeoFrame.GeoSeries.buffer(1) |> GeoFrame.GeoSeries.area() |> Explorer.Series.to_list()
       iex> Float.round(area, 1)
       3.1
+
+      iex> s = GeoFrame.GeoSeries.from_wkt!(["LINESTRING (0 0, 10 0)"])
+      iex> s |> GeoFrame.GeoSeries.buffer(1, single_sided: true) |> GeoFrame.GeoSeries.to_wkt() |> Explorer.Series.to_list()
+      ["POLYGON ((0 0, 0 1, 10 1, 10 0, 0 0))"]
   """
-  @spec buffer(t(), number(), keyword()) :: t()
-  def buffer(%__MODULE__{ref: ref}, distance, opts \\ []) when is_number(distance) do
+  @spec buffer(t(), param(), keyword()) :: t()
+  def buffer(%__MODULE__{ref: ref} = series, distance, opts \\ []) do
     opts =
       Keyword.validate!(opts,
         cap_style: :round,
         join_style: :round,
         quad_segs: 16,
-        mitre_limit: 5.0
+        mitre_limit: 5.0,
+        single_sided: false
       )
 
     cap = enum!(opts, :cap_style, @cap_styles)
     join = enum!(opts, :join_style, @join_styles)
     quad_segs = opts[:quad_segs]
     mitre_limit = opts[:mitre_limit]
+    single_sided = opts[:single_sided]
 
     unless is_integer(quad_segs) and quad_segs > 0,
       do:
@@ -735,13 +751,19 @@ defmodule GeoFrame.GeoSeries do
     unless is_number(mitre_limit) and mitre_limit >= 1,
       do: raise(ArgumentError, ":mitre_limit must be a number >= 1, got: #{inspect(mitre_limit)}")
 
+    unless is_boolean(single_sided),
+      do: raise(ArgumentError, ":single_sided must be a boolean, got: #{inspect(single_sided)}")
+
+    distances = param!(distance, size(series), "distance")
+
     ref
     |> Native.buffer(
-      distance * 1.0,
+      distances,
       Atom.to_string(cap),
       Atom.to_string(join),
       quad_segs,
-      mitre_limit * 1.0
+      mitre_limit * 1.0,
+      single_sided
     )
     |> wrap()
     |> unwrap!()

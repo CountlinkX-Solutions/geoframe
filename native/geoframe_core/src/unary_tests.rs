@@ -108,6 +108,222 @@ fn buffer_rejects_unknown_styles() {
     assert!(one("POINT (0 0)").buffer(1.0, &bad_join).is_err());
 }
 
+/// Per-row distances: `GeoSeries.buffer([...])` of GeoPandas 1.2 (a null distance nulls the row
+/// here; Shapely rejects `None` and maps `nan` to a null row).
+/// ```python
+/// s = gpd.GeoSeries([Point(0, 0), Point(5, 5), None, square10, LineString([(0, 0), (10, 0)])])
+/// [g.area for g in s.buffer([1, 2, 3, -1, 0.5])]
+/// # [3.136548, 12.546194, None, 64.0, 10.784137]
+/// ```
+#[test]
+fn buffer_rows_takes_one_distance_per_row() {
+    let src = col(&[
+        Some("POINT (0 0)"),
+        Some("POINT (5 5)"),
+        None,
+        Some("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))"),
+        Some("LINESTRING (0 0, 10 0)"),
+        Some("POINT (1 1)"),
+    ]);
+    let distances = [Some(1.0), Some(2.0), Some(3.0), Some(-1.0), Some(0.5), None];
+    let out = src
+        .buffer_rows(&distances, &BufferOptions::default())
+        .unwrap();
+    let area = out.area();
+    for (got, want) in area.iter().zip([
+        Some(3.136548),
+        Some(12.546194),
+        None,
+        Some(64.0),
+        Some(10.784137),
+        None,
+    ]) {
+        match (got, want) {
+            (Some(g), Some(w)) => assert!(close(*g, w, w * 0.01), "{g} vs {w}"),
+            (None, None) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[test]
+fn buffer_rows_rejects_a_length_mismatch() {
+    let src = col(&[Some("POINT (0 0)"), Some("POINT (1 1)")]);
+    let err = src
+        .buffer_rows(&[Some(1.0)], &BufferOptions::default())
+        .unwrap_err();
+    assert!(err.contains("distance"), "{err}");
+}
+
+fn single_sided(join: &str, mitre_limit: f64) -> BufferOptions {
+    BufferOptions {
+        join: join.to_string(),
+        quad_segs: 8,
+        mitre_limit,
+        single_sided: true,
+        ..BufferOptions::default()
+    }
+}
+
+fn sided_area(wkt: &str, d: f64, options: &BufferOptions) -> f64 {
+    let out = one(wkt).buffer(d, options).unwrap();
+    out.area()[0].unwrap()
+}
+
+/// `shapely.buffer(g, d, single_sided=True, quad_segs=8, join_style=...)`: a positive distance
+/// buffers the left of a line, a negative one the right, ends are flat, and the result is the
+/// band between the line and its offset curve (outside corners use the join style).
+#[test]
+fn single_sided_line_is_the_band_to_one_side() {
+    let line = "LINESTRING (0 0, 10 0, 10 10)";
+    let round = single_sided("round", 5.0);
+    // Left of the path is the inside of the corner: the band is the two strips minus overlap.
+    assert!(close(sided_area(line, 1.0, &round), 19.0, 1e-9));
+    assert!(close(
+        sided_area(line, -1.0, &round),
+        20.780361288064512,
+        0.4
+    ));
+    assert!(close(
+        sided_area(line, -1.0, &single_sided("mitre", 5.0)),
+        21.0,
+        1e-9
+    ));
+    assert!(close(
+        sided_area(line, -1.0, &single_sided("bevel", 5.0)),
+        20.5,
+        1e-9
+    ));
+    let out = one(line).buffer(1.0, &round).unwrap();
+    assert_geom_eq(
+        &out,
+        &[Some("POLYGON ((10 10, 10 0, 0 0, 0 1, 9 1, 9 10, 10 10))")],
+    );
+    let out = one("LINESTRING (0 0, 10 0)").buffer(-1.0, &round).unwrap();
+    assert_geom_eq(&out, &[Some("POLYGON ((0 0, 10 0, 10 -1, 0 -1, 0 0))")]);
+}
+
+#[test]
+fn single_sided_ignores_the_cap_style() {
+    let square = BufferOptions {
+        cap: "square".to_string(),
+        ..single_sided("round", 5.0)
+    };
+    let out = one("LINESTRING (0 0, 10 0)").buffer(1.0, &square).unwrap();
+    assert_geom_eq(&out, &[Some("POLYGON ((0 0, 10 0, 10 1, 0 1, 0 0))")]);
+}
+
+#[test]
+fn single_sided_multilinestring_keeps_the_parts() {
+    let out = one("MULTILINESTRING ((0 0, 5 0), (0 3, 5 3))")
+        .buffer(-1.0, &single_sided("round", 5.0))
+        .unwrap();
+    assert_geom_eq(
+        &out,
+        &[Some(
+            "MULTIPOLYGON (((5 0, 5 -1, 0 -1, 0 0, 5 0)), ((5 3, 5 2, 0 2, 0 3, 5 3)))",
+        )],
+    );
+}
+
+/// Mitre limits on an acute outside corner (`LINESTRING (0 0, 10 0, 0 1)`, d = -1).
+#[test]
+fn single_sided_limited_mitre_matches_geos() {
+    let line = "LINESTRING (0 0, 10 0, 0 1)";
+    for (limit, want) in [
+        (5.0, 28.76553963444177),
+        (2.0, 23.80546958050205),
+        (10.0, 35.03729821283903),
+    ] {
+        let got = sided_area(line, -1.0, &single_sided("mitre", limit));
+        assert!(
+            close(got, want, want * 0.02),
+            "limit {limit}: {got} vs {want}"
+        );
+    }
+}
+
+#[test]
+fn single_sided_point_is_a_buffer_only_for_a_positive_distance() {
+    let round = single_sided("round", 5.0);
+    assert!(sided_area("POINT (1 1)", 1.0, &round) > 3.0);
+    let empty = one("POINT (1 1)").buffer(-1.0, &round).unwrap();
+    assert_eq!(empty.is_empty_rows(), vec![Some(true)]);
+}
+
+/// Polygon: only the band between the polygon and its buffer (GEOS leaves the hole of the
+/// polygon in a positive buffer and the eroded part in a negative one).
+#[test]
+fn single_sided_polygon_is_the_band_around_its_ring() {
+    let sq = "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))";
+    assert!(close(
+        sided_area(sq, 1.0, &single_sided("mitre", 5.0)),
+        20.0,
+        1e-9
+    ));
+    assert!(close(
+        sided_area(sq, 1.0, &single_sided("bevel", 5.0)),
+        18.0,
+        1e-9
+    ));
+    assert!(close(
+        sided_area(sq, -1.0, &single_sided("round", 5.0)),
+        12.0,
+        1e-9
+    ));
+    let out = one(sq).buffer(1.0, &single_sided("mitre", 5.0)).unwrap();
+    assert_geom_eq(
+        &out,
+        &[Some(
+            "POLYGON ((-1 -1, -1 5, 5 5, 5 -1, -1 -1), (0 0, 4 0, 4 4, 0 4, 0 0))",
+        )],
+    );
+}
+
+/// A polygon that a negative distance erodes completely is left out: `ell` (an L of width 2,
+/// d = -1) gives `POLYGON EMPTY`, and of a multipolygon only the part that survives has a band.
+#[test]
+fn single_sided_polygon_eroded_completely_is_left_out() {
+    let round = single_sided("mitre", 5.0);
+    let ell = one("POLYGON ((0 0, 6 0, 6 2, 2 2, 2 6, 0 6, 0 0))")
+        .buffer(-1.0, &round)
+        .unwrap();
+    assert_eq!(ell.is_empty_rows(), vec![Some(true)]);
+    let mpoly = one("MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((5 5, 8 5, 8 8, 5 8, 5 5)))")
+        .buffer(-1.0, &round)
+        .unwrap();
+    assert_geom_eq(
+        &mpoly,
+        &[Some(
+            "POLYGON ((5 5, 5 8, 8 8, 8 5, 5 5), (6 6, 7 6, 7 7, 6 7, 6 6))",
+        )],
+    );
+}
+
+/// `LINESTRING (0 0, 4 0, 4 4, 0 0)`: a closed line is flat at its start; an inside corner there
+/// is met like any other, so the band stays inside the triangle for a positive distance.
+#[test]
+fn single_sided_closed_line_is_flat_at_its_start() {
+    let tri = "LINESTRING (0 0, 4 0, 4 4, 0 0)";
+    let mitre = single_sided("mitre", 5.0);
+    // shapely: areas 7.82842712474619 (d = 1) and 17.071067811865476 (d = -1).
+    assert!(close(sided_area(tri, 1.0, &mitre), 7.82842712474619, 1e-6));
+    assert!(close(
+        sided_area(tri, -1.0, &mitre),
+        17.071067811865476,
+        1e-6
+    ));
+}
+
+#[test]
+fn single_sided_zero_distance_and_empty_input_are_empty() {
+    let round = single_sided("round", 5.0);
+    let out = col(&[Some("LINESTRING (0 0, 5 0)"), Some("LINESTRING EMPTY")])
+        .buffer_rows(&[Some(0.0), Some(1.0)], &round)
+        .unwrap();
+    assert_eq!(out.is_empty_rows(), vec![Some(true), Some(true)]);
+}
+
 #[test]
 fn simplify_drops_collinear_vertices_in_both_modes() {
     let line = one("LINESTRING (0 0, 1 0.001, 2 0, 3 0.001, 4 0)");

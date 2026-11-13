@@ -5,6 +5,7 @@ mod affine;
 mod arrow_io;
 mod atomic;
 mod attributes;
+mod buffer_single_sided;
 pub(crate) mod column;
 mod coverage;
 mod coverage_simplify;

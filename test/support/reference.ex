@@ -194,7 +194,8 @@ defmodule GeoFrame.Reference do
       [
         cap_style: args["cap_style"] && String.to_atom(args["cap_style"]),
         join_style: args["join_style"] && String.to_atom(args["join_style"]),
-        quad_segs: args["quad_segs"]
+        quad_segs: args["quad_segs"],
+        single_sided: args["single_sided"]
       ]
       |> Enum.reject(fn {_, v} -> is_nil(v) end)
 

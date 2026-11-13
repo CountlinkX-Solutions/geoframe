@@ -357,19 +357,21 @@ fn unary(column: Handle, name: String) -> Result<Handle, String> {
 #[rustler::nif(schedule = "DirtyCpu")]
 fn buffer(
     column: Handle,
-    distance: f64,
+    distances: Vec<Option<f64>>,
     cap: String,
     join: String,
     quad_segs: u32,
     mitre_limit: f64,
+    single_sided: bool,
 ) -> Result<Handle, String> {
     let options = BufferOptions {
         cap,
         join,
         quad_segs,
         mitre_limit,
+        single_sided,
     };
-    column.0.buffer(distance, &options).map(wrap)
+    column.0.buffer_rows(&distances, &options).map(wrap)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]

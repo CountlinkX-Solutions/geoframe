@@ -431,6 +431,19 @@ zm_deviations ++
     },
     %{
       reason:
+        "buffer with single_sided on a polygon with a hole: GEOS labels the one-sided ring curves so that the result is the polygon itself for a positive distance and the ordinary negative buffer for a negative one, where GeoFrame (and GEOS for a polygon without holes) returns the band between the polygon and its buffer.",
+      doc: "docs/parity.md#reference-testing",
+      op: "buffer",
+      cases: [
+        "buffer(1.0, single_sided, round):sq_hole",
+        "buffer(1.0, single_sided, mitre):sq_hole",
+        "buffer(1.0, single_sided, bevel):sq_hole",
+        "buffer(-1.0, single_sided, round):sq_hole",
+        "buffer(-1.0, single_sided, bevel):sq_hole"
+      ]
+    },
+    %{
+      reason:
         "Predicates and DE-9IM on an invalid (self-intersecting bowtie) input follow geo's relate, which does not agree with GEOS there. Valid input agrees in every case.",
       doc: "docs/parity.md#reference-testing",
       op: "contains",
