@@ -121,8 +121,12 @@ defmodule GeoFrame.GeoDataFrame do
   geometry map counts as one feature. Property types are inferred over all features exactly
   as `GeoFrame.read_geojson/2` does (booleans, `s64`, `f64`, otherwise strings; nested values
   as JSON text; a feature `id` becomes a leading `"id"` column when every feature has one).
-  A `nil` geometry is a null row. Elixir maps have no insertion order, so property columns
-  appear sorted by name; use `:columns` to choose the order.
+  A `nil` geometry is a null row. Property columns follow their first appearance across the
+  features (as GeoPandas does) when the properties are *ordered*: a keyword list or a list of
+  `{key, value}` pairs, or JSON decoded with `Jason.decode!(json, objects: :ordered_objects)`.
+  Plain Elixir maps have no insertion order, so their columns appear sorted by name; use
+  `:columns` to choose the order explicitly. (The geometry column comes last, as in every
+  `GeoDataFrame` here, where GeoPandas puts it first.)
 
   Options:
 
@@ -152,9 +156,40 @@ defmodule GeoFrame.GeoDataFrame do
   def from_features!(features, opts \\ []), do: features |> from_features(opts) |> unwrap!()
 
   defp feature_collection(features) when is_list(features),
-    do: %{"type" => "FeatureCollection", "features" => features}
+    do: %{"type" => "FeatureCollection", "features" => Enum.map(features, &ordered_feature/1)}
+
+  defp feature_collection(%{} = map) when not is_struct(map) do
+    Map.new(map, fn
+      {key, features} when key in ["features", :features] and is_list(features) ->
+        {key, Enum.map(features, &ordered_feature/1)}
+
+      pair ->
+        pair
+    end)
+  end
 
   defp feature_collection(%{} = map), do: map
+
+  # Keyword lists and `{key, value}` pair lists under "properties" keep their order by
+  # becoming ordered JSON objects; maps and ordered objects pass through unchanged.
+  defp ordered_feature(%{} = feature) when not is_struct(feature) do
+    Map.new(feature, fn
+      {key, [_ | _] = pairs} when key in ["properties", :properties] ->
+        {key, ordered_properties(pairs)}
+
+      pair ->
+        pair
+    end)
+  end
+
+  defp ordered_feature(other), do: other
+
+  defp ordered_properties(pairs) do
+    if Enum.all?(pairs, &match?({key, _} when is_binary(key) or is_atom(key), &1)),
+      do:
+        Jason.OrderedObject.new(Enum.map(pairs, fn {key, value} -> {to_string(key), value} end)),
+      else: pairs
+  end
 
   defp select_columns(data, nil), do: {:ok, data}
 
@@ -969,29 +1004,71 @@ defmodule GeoFrame.GeoDataFrame do
   @doc """
   Converts to an `Explorer.DataFrame` with the geometry columns last (active first).
 
-  Options: `:encoding` - `:wkb` (default, binary column) or `:wkt` (string column).
+  Options: `:encoding` - `:wkb` (default, binary column) or `:wkt` (string column). See
+  `to_wkb/2` and `to_wkt/2`.
   """
   @spec to_explorer(t(), keyword()) :: DataFrame.t()
-  def to_explorer(%__MODULE__{data: data, geometry: geometry} = gdf, opts \\ []) do
+  def to_explorer(%__MODULE__{} = gdf, opts \\ []) do
     GeoFrame.Options.validate!(opts, [:encoding])
 
-    encode = fn geometry ->
-      {values, dtype} =
-        case Keyword.get(opts, :encoding, :wkb) do
-          :wkb -> {GeoSeries.to_wkb(geometry), :binary}
-          :wkt -> {GeoSeries.to_wkt(geometry), :string}
-        end
-
-      Series.from_list(values, dtype: dtype)
+    case Keyword.get(opts, :encoding, :wkb) do
+      :wkb -> to_wkb(gdf)
+      :wkt -> to_wkt(gdf)
     end
+  end
 
-    columns = [{gdf.geometry_column, geometry} | gdf.secondary_geometries]
+  @doc """
+  Every geometry column, the active one and the secondary ones, encoded as WKB in an
+  `Explorer.DataFrame`; the attribute columns are unchanged and the geometry columns come last
+  (active first). Like GeoPandas `GeoDataFrame.to_wkb`; null geometries stay `nil`.
 
-    Enum.reduce(columns, data, fn {name, series}, acc ->
+  Options: `:hex` (default `false`) gives upper-case hexadecimal strings instead of binaries,
+  and `:srid` (an integer, or `true` for each column's own `EPSG:` CRS) gives PostGIS EWKB; see
+  `GeoFrame.GeoSeries.to_wkb/2`.
+  """
+  @spec to_wkb(t(), keyword()) :: DataFrame.t()
+  def to_wkb(%__MODULE__{} = gdf, opts \\ []) do
+    opts = Keyword.validate!(opts, hex: false, srid: nil)
+    dtype = if opts[:hex], do: :string, else: :binary
+    encode_geometries(gdf, &GeoSeries.to_wkb(&1, opts), dtype)
+  end
+
+  @doc """
+  Every geometry column encoded as WKT strings in an `Explorer.DataFrame`, like GeoPandas
+  `GeoDataFrame.to_wkt`; see `to_wkb/2` for the layout. Takes no options (GeoPandas passes
+  its keyword arguments to shapely, such as `rounding_precision`, which are not supported).
+  """
+  @spec to_wkt(t(), keyword()) :: DataFrame.t()
+  def to_wkt(%__MODULE__{} = gdf, opts \\ []) do
+    [] = Keyword.validate!(opts, [])
+    encode_geometries(gdf, &GeoSeries.to_wkt/1, :string)
+  end
+
+  defp encode_geometries(gdf, encode, dtype) do
+    columns = [{gdf.geometry_column, gdf.geometry} | gdf.secondary_geometries]
+
+    Enum.reduce(columns, gdf.data, fn {name, series}, acc ->
+      encoded = Series.from_list(encode.(series), dtype: dtype)
+
       if has_columns?(acc),
-        do: DataFrame.put(acc, name, encode.(series)),
-        else: DataFrame.new([{name, encode.(series)}])
+        do: DataFrame.put(acc, name, encoded),
+        else: DataFrame.new([{name, encoded}])
     end)
+  end
+
+  @doc """
+  Renames the active geometry column, like GeoPandas `GeoDataFrame.rename_geometry`.
+
+  Raises `ArgumentError` (`"Column named <name> already exists"`) when the frame already has a
+  column with that name, the geometry column itself included.
+  """
+  @spec rename_geometry(t(), String.t() | atom()) :: t()
+  def rename_geometry(%__MODULE__{} = gdf, new_name) do
+    name = to_string(new_name)
+
+    if name in names(gdf),
+      do: raise(ArgumentError, "Column named #{name} already exists"),
+      else: %{gdf | geometry_column: name}
   end
 
   @doc false
@@ -1048,12 +1125,38 @@ defmodule GeoFrame.GeoDataFrame do
   @doc """
   The `__geo_interface__` of the frame: a `FeatureCollection` map (string keys) with `id`,
   `properties`, `geometry` and `bbox` per feature, and the collection `bbox`; missing values
-  are `nil`. Secondary geometry columns are properties holding GeoJSON geometry maps.
+  are `nil`. Secondary geometry columns are properties holding GeoJSON geometry maps (GeoPandas
+  keeps the shapely objects there, which Elixir has no equivalent of).
+
+  See `to_geo_dict/2` for the variant with options.
   """
   @spec to_geo_interface(t()) :: map()
-  def to_geo_interface(%__MODULE__{data: data, geometry: geometry} = gdf) do
-    opts = GeoFrame.Features.options!([], true)
-    GeoFrame.Features.build(geometry, data, opts, :map, gdf.secondary_geometries)
+  def to_geo_interface(%__MODULE__{} = gdf) do
+    GeoFrame.Features.build(
+      gdf.geometry,
+      gdf.data,
+      GeoFrame.Features.options!([], true, :map),
+      :map,
+      gdf.secondary_geometries
+    )
+  end
+
+  @doc """
+  The frame as a GeoJSON-like map, like GeoPandas `GeoDataFrame.to_geo_dict`. It is
+  `to_geo_interface/1` with options, and its defaults differ: no bboxes.
+
+  Options: `:na` - `:null` (default) keeps missing properties as `nil`, `:drop` omits them,
+  `:keep` leaves values as Explorer yields them (`nil`, `:nan`); `:show_bbox` (default `false`);
+  `:drop_id` (default `false`). Unknown options raise `ArgumentError`.
+  """
+  @spec to_geo_dict(t(), keyword()) :: map()
+  def to_geo_dict(%__MODULE__{} = gdf, opts \\ []) do
+    opts =
+      opts
+      |> Keyword.validate!(na: :null, show_bbox: false, drop_id: false)
+      |> GeoFrame.Features.options!(false, :map)
+
+    GeoFrame.Features.build(gdf.geometry, gdf.data, opts, :map, gdf.secondary_geometries)
   end
 
   # -- helpers --------------------------------------------------------------------------
