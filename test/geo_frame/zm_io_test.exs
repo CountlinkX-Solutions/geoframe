@@ -126,6 +126,43 @@ defmodule GeoFrame.ZmIoTest do
     end
   end
 
+  # GDAL reads a 2D row of a Z layer and a two-value position of a 3D geometry as Z = 0 (files
+  # written and read by GDAL 3.12 in generate_io.py: lines_z_mixed.shp, z_positions.geojson).
+  describe "a missing Z is 0, as GDAL" do
+    @mixed ["LINESTRING Z (0 0 5, 1 1 6)", "LINESTRING (2 2, 3 3)", nil]
+    @zero ["LINESTRING Z(0 0 5,1 1 6)", "LINESTRING Z(2 2 0,3 3 0)", nil]
+
+    for {ext, opts} <- [{".shp", []}, {".fgb", [index: false]}] do
+      test "a 2D row written to a Z #{ext} file reads back with Z 0", %{tmp_dir: dir} do
+        gdf = GeoDataFrame.new(DataFrame.new(id: [1, 2, 3]), GeoSeries.from_wkt!(@mixed))
+        out = Path.join(dir, "mixed" <> unquote(ext))
+        assert :ok = GeoFrame.write_file(gdf, out, unquote(opts))
+        assert wkt(GeoFrame.read_file!(out)) == @zero
+      end
+    end
+
+    test "the GDAL shapefile with a 2D row reads Z 0 and survives a round trip", %{tmp_dir: dir} do
+      gdf = GeoFrame.read_file!(Path.join(@fixtures, "lines_z_mixed.shp"))
+      assert wkt(gdf) == @zero
+      out = Path.join(dir, "again.shp")
+      assert :ok = GeoFrame.write_file(gdf, out)
+      assert wkt(GeoFrame.read_file!(out)) == @zero
+    end
+
+    test "an explicit NaN Z stays NaN in a shapefile", %{tmp_dir: dir} do
+      # Shapefile and FlatGeobuf store NaN: only an absent ordinate is promoted to 0.
+      wkb =
+        Base.decode16!(
+          "01EA03000002000000000000000000F03F000000000000F03F000000000000F87F000000000000004000000000000000400000000000000840"
+        )
+
+      gdf = GeoDataFrame.new(DataFrame.new(id: [1]), GeoSeries.from_wkb!([wkb]))
+      out = Path.join(dir, "nan.shp")
+      assert :ok = GeoFrame.write_file(gdf, out)
+      assert wkt(GeoFrame.read_file!(out)) == ["LINESTRING Z(1 1 NaN,2 2 3)"]
+    end
+  end
+
   describe "GeoJSON" do
     test "reads a GDAL file with mixed dimensions", %{tmp_dir: dir} do
       gdf = GeoFrame.read_file!(Path.join(@fixtures, "z.geojson"))

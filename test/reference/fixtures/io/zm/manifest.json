@@ -53,6 +53,37 @@
     "MULTILINESTRING Z ((0 0 1, 1 1 2), (5 5 3, 6 6 4))"
    ]
   },
+  "lines_z_mixed.shp": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3
+    ],
+    "name": [
+     "a",
+     "b",
+     "c"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true,
+    false
+   ],
+   "kind": "shapefile",
+   "wkt": [
+    "LINESTRING Z (0 0 5, 1 1 6)",
+    "LINESTRING Z (2 2 0, 3 3 0)",
+    null
+   ]
+  },
   "lines_zm.shp": {
    "columns": {
     "id": [
@@ -598,6 +629,42 @@
     "MULTIPOLYGON Z (((0 0 1, 4 0 2, 4 4 3, 0 0 1)))",
     "MULTIPOLYGON Z (((10 10 7, 11 10 7, 11 11 7, 10 10 7)), ((20 20 8, 21 20 8, 21 21 8, 20 20 8)))",
     null
+   ]
+  },
+  "z_positions.geojson": {
+   "columns": {
+    "id": [
+     1,
+     2,
+     3,
+     4
+    ],
+    "name": [
+     "a",
+     "b",
+     "c",
+     "d"
+    ]
+   },
+   "crs": "EPSG:4326",
+   "has_m": [
+    false,
+    false,
+    false,
+    false
+   ],
+   "has_z": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "kind": "geojson",
+   "wkt": [
+    "LINESTRING Z (0 0 1, 1 1 0, 2 2 3)",
+    "POLYGON Z ((0 0 0, 4 0 2, 4 4 0, 0 0 0))",
+    "MULTIPOINT Z ((1 2 0), (3 4 5))",
+    "GEOMETRYCOLLECTION Z (POINT Z (1 2 3), POINT Z (4 5 0))"
    ]
   },
   "z_wkb.feather": {

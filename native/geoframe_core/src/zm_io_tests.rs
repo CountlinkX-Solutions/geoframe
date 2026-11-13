@@ -93,7 +93,7 @@ mod geojson {
     }
 
     #[test]
-    fn positions_without_z_in_a_3d_geometry_get_nan() {
+    fn positions_without_z_in_a_3d_geometry_get_zero() {
         let c = read(&feature(
             r#"{"type":"LineString","coordinates":[[0,0,1],[1,1],[2,2,3]]}"#,
         ));
@@ -104,7 +104,8 @@ mod geojson {
             f64::from_le_bytes(wkb[9 + 24 * i + 16..9 + 24 * i + 24].try_into().unwrap())
         };
         assert_eq!((z(0), z(2)), (1.0, 3.0));
-        assert!(z(1).is_nan());
+        // GDAL reads a two-value position in a 3D geometry as Z = 0
+        assert_eq!(z(1), 0.0);
     }
 
     #[test]
@@ -117,7 +118,7 @@ mod geojson {
         assert_eq!(
             wkt(&c),
             [Some(
-                "GEOMETRYCOLLECTION Z(POINT Z(1 2 3),POINT Z(4 5 NaN))".to_string()
+                "GEOMETRYCOLLECTION Z(POINT Z(1 2 3),POINT Z(4 5 0))".to_string()
             )]
         );
     }
@@ -356,7 +357,9 @@ mod flatgeobuf {
         assert_eq!(back.has_m(), [true; 3]);
         let z = back.z();
         assert_eq!(z[0], Some(3.0));
-        assert_eq!(z[1], None); // NaN reads as null
+        // a row without Z reads as Z = 0, as GDAL reads a 2D row of a Z layer
+        assert_eq!(z[1], Some(0.0));
+        assert_eq!(z[2], Some(0.0));
         assert_eq!(back.m()[2], Some(8.0));
     }
 
@@ -542,14 +545,15 @@ mod shapefile {
     }
 
     #[test]
-    fn rows_without_z_in_a_z_file_read_back_with_nan() {
+    fn rows_without_z_in_a_z_file_read_back_with_zero() {
         let dir = TempDir::new().unwrap();
         let g = col(&[Some("POINT Z (1 2 3)"), Some("POINT (4 5)"), None]);
         let file = write(&dir, "mix.shp", &g);
         assert_eq!(shape_type(&file), 11);
         let back = read_shapefile(&file, None).unwrap().geometry;
         assert_eq!(back.has_z(), [true, true, false]);
-        assert_eq!(back.z(), [Some(3.0), None, None]);
+        // GDAL writes Z = 0 for a 2D row of a Z shapefile
+        assert_eq!(back.z(), [Some(3.0), Some(0.0), None]);
     }
 
     #[test]

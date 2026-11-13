@@ -50,6 +50,17 @@ pub(crate) fn vertex<C: CoordTrait<T = f64>>(coord: &C) -> Vertex {
     }
 }
 
+/// Reads a coordinate for a format with one dimension per file (Shapefile, FlatGeobuf): a
+/// geometry without Z gets Z = 0 where the file has Z, as GDAL writes it. A NaN Z that the
+/// geometry stores stays NaN, and a missing M stays NaN (no data).
+pub(crate) fn vertex_z0<C: CoordTrait<T = f64>>(coord: &C) -> Vertex {
+    let mut v = vertex(coord);
+    if !flags(coord.dim()).0 {
+        v.z = 0.0;
+    }
+    v
+}
+
 // -- ISO WKB builder ----------------------------------------------------------------------
 
 /// Little-endian ISO WKB under construction, with one fixed dimension.
@@ -129,7 +140,7 @@ pub(crate) fn zm_ranges(wkb: &[u8]) -> (Option<[f64; 2]>, Option<[f64; 2]>) {
 // -- GeoJSON -> WKB -----------------------------------------------------------------------
 
 /// ISO WKB of a GeoJSON geometry. A geometry has Z when any position (of any member of a
-/// collection) has three or more values; positions with two values then get a NaN Z. Values
+/// collection) has three or more values; positions with two values then get Z = 0, as GDAL reads them. Values
 /// past the third are ignored, as GDAL does.
 pub(crate) fn geojson_to_wkb(geometry: &geojson::Geometry) -> Result<Vec<u8>, String> {
     let mut out = WkbOut::new(has_z(&geometry.value), false);
@@ -161,7 +172,7 @@ fn position(p: &geojson::Position) -> Result<Vertex, String> {
         [x, y] => Ok(Vertex {
             x: *x,
             y: *y,
-            z: f64::NAN,
+            z: 0.0,
             m: f64::NAN,
         }),
         [x, y, z, ..] => Ok(Vertex {
@@ -356,8 +367,8 @@ fn write_geometry<G: GeometryTrait<T = f64>>(out: &mut String, geometry: &G) -> 
 // -- geo_traits -> geozero ----------------------------------------------------------------
 
 /// A geometry as a geozero source that keeps Z and M: coordinates are emitted with every
-/// ordinate the processor asks for (NaN where the geometry has none), so a 2D geometry written
-/// into a 3D dataset is promoted instead of producing a short ordinate array.
+/// ordinate the processor asks for (Z = 0 and NaN M where the geometry has none), so a 2D
+/// geometry written into a 3D dataset is promoted instead of producing a short ordinate array.
 pub(crate) struct Source<'a, G>(pub &'a G);
 
 impl<G: GeometryTrait<T = f64>> geozero::GeozeroGeometry for Source<'_, G> {
@@ -374,7 +385,7 @@ fn emit<C: CoordTrait<T = f64>, P: geozero::GeomProcessor>(
     idx: usize,
     processor: &mut P,
 ) -> geozero::error::Result<()> {
-    let v = vertex(coord);
+    let v = vertex_z0(coord);
     if processor.multi_dim() {
         let dims = processor.dimensions();
         processor.coordinate(
