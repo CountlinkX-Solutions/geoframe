@@ -206,15 +206,18 @@ defmodule GeoFrame.GeoSeries do
     raise ArgumentError, "#{name} must be a list or an Explorer.Series, got: #{inspect(other)}"
   end
 
-  @typedoc "A vertex: an `{x, y}` tuple or an `[x, y]` list of numbers."
-  @type vertex :: {number(), number()} | [number()]
+  @typedoc "A vertex: an `{x, y}` or `{x, y, z}` tuple, or an `[x, y]` or `[x, y, z]` list of numbers."
+  @type vertex :: {number(), number()} | {number(), number(), number()} | [number()]
 
   @doc """
   Builds line strings from vertex lists, one list per row (GeoPolars `line_string`).
 
   A row is a list of vertices, `[]` for an empty line or `nil` for a null geometry; a vertex is
-  `{x, y}` or `[x, y]`. A line needs at least two vertices. The constructors take 2D vertices only (a vertex with a
-  third value is an error); build Z geometries with `from_wkt/2` or `force_3d/2`. Option: `:crs`.
+  `{x, y}` or `[x, y]`, or `{x, y, z}` or `[x, y, z]` for a Z geometry. A line needs at least two
+  vertices. As in Shapely, the vertices of one list must all have the same number of values (a
+  mix, or a fourth value, is an error), while the rings of a polygon, the lines of a
+  multi-line and the polygons of a multipolygon may differ: the 2D ones next to a Z one get a NaN
+  Z. A row is 2D or Z on its own, so one column can hold both. Option: `:crs`.
 
       iex> s = GeoFrame.GeoSeries.line_strings_from_vertices([[{0, 0}, {1, 1}], nil])
       iex> GeoFrame.GeoSeries.to_wkt(s)
@@ -294,7 +297,26 @@ defmodule GeoFrame.GeoSeries do
   defp rings!(rings, row) when is_list(rings), do: Enum.map(rings, &vertices!(&1, row))
   defp rings!(_other, row), do: raise(ArgumentError, "row #{row}: expected a list of rings")
 
-  defp vertices!(vertices, row) when is_list(vertices), do: Enum.map(vertices, &vertex!(&1, row))
+  # A list of vertices as `{xy_pairs, zs}`; `zs` is nil for a 2D list. A list mixing 2 and 3
+  # values is an error, as in Shapely (`linestrings` needs a rectangular array).
+  defp vertices!(vertices, row) when is_list(vertices) do
+    parsed = Enum.map(vertices, &vertex!(&1, row))
+
+    case Enum.uniq_by(parsed, &tuple_size/1) do
+      [] ->
+        {[], nil}
+
+      [first | _] when tuple_size(first) == 2 ->
+        {parsed, nil}
+
+      [_] ->
+        {Enum.map(parsed, fn {x, y, _z} -> {x, y} end), Enum.map(parsed, &elem(&1, 2))}
+
+      _mixed ->
+        raise ArgumentError,
+              "row #{row}: a list of vertices cannot mix {x, y} and {x, y, z} vertices"
+    end
+  end
 
   defp vertices!(_other, row),
     do: raise(ArgumentError, "row #{row}: expected a list of vertices")
@@ -302,8 +324,16 @@ defmodule GeoFrame.GeoSeries do
   defp vertex!({x, y}, _row) when is_number(x) and is_number(y), do: {x * 1.0, y * 1.0}
   defp vertex!([x, y], _row) when is_number(x) and is_number(y), do: {x * 1.0, y * 1.0}
 
+  defp vertex!({x, y, z}, _row) when is_number(x) and is_number(y) and is_number(z),
+    do: {x * 1.0, y * 1.0, z * 1.0}
+
+  defp vertex!([x, y, z], _row) when is_number(x) and is_number(y) and is_number(z),
+    do: {x * 1.0, y * 1.0, z * 1.0}
+
   defp vertex!(other, row) do
-    raise ArgumentError, "row #{row}: invalid vertex #{inspect(other)}, expected {x, y} numbers"
+    raise ArgumentError,
+          "row #{row}: invalid vertex #{inspect(other)}, expected {x, y} or {x, y, z} numbers " <>
+            "(M is not supported, as in Shapely)"
   end
 
   # -- outputs and metadata -------------------------------------------------------------

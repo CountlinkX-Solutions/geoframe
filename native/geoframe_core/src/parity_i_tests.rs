@@ -5,6 +5,7 @@ use tempfile::TempDir;
 
 use crate::{
     geoparquet_metadata, write_geoparquet, GeoColumn, PrecisionMode, Predicate, VertexKind,
+    VertexRing,
 };
 
 fn col(rows: &[Option<&str>]) -> GeoColumn {
@@ -548,6 +549,135 @@ fn multi_line_strings_and_multi_polygons() {
             "MULTIPOLYGON (((0 0, 1 0, 1 1, 0 1, 0 0)), ((5 0, 6 0, 6 1, 5 1, 5 0)))"
         ))]
     );
+}
+
+// Z vertices follow Shapely 2.2 (`linestrings`, `multipoints`, `polygons`, ...); the expected
+// WKT is the Shapely result, see `build_zm_coords` in test/reference/generate.py.
+fn z_ring(v: &[(f64, f64, f64)]) -> VertexRing {
+    (
+        v.iter().map(|&(x, y, _)| (x, y)).collect(),
+        Some(v.iter().map(|&(_, _, z)| z).collect()),
+    )
+}
+
+fn flat_ring(v: &[(f64, f64)]) -> VertexRing {
+    (v.to_vec(), None)
+}
+
+#[test]
+fn z_vertices_build_z_geometries() {
+    let rows = vec![
+        Some(vec![vec![z_ring(&[(0.0, 0.0, 1.0), (1.0, 1.0, 2.0)])]]),
+        Some(vec![vec![flat_ring(&[(0.0, 0.0), (1.0, 1.0)])]]),
+        None,
+    ];
+    let c = GeoColumn::from_vertices_z(VertexKind::LineString, &rows, None).unwrap();
+    assert_eq!(c.has_z(), [true, false, false]);
+    assert_eq!(
+        text(&c),
+        vec![
+            Some("LINESTRING Z(0 0 1,1 1 2)".to_string()),
+            Some(canon("LINESTRING (0 0, 1 1)")),
+            None
+        ]
+    );
+}
+
+#[test]
+fn z_multipoints_and_multi_lines() {
+    let c = GeoColumn::from_vertices_z(
+        VertexKind::MultiPoint,
+        &[Some(vec![vec![z_ring(&[
+            (0.0, 0.0, 1.0),
+            (1.0, 2.0, 2.0),
+        ])]])],
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        text(&c),
+        vec![Some("MULTIPOINT Z((0 0 1),(1 2 2))".to_string())]
+    );
+
+    // a 2D line next to a Z line is promoted with NaN Z (Shapely multilinestrings)
+    let mixed = vec![
+        vec![z_ring(&[(0.0, 0.0, 1.0), (1.0, 1.0, 2.0)])],
+        vec![flat_ring(&[(5.0, 5.0), (6.0, 6.0)])],
+    ];
+    let c = GeoColumn::from_vertices_z(VertexKind::MultiLineString, &[Some(mixed)], None).unwrap();
+    assert_eq!(
+        text(&c),
+        vec![Some(
+            "MULTILINESTRING Z((0 0 1,1 1 2),(5 5 NaN,6 6 NaN))".to_string()
+        )]
+    );
+}
+
+#[test]
+fn z_polygons_close_with_the_first_z_and_promote_rings() {
+    let shell = z_ring(&[(0.0, 0.0, 1.0), (4.0, 0.0, 2.0), (4.0, 4.0, 3.0)]);
+    let hole = flat_ring(&[(1.0, 1.0), (2.0, 1.0), (2.0, 2.0)]);
+    let c = GeoColumn::from_vertices_z(VertexKind::Polygon, &[Some(vec![vec![shell, hole]])], None)
+        .unwrap();
+    assert_eq!(
+        text(&c),
+        vec![Some(
+            "POLYGON Z((0 0 1,4 0 2,4 4 3,0 0 1),(1 1 NaN,2 1 NaN,2 2 NaN,1 1 NaN))".to_string()
+        )]
+    );
+
+    // closed in XY but not in Z: Shapely appends the first vertex again
+    let open_in_z = z_ring(&[
+        (0.0, 0.0, 1.0),
+        (4.0, 0.0, 2.0),
+        (4.0, 4.0, 3.0),
+        (0.0, 0.0, 9.0),
+    ]);
+    let c = GeoColumn::from_vertices_z(VertexKind::Polygon, &[Some(vec![vec![open_in_z]])], None)
+        .unwrap();
+    assert_eq!(
+        text(&c),
+        vec![Some(
+            "POLYGON Z((0 0 1,4 0 2,4 4 3,0 0 9,0 0 1))".to_string()
+        )]
+    );
+}
+
+#[test]
+fn z_multi_polygons() {
+    let square = |z: f64| vec![z_ring(&[(0.0, 0.0, z), (4.0, 0.0, z), (4.0, 4.0, z)])];
+    let flat = vec![flat_ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0)])];
+    let c = GeoColumn::from_vertices_z(
+        VertexKind::MultiPolygon,
+        &[Some(vec![square(1.0), flat])],
+        Some("EPSG:4979"),
+    )
+    .unwrap();
+    assert_eq!(c.crs().as_deref(), Some("EPSG:4979"));
+    assert_eq!(
+        text(&c),
+        vec![Some(
+            "MULTIPOLYGON Z(((0 0 1,4 0 1,4 4 1,0 0 1)),((0 0 NaN,4 0 NaN,4 4 NaN,0 0 NaN)))"
+                .to_string()
+        )]
+    );
+}
+
+#[test]
+fn z_validation_still_names_the_row() {
+    let err = GeoColumn::from_vertices_z(
+        VertexKind::LineString,
+        &[Some(vec![vec![z_ring(&[(0.0, 0.0, 1.0)])]])],
+        None,
+    )
+    .unwrap_err();
+    assert!(err.contains("row 0") && err.contains("two"), "{err}");
+
+    // a Z list shorter than its vertices is a bug on the caller's side, not a panic
+    let ragged = ((vec![(0.0, 0.0), (1.0, 1.0)]), Some(vec![1.0]));
+    let err = GeoColumn::from_vertices_z(VertexKind::LineString, &[Some(vec![vec![ragged]])], None)
+        .unwrap_err();
+    assert!(err.contains("row 0") && err.contains("Z"), "{err}");
 }
 
 #[test]
