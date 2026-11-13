@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use crate::geo_convert::to_geo as geometry_to_geo;
 use geo::algorithm::buffer::{BufferStyle, LineCap, LineJoin};
 use geo::{
     AffineTransform, BoundingRect, Buffer, Centroid, ConvexHull, Coord, CoordsIter, Geometry,
@@ -17,7 +18,6 @@ use geo::{
     MultiPolygon, Point, Polygon, SimplifyVwPreserve,
 };
 use geo_traits::{GeometryTrait, GeometryType};
-use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 
 use crate::buffer_single_sided::{single_sided_geometry, Sided};
 use crate::predicates::guarded;

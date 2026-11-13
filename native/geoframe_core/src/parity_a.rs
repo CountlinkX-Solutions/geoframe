@@ -7,12 +7,12 @@
 use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use crate::geo_convert::{to_geo as geometry_to_geo, to_geo_keeping_empty_points};
 use geo::line_intersection::{line_intersection, LineIntersection};
 use geo::{
     Coord, CoordsIter, Geometry, GeometryCollection, Line, LineString, MultiLineString, MultiPoint,
     MultiPolygon, Point, Polygon, Validation,
 };
-use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 
 use crate::zm_bridge::{Keep, Restore};
 use crate::zm_overlay::z_only;
@@ -146,7 +146,7 @@ impl GeoColumn {
     /// Number of parts per geometry: members of a multi-part geometry or collection, 1 for a
     /// single geometry and 0 for empty ones. Null rows are null (Shapely counts them as 0).
     pub fn count_geometries(&self) -> Vec<Option<usize>> {
-        self.map_scalars(|scalar| match geometry_to_geo(scalar) {
+        self.map_scalars(|scalar| match to_geo_keeping_empty_points(scalar) {
             Ok(g) if g.coords_count() > 0 => parts(&g).len(),
             _ => 0,
         })
@@ -163,7 +163,18 @@ impl GeoColumn {
     /// The `n`th part of each geometry; negative `n` counts from the end. A single geometry
     /// is its own part 0. Out-of-range indices give null.
     pub fn get_geometry(&self, n: i64) -> Result<Self, String> {
-        self.map_geometry_zm(Keep::Both, |g| nth_part(parts(g), n))
+        let rows: Vec<Option<Geometry<f64>>> = self
+            .geo_rows_keeping_empty_points()
+            .iter()
+            .map(|row| {
+                let g = row.as_ref()?;
+                catch_unwind(AssertUnwindSafe(|| nth_part(parts(g), n)))
+                    .ok()
+                    .flatten()
+            })
+            .collect();
+        let source: Vec<usize> = (0..rows.len()).collect();
+        self.rebuild_zm(&rows, &source, &Restore::keep(Keep::Both))
     }
 
     /// [`get_geometry`](Self::get_geometry) with one index per row (`None` gives a null row).
@@ -176,7 +187,7 @@ impl GeoColumn {
             ));
         }
         let rows: Vec<Option<Geometry<f64>>> = self
-            .geo_rows()
+            .geo_rows_keeping_empty_points()
             .iter()
             .zip(indices)
             .map(|(row, n)| {

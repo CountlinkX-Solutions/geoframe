@@ -734,6 +734,34 @@ Ordered by user value; each batch roughly one PR (400-800 authored lines).
 - Crates: mostly none in `geo`; would need GEOS (C dependency) or custom algorithms; `geo-buf` for `offset_curve`.
 - Difficulty: high. Z/M support turned out not to need a storage change (the GeoArrow union already held every dimension); it was done in Z1-Z5, see [Z and M](#z-and-m).
 
+## Empty member points
+
+A `MULTIPOINT` or `GEOMETRYCOLLECTION` may hold an empty point (Shapely writes
+`MULTIPOINT (EMPTY, (1 1))` to WKB with a NaN point, which is also how GeoArrow stores it).
+GEOS 3.14 gives such a member no part in a computation and keeps it as a member. Since 0.3.2
+(`geo_convert.rs`) GeoFrame does the same; before, `geo` could not represent the row, so it was
+treated as missing (`is_empty` true, every measure and predicate null, `count_geometries` 0).
+
+- Computations leave the member out: `is_empty` (true only when every member is empty),
+  `count_coordinates`, `area`, `length`, `bounds`, `centroid`, `is_valid`, `is_simple`,
+  predicates, `distance`, `convex_hull`, `buffer` and every other `geo`-based function.
+- Structure keeps it: `count_geometries`, `get_geometry`, `explode` (the member comes back as
+  `POINT EMPTY`, `POINT Z EMPTY` in a Z multipoint), the affine functions and `force_2d` /
+  `force_3d` (the member stays empty), WKB, WKT (`EMPTY`) and every file format that can hold it
+  (GeoParquet, Feather, Arrow, GeoPackage; Shapefile, FlatGeobuf and GeoJSON have no empty point
+  and drop it).
+- Checked against Shapely 2.2 on 1 200 random multipoints and collections with empty members
+  (`is_empty`, `count_geometries`, `count_coordinates`, `area`, `length`, `bounds`, `centroid`,
+  `is_valid`, `distance`, `intersects`, convex hull and buffer areas, `get_geometry(0)`,
+  `get_geometry(-1)`, `explode`): every value agrees except where every member is empty, where
+  `centroid` and `convex_hull` are null (the null/empty class) instead of `POINT EMPTY` and an
+  empty collection.
+- Deviation: the functions that rebuild a geometry through `geo` (`normalize`, `simplify`,
+  `segmentize`, `set_precision`, ...) return it without the empty member. GEOS keeps it in
+  `normalize` (as the last member) and drops it in `set_precision`; the geometry is the same.
+- A one-member collection is stored as its member (deviation 2 of [Z and M](#z-and-m)), so
+  `GEOMETRYCOLLECTION (POINT EMPTY)` is a top-level empty point, which `geo` cannot hold.
+
 ## Z and M
 - Z1 status: done (issue #74, see `odd/tasks/zm-support.md`). Storage already held XYZ, XYM and XYZM (the GeoArrow `geometry` union is dimension-aware); Z1 adds the API on top: `has_z`, `has_m`, `z`/`get_z`, `m`/`get_m`, `force_2d`, `force_3d` (Rust `zm.rs`: the dimension is read from the stored scalars, and forcing rewrites each geometry's ISO WKB, so every other ordinate is kept bit for bit). 360 reference cases (`zm.json`: points, lines, polygons with a hole, multi geometries, collections, empties of every dimension; 327 agree, 33 are the documented deviations below) compare with GeoPandas 1.2 / Shapely 2.2.
 - Round trips that keep Z and M (tested in `zm_tests.rs` and `zm_test.exs`; Z4 adds every file format, see below): WKB (ISO), WKT (`POINT Z`, `POINT M`, `POINT ZM`), EWKB (PostGIS flags), GeoParquet (WKB), Arrow IPC (WKB and native point encodings), GeoPackage, `take`, `concat`, `fill_null`.

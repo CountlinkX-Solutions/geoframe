@@ -144,6 +144,47 @@ defmodule GeoFrame.GeoSeriesTest do
     end
   end
 
+  describe "a member that is an empty point" do
+    # Shapely 2.2 writes MULTIPOINT (EMPTY, (1 1)) to WKB with a NaN point member. GEOS gives
+    # that member no part in computations but keeps it as a member.
+    @wkb Base.decode16!(
+           "0104000000020000000101000000000000000000F87F000000000000F87F0101000000000000000000F03F" <>
+             "000000000000F03F"
+         )
+
+    test "takes no part in computations, as in GEOS" do
+      s = GeoSeries.from_wkb!([@wkb, @wkb])
+      assert Series.to_list(GeoSeries.is_empty(s)) == [false, false]
+      assert Series.to_list(GeoSeries.count_coordinates(s)) == [1, 1]
+      assert Series.to_list(GeoSeries.area(s)) == [0.0, 0.0]
+
+      assert DataFrame.to_rows(GeoSeries.bounds(s)) |> hd() |> Map.values() |> Enum.sort() ==
+               [1.0, 1.0, 1.0, 1.0]
+
+      assert GeoSeries.to_wkt(GeoSeries.centroid(s)) == ["POINT(1 1)", "POINT(1 1)"]
+      assert GeoSeries.to_wkt(GeoSeries.translate(s, 1, 1)) |> hd() == "MULTIPOINT(EMPTY,(2 2))"
+    end
+
+    test "is still a member, as in GEOS" do
+      s = GeoSeries.from_wkb!([@wkb])
+      assert Series.to_list(GeoSeries.count_geometries(s)) == [2]
+      assert GeoSeries.to_wkt(GeoSeries.get_geometry(s, 0)) == ["POINT EMPTY"]
+      assert GeoSeries.to_wkt(GeoSeries.get_geometry(s, 1)) == ["POINT(1 1)"]
+      {parts, _positions} = GeoSeries.explode(s)
+      assert GeoSeries.to_wkt(parts) == ["POINT EMPTY", "POINT(1 1)"]
+    end
+
+    @tag :tmp_dir
+    test "survives a GeoPackage round trip", %{tmp_dir: dir} do
+      s = GeoSeries.from_wkb!([@wkb], crs: "EPSG:4326")
+      frame = GeoFrame.GeoDataFrame.new(DataFrame.new(id: [1]), s)
+      path = Path.join(dir, "empty_member.gpkg")
+      :ok = GeoFrame.write_file(frame, path)
+      back = GeoFrame.read_file!(path)
+      assert GeoSeries.to_wkt(GeoFrame.GeoDataFrame.geometry(back)) == ["MULTIPOINT(EMPTY,(1 1))"]
+    end
+  end
+
   describe "measures" do
     test "area/1 is planar and unsigned, with nulls" do
       s = GeoSeries.from_wkt!([@square, "POINT (1 1)", nil])

@@ -23,13 +23,13 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
+use crate::geo_convert::to_geo as geometry_to_geo;
 use geo::{Area, BoundingRect, Centroid, Geometry};
 use geoarrow_array::array::GeometryArray;
 use geoarrow_array::builder::GeometryBuilder;
 use geoarrow_array::cast::{to_wkb, to_wkt};
 use geoarrow_array::scalar::Geometry as Scalar;
 use geoarrow_array::{GeoArrowArray, GeoArrowArrayAccessor, IntoArrow};
-use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 use geoarrow_schema::{Crs, GeometryType, Metadata};
 
 /// An immutable column of nullable geometries stored as a GeoArrow array.
@@ -460,6 +460,18 @@ impl GeoColumn {
         (0..self.len())
             .map(|i| match self.array.get(i) {
                 Ok(Some(scalar)) => geometry_to_geo(&scalar).ok(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// [`geo_rows`](Self::geo_rows) with an empty member point kept as a NaN point, which
+    /// GeoArrow stores back as the empty point: for functions that index members (GEOS keeps
+    /// such a member, `get_geometry` returns it as `POINT EMPTY`).
+    pub(crate) fn geo_rows_keeping_empty_points(&self) -> Vec<Option<Geometry<f64>>> {
+        (0..self.len())
+            .map(|i| match self.array.get(i) {
+                Ok(Some(scalar)) => crate::geo_convert::to_geo_keeping_empty_points(&scalar).ok(),
                 _ => None,
             })
             .collect()

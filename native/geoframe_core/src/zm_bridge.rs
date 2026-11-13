@@ -352,18 +352,22 @@ impl GeoColumn {
         make: impl Fn(usize, &Geometry<f64>) -> Option<Affine3>,
     ) -> Result<Self, String> {
         if !self.any_zm() {
+            // The transform (its origin may be the centroid or the bounds) is made from the row
+            // without its empty member points and applied to the row that keeps them as NaN
+            // points, which stay NaN: an empty member survives, as in GEOS and the Z path.
+            let kept = self.geo_rows_keeping_empty_points();
             let rows: Vec<Option<Geometry<f64>>> = self
                 .geo_rows()
                 .iter()
+                .zip(&kept)
                 .enumerate()
-                .map(|(i, row)| {
-                    row.as_ref().and_then(|g| {
-                        catch_unwind(AssertUnwindSafe(|| {
-                            make(i, g).map(|t| g.affine_transform(&t.plane))
-                        }))
-                        .ok()
-                        .flatten()
-                    })
+                .map(|(i, (row, kept))| {
+                    let (g, kept) = (row.as_ref()?, kept.as_ref()?);
+                    catch_unwind(AssertUnwindSafe(|| {
+                        make(i, g).map(|t| kept.affine_transform(&t.plane))
+                    }))
+                    .ok()
+                    .flatten()
                 })
                 .collect();
             return self.rebuild(&rows);

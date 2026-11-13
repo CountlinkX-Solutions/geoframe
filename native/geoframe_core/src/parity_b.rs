@@ -72,7 +72,7 @@ impl GeoColumn {
     pub fn explode(&self) -> Result<(GeoColumn, Vec<u32>), String> {
         let mut rows: Vec<Option<Geometry<f64>>> = Vec::new();
         let mut source: Vec<u32> = Vec::new();
-        for (i, geom) in self.geo_rows().into_iter().enumerate() {
+        for (i, geom) in self.geo_rows_keeping_empty_points().into_iter().enumerate() {
             let Some(geom) = geom else { continue };
             for part in parts(&geom) {
                 rows.push(Some(part));
