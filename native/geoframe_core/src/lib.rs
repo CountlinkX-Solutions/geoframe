@@ -46,6 +46,7 @@ mod reproject;
 mod set_ops;
 mod shapefile_io;
 mod sindex;
+mod stream_io;
 mod unary;
 mod utm;
 mod utm_crs;
@@ -90,6 +91,7 @@ pub use reproject::{
 pub use set_ops::SetOp;
 pub use shapefile_io::{read_shapefile, shapefile_info, write_shapefile};
 pub use sindex::{join_rows, JoinHow, JoinRows, NearestPairs, QueryPredicate, NO_ROW};
+pub use stream_io::{open_batch_readers, BatchReader, StreamBatch};
 pub use unary::{BufferOptions, Origin, UnaryOp};
 
 #[cfg(test)]
@@ -164,6 +166,8 @@ mod set_ops_tests;
 mod shapefile_tests;
 #[cfg(test)]
 mod sindex_tests;
+#[cfg(test)]
+mod stream_tests;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]

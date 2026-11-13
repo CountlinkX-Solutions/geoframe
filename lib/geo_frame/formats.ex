@@ -277,6 +277,73 @@ defmodule GeoFrame.Formats do
     end
   end
 
+  # -- streaming ------------------------------------------------------------------------
+
+  @default_batch_size 65_536
+  @streamable [:parquet, :flatgeobuf]
+
+  def stream_file(path, opts) do
+    {driver, opts} = driver_for(path, opts)
+
+    unless driver in @streamable do
+      raise ArgumentError,
+            "stream_file/2 does not support the #{inspect(driver)} format yet " <>
+              "(it streams #{Enum.map_join(@streamable, ", ", &inspect/1)}); " <>
+              "use read_file/2 to read the file whole"
+    end
+
+    {batch_size, opts} = Keyword.pop(opts, :batch_size, @default_batch_size)
+
+    unless is_integer(batch_size) and batch_size > 0 do
+      raise ArgumentError, "batch_size must be a positive integer, got: #{inspect(batch_size)}"
+    end
+
+    path = to_string(path)
+    open = stream_opener(driver, path, opts, batch_size)
+
+    Stream.resource(
+      fn -> unwrap_open!(open.()) end,
+      fn reader ->
+        case Native.next_batch(reader) do
+          {:ok, nil} -> {:halt, reader}
+          {:ok, batch} -> {[unwrap_batch!(batch, driver, opts)], reader}
+          {:error, message} -> raise ArgumentError, message
+        end
+      end,
+      &Native.close_reader/1
+    )
+  end
+
+  defp stream_opener(:parquet, path, opts, batch_size) do
+    validate_options!(opts, [:columns, :bbox])
+    columns = opts |> Keyword.get(:columns) |> normalize_columns()
+    bbox = opts |> Keyword.get(:bbox) |> normalize_bbox!() |> check_bbox_order!()
+    fn -> Native.open_parquet_reader(path, columns, bbox, batch_size) end
+  end
+
+  defp stream_opener(:flatgeobuf, path, opts, batch_size) do
+    validate_options!(opts, [:geometry_column, :bbox])
+    bbox = opts |> Keyword.get(:bbox) |> normalize_bbox!()
+    fn -> Native.open_flatgeobuf_reader(path, bbox, batch_size) end
+  end
+
+  defp unwrap_open!({:ok, reader}), do: reader
+  defp unwrap_open!({:error, message}), do: raise(ArgumentError, message)
+
+  defp unwrap_batch!({ref, nil, ipc, _secondary}, :flatgeobuf, opts) do
+    case assemble(ref, ipc, opts) do
+      {:ok, gdf} -> gdf
+      {:error, message} -> raise ArgumentError, message
+    end
+  end
+
+  defp unwrap_batch!({ref, name, ipc, secondary}, :parquet, _opts) do
+    case assemble_named(ref, name, ipc) do
+      {:ok, gdf} -> put_secondary(gdf, secondary)
+      {:error, message} -> raise ArgumentError, message
+    end
+  end
+
   # -- helpers --------------------------------------------------------------------------
 
   @doc """

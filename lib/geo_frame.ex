@@ -57,8 +57,8 @@ defmodule GeoFrame do
   direction costs one serialisation and one copy of the attribute data. That is acceptable
   by design: geometry, the bulky part, is never copied into Elixir.
 
-  Files are read into memory whole (on a dirty IO scheduler); batched or streaming reads
-  are a known gap. Read supports WKB and the GeoArrow-native GeoParquet encodings, honours
+  `read_file/2` reads a file into memory whole (on a dirty IO scheduler); `stream_file/2`
+  reads GeoParquet and FlatGeobuf in batches. Read supports WKB and the GeoArrow-native GeoParquet encodings, honours
   the covering `bbox` column (which is never surfaced as an attribute) and filters rows with
   `bbox:`. Write produces GeoParquet 1.1.0 with WKB geometry and Snappy compression by
   default; see `write_parquet/3` for the compression, row group, native encoding, covering
@@ -609,6 +609,61 @@ defmodule GeoFrame do
   @doc "Like `read_file/2` but raises `ArgumentError` on failure."
   @spec read_file!(Path.t(), keyword()) :: GeoDataFrame.t()
   def read_file!(path, opts \\ []), do: unwrap!(read_file(path, opts))
+
+  @doc """
+  Reads a vector file lazily, as a `Stream` of `GeoFrame.GeoDataFrame` batches, so a file
+  larger than memory can be processed (GeoPandas has no equivalent; pyogrio's `read_arrow` /
+  `open_arrow` batches are the nearest).
+
+  The format comes from the extension or `driver:`, as in `read_file/2`. Streaming is
+  available for GeoParquet (`.parquet`, `.geoparquet`) and FlatGeobuf (`.fgb`); the other
+  formats raise `ArgumentError` (use `read_file/2`).
+
+  Every batch holds `:batch_size` rows (the last one fewer), whatever the row group size of
+  a Parquet file, and has the CRS, the attribute dtypes and the geometry column name
+  `read_file/2` gives, so concatenating the batches equals `read_file/2` with the same
+  options. A file without rows (or a `:bbox` that matches none) yields no batches.
+
+  Options:
+
+    * `:batch_size` - rows per batch, a positive integer (default `65_536`).
+    * `:columns` - GeoParquet only: attribute column names to read (the geometry is always
+      read), as in `read_parquet/2`; the other columns are never decoded.
+    * `:bbox` - `{minx, miny, maxx, maxy}` in the file's CRS: only rows whose geometry
+      bounding box intersects it, with the semantics of `read_parquet/2` (row groups are
+      skipped from a covering `bbox` column or native encoding) and `read_flatgeobuf/2`
+      (the packed R-tree index, an error without one).
+    * `:driver` and `:geometry_column` - as in `read_file/2` (`:geometry_column` is a
+      FlatGeobuf option).
+
+  The file is opened when the stream is first enumerated (each enumeration reads it again)
+  and closed when the stream finishes, halts early (`Enum.take/2`) or its consumer raises;
+  a stream that is dropped without being run holds nothing. Batches are read on a dirty IO
+  scheduler. A file that cannot be opened or decoded raises `ArgumentError` while the stream
+  is enumerated; invalid options raise as soon as the stream is built.
+
+  ## Examples
+
+      iex> path = Path.join(System.tmp_dir!(), "geoframe_stream_file_doc.parquet")
+      iex> geometry = GeoFrame.GeoSeries.from_wkt!(
+      ...>   Enum.map(0..4, &"POINT (\#{&1} 0)"),
+      ...>   crs: "EPSG:4326"
+      ...> )
+      iex> gdf = GeoFrame.GeoDataFrame.new(Explorer.DataFrame.new(id: Enum.to_list(0..4)), geometry)
+      iex> :ok = GeoFrame.write_file(gdf, path)
+      iex> batches = path |> GeoFrame.stream_file(batch_size: 2) |> Enum.to_list()
+      iex> Enum.map(batches, &GeoFrame.GeoDataFrame.n_rows/1)
+      [2, 2, 1]
+      iex> GeoFrame.GeoDataFrame.crs(hd(batches))
+      "EPSG:4326"
+      iex> [first] = path |> GeoFrame.stream_file(batch_size: 2) |> Enum.take(1)
+      iex> first |> GeoFrame.GeoDataFrame.geometry() |> GeoFrame.GeoSeries.to_wkt()
+      ["POINT(0 0)", "POINT(1 0)"]
+      iex> File.rm!(path)
+      :ok
+  """
+  @spec stream_file(Path.t(), keyword()) :: Enumerable.t(GeoDataFrame.t())
+  def stream_file(path, opts \\ []), do: Formats.stream_file(path, opts)
 
   @doc """
   Writes a vector file, choosing the format from the extension or `driver:`; see

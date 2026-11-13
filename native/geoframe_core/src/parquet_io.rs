@@ -32,7 +32,8 @@
 //!
 //! # Gaps
 //!
-//! The whole file is read into memory (no batched or streaming reads), column order is not
+//! `read_geoparquet` reads the whole file into memory (`ParquetStream`, behind
+//! `stream_io::BatchReader`, reads it in batches); column order is not
 //! preserved relative to the geometry (it becomes the last column).
 //!
 //! # Several geometry columns
@@ -197,22 +198,39 @@ pub fn read_geoparquet_filtered(
     bbox: Option<[f64; 4]>,
 ) -> Result<GeoParquetRead, String> {
     // The `geoparquet` crate asserts on some inputs; a panic must not take the VM's NIF down.
-    catch_unwind(AssertUnwindSafe(|| read_filtered(path, columns, bbox))).unwrap_or_else(|_| {
-        Err(format!(
-            "cannot read {path}: the GeoParquet reader failed on this file's metadata"
-        ))
-    })
+    catch_unwind(AssertUnwindSafe(|| read_filtered(path, columns, bbox)))
+        .unwrap_or_else(|_| Err(panic_message(path)))
 }
 
-fn read_filtered(
+/// Everything a read needs after the file is opened and its metadata interpreted.
+pub(crate) struct ReadPlan {
+    reader: GeoParquetRecordBatchReader,
+    schema: Arc<Schema>,
+    geometry_index: usize,
+    primary: String,
+    crs: Option<String>,
+    /// Selected secondary geometry columns: `(schema index, name, crs)`.
+    secondary: Vec<(usize, String, Option<String>)>,
+    attribute_indices: Vec<usize>,
+    /// The bbox to apply after decoding, when the file cannot filter it itself.
+    post_filter: Option<[f64; 4]>,
+}
+
+/// Opens `path`, validates the arguments and builds a record batch reader of `batch_size` rows
+/// (a bbox with a covering column or native encoding is pushed down to the reader).
+fn open_plan(
     path: &str,
     columns: Option<&[String]>,
     bbox: Option<[f64; 4]>,
-) -> Result<GeoParquetRead, String> {
+    batch_size: usize,
+) -> Result<ReadPlan, String> {
     if let Some([minx, miny, maxx, maxy]) = bbox {
         if !(minx <= maxx && miny <= maxy) {
             return Err("bbox minimum exceeds its maximum (or contains NaN)".to_string());
         }
+    }
+    if batch_size == 0 {
+        return Err("batch_size must be a positive number of rows".to_string());
     }
     let file = File::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
     let mut builder = ParquetRecordBatchReaderBuilder::try_new(file)
@@ -236,7 +254,7 @@ fn read_filtered(
     let geometry_index = target_schema.index_of(&primary).map_err(|_| {
         format!("primary geometry column {primary:?} is missing from the schema of {path}")
     })?;
-    // Secondary geometry columns are decoded below, not shipped as attributes.
+    // Secondary geometry columns are decoded separately, not shipped as attributes.
     let secondary_names: Vec<String> = target_schema
         .fields()
         .iter()
@@ -245,6 +263,17 @@ fn read_filtered(
         .collect();
     hidden.extend(secondary_names.iter().cloned());
     let attribute_indices = select_attributes(&target_schema, geometry_index, columns, &hidden)?;
+    let mut secondary = Vec::new();
+    for name in secondary_names
+        .into_iter()
+        .filter(|name| columns.is_none_or(|wanted| wanted.contains(name)))
+    {
+        let index = target_schema.index_of(&name).map_err(|_| {
+            format!("geometry column {name:?} is missing from the schema of {path}")
+        })?;
+        let column_crs = file_crs(&raw, &name)?;
+        secondary.push((index, name, column_crs));
+    }
 
     // A covering column (or a native encoding) lets the crate prune row groups from the
     // statistics and filter rows on the covering values; otherwise filter after decoding.
@@ -260,33 +289,78 @@ fn read_filtered(
     }
 
     let reader = builder
-        .with_batch_size(BATCH_SIZE)
+        .with_batch_size(batch_size)
         .build()
         .map_err(|e| format!("cannot read {path}: {e}"))?;
     let reader = GeoParquetRecordBatchReader::try_new(reader, target_schema.clone())
         .map_err(|e| format!("cannot read {path}: {e}"))?;
-    let mut batches = reader
+    Ok(ReadPlan {
+        reader,
+        schema: target_schema,
+        geometry_index,
+        primary,
+        crs,
+        secondary,
+        attribute_indices,
+        post_filter: if pushed_down { None } else { bbox },
+    })
+}
+
+/// Which rows of `geometry` have a bounding box intersecting `query`.
+fn bbox_keep(geometry: &GeoColumn, query: [f64; 4]) -> Vec<bool> {
+    geometry
+        .bounds()
+        .into_iter()
+        .map(|b| {
+            b.is_some_and(|b| {
+                b[0] <= query[2] && b[2] >= query[0] && b[1] <= query[3] && b[3] >= query[1]
+            })
+        })
+        .collect()
+}
+
+/// Secondary geometry columns and attributes of `batches`, with the already decoded primary
+/// `geometry`.
+fn assemble(
+    path: &str,
+    plan: &ReadPlan,
+    batches: &[RecordBatch],
+    geometry: GeoColumn,
+) -> Result<GeoParquetRead, String> {
+    let mut secondary_geometries = Vec::new();
+    for (index, name, column_crs) in &plan.secondary {
+        let column = decode_geometry(path, &plan.schema, batches, *index, column_crs.as_deref())?;
+        secondary_geometries.push((name.clone(), column));
+    }
+    let attributes_ipc = attributes_to_ipc(&plan.schema, batches, &plan.attribute_indices)?;
+    Ok(GeoParquetRead {
+        geometry,
+        geometry_column: plan.primary.clone(),
+        secondary_geometries,
+        attributes_ipc,
+    })
+}
+
+fn read_filtered(
+    path: &str,
+    columns: Option<&[String]>,
+    bbox: Option<[f64; 4]>,
+) -> Result<GeoParquetRead, String> {
+    let mut plan = open_plan(path, columns, bbox, BATCH_SIZE)?;
+    let mut batches = (&mut plan.reader)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot read {path}: {e}"))?;
 
     let mut geometry = decode_geometry(
         path,
-        &target_schema,
+        &plan.schema,
         &batches,
-        geometry_index,
-        crs.as_deref(),
+        plan.geometry_index,
+        plan.crs.as_deref(),
     )?;
 
-    if let (Some(query), false) = (bbox, pushed_down) {
-        let keep: Vec<bool> = geometry
-            .bounds()
-            .into_iter()
-            .map(|b| {
-                b.is_some_and(|b| {
-                    b[0] <= query[2] && b[2] >= query[0] && b[1] <= query[3] && b[3] >= query[1]
-                })
-            })
-            .collect();
+    if let Some(query) = plan.post_filter {
+        let keep = bbox_keep(&geometry, query);
         if keep.iter().any(|k| !k) {
             let indices: Vec<usize> = (0..keep.len()).filter(|&i| keep[i]).collect();
             geometry = geometry.take(&indices)?;
@@ -298,27 +372,105 @@ fn read_filtered(
             }
         }
     }
+    assemble(path, &plan, &batches, geometry)
+}
 
-    let mut secondary_geometries = Vec::new();
-    for name in secondary_names
-        .into_iter()
-        .filter(|name| columns.is_none_or(|wanted| wanted.contains(name)))
-    {
-        let index = target_schema.index_of(&name).map_err(|_| {
-            format!("geometry column {name:?} is missing from the schema of {path}")
-        })?;
-        let column_crs = file_crs(&raw, &name)?;
-        let column = decode_geometry(path, &target_schema, &batches, index, column_crs.as_deref())?;
-        secondary_geometries.push((name, column));
+/// A GeoParquet file read `batch_size` rows at a time.
+pub(crate) struct ParquetStream {
+    path: String,
+    plan: ReadPlan,
+    batch_size: usize,
+    /// The rest of a record batch that did not fit the batch being assembled.
+    carry: Option<RecordBatch>,
+}
+
+impl ParquetStream {
+    pub(crate) fn open(
+        path: &str,
+        columns: Option<&[String]>,
+        bbox: Option<[f64; 4]>,
+        batch_size: usize,
+    ) -> Result<Self, String> {
+        let plan = catch_unwind(AssertUnwindSafe(|| {
+            open_plan(path, columns, bbox, batch_size)
+        }))
+        .unwrap_or_else(|_| Err(panic_message(path)))?;
+        Ok(Self {
+            path: path.to_string(),
+            plan,
+            batch_size,
+            carry: None,
+        })
     }
 
-    let attributes_ipc = attributes_to_ipc(&target_schema, &batches, &attribute_indices)?;
-    Ok(GeoParquetRead {
-        geometry,
-        geometry_column: primary,
-        secondary_geometries,
-        attributes_ipc,
-    })
+    /// The next `batch_size` rows (fewer at the end), `None` when the file is exhausted.
+    pub(crate) fn next_batch(&mut self) -> Result<Option<GeoParquetRead>, String> {
+        catch_unwind(AssertUnwindSafe(|| self.next()))
+            .unwrap_or_else(|_| Err(panic_message(&self.path)))
+    }
+
+    fn next(&mut self) -> Result<Option<GeoParquetRead>, String> {
+        let path = self.path.clone();
+        let mut parts: Vec<RecordBatch> = Vec::new();
+        let mut rows = 0;
+        while rows < self.batch_size {
+            let batch = match self.carry.take() {
+                Some(batch) => batch,
+                None => match self.plan.reader.next() {
+                    None => break,
+                    Some(batch) => {
+                        let batch = batch.map_err(|e| format!("cannot read {path}: {e}"))?;
+                        self.filter(batch)?
+                    }
+                },
+            };
+            let room = self.batch_size - rows;
+            if batch.num_rows() > room {
+                self.carry = Some(batch.slice(room, batch.num_rows() - room));
+                parts.push(batch.slice(0, room));
+                rows += room;
+            } else {
+                rows += batch.num_rows();
+                parts.push(batch);
+            }
+        }
+        if parts.is_empty() {
+            return Ok(None);
+        }
+        let plan = &self.plan;
+        let geometry = decode_geometry(
+            &path,
+            &plan.schema,
+            &parts,
+            plan.geometry_index,
+            plan.crs.as_deref(),
+        )?;
+        assemble(&path, plan, &parts, geometry).map(Some)
+    }
+
+    /// Applies the bbox the file could not filter itself.
+    fn filter(&self, batch: RecordBatch) -> Result<RecordBatch, String> {
+        let Some(query) = self.plan.post_filter else {
+            return Ok(batch);
+        };
+        let plan = &self.plan;
+        let geometry = decode_geometry(
+            &self.path,
+            &plan.schema,
+            std::slice::from_ref(&batch),
+            plan.geometry_index,
+            plan.crs.as_deref(),
+        )?;
+        let keep = bbox_keep(&geometry, query);
+        if keep.iter().all(|k| *k) {
+            return Ok(batch);
+        }
+        filter_record_batch(&batch, &BooleanArray::from(keep)).map_err(|e| e.to_string())
+    }
+}
+
+fn panic_message(path: &str) -> String {
+    format!("cannot read {path}: the GeoParquet reader failed on this file's metadata")
 }
 
 /// Decodes the geometry column at `index` of every batch into one [`GeoColumn`].

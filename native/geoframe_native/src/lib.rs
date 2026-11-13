@@ -2,18 +2,20 @@
 //! crate; this layer only converts between BEAM terms and core types.
 
 use geoframe_core::{
-    deck_buffers, from_arrow_ipc, geoparquet_metadata, gpkg_info, gpkg_layers, read_feather,
-    read_flatgeobuf, read_geojson, read_geojson_str, read_geoparquet_filtered, read_gpkg,
-    read_shapefile, shapefile_info, to_arrow_ipc_multi, write_feather_multi, write_flatgeobuf,
-    write_geojson, write_geoparquet_multi, write_gpkg, write_shapefile, BufferOptions,
-    FeatherCompression, GeoColumn, GeometryEncoding, GpkgWriteOptions, GridFeature, GridType,
-    JoinHow, LayerInfo, NearestPairs, OffsetJoin, OffsetParams, Origin, ParquetOptions,
-    PrecisionMode, Predicate, QueryPredicate, SetOp, TableRead, UnaryOp, VectorRead, VertexKind,
-    VertexParts,
+    deck_buffers, from_arrow_ipc, geoparquet_metadata, gpkg_info, gpkg_layers, open_batch_readers,
+    read_feather, read_flatgeobuf, read_geojson, read_geojson_str, read_geoparquet_filtered,
+    read_gpkg, read_shapefile, shapefile_info, to_arrow_ipc_multi, write_feather_multi,
+    write_flatgeobuf, write_geojson, write_geoparquet_multi, write_gpkg, write_shapefile,
+    BatchReader, BufferOptions, FeatherCompression, GeoColumn, GeometryEncoding, GpkgWriteOptions,
+    GridFeature, GridType, JoinHow, LayerInfo, NearestPairs, OffsetJoin, OffsetParams, Origin,
+    ParquetOptions, PrecisionMode, Predicate, QueryPredicate, SetOp, TableRead, UnaryOp,
+    VectorRead, VertexKind, VertexParts,
 };
 use rustler::{Binary, Encoder, Env, OwnedBinary, ResourceArc, Term};
+use std::sync::Mutex;
 
 rustler::atoms! {
+    ok,
     nan,
     infinity,
     neg_infinity,
@@ -1376,6 +1378,89 @@ fn offset_curve(
         mitre_limit,
     };
     column.0.offset_curve(&distances, &params).map(wrap)
+}
+
+// -- batched reads ------------------------------------------------------------------------
+
+/// An open file read batch by batch. `None` once closed; dropping the resource (garbage
+/// collection of a stream that was never closed) releases the file as well.
+pub struct ReaderResource(Mutex<Option<BatchReader>>);
+
+#[rustler::resource_impl]
+impl rustler::Resource for ReaderResource {}
+
+type Reader = ResourceArc<ReaderResource>;
+
+fn new_reader(reader: BatchReader) -> Reader {
+    ResourceArc::new(ReaderResource(Mutex::new(Some(reader))))
+}
+
+/// Opens a GeoParquet file for batched reading (`columns` and `bbox` as `read_parquet`).
+#[rustler::nif(schedule = "DirtyIo")]
+fn open_parquet_reader(
+    path: String,
+    columns: Option<Vec<String>>,
+    bbox: Option<(f64, f64, f64, f64)>,
+    batch_size: usize,
+) -> Result<Reader, String> {
+    let bbox = bbox.map(|(a, b, c, d)| [a, b, c, d]);
+    BatchReader::open_geoparquet(&path, columns.as_deref(), bbox, batch_size).map(new_reader)
+}
+
+/// Opens a FlatGeobuf file for batched reading (`bbox` as `read_flatgeobuf_file`).
+#[rustler::nif(schedule = "DirtyIo")]
+fn open_flatgeobuf_reader(
+    path: String,
+    bbox: Option<(f64, f64, f64, f64)>,
+    batch_size: usize,
+) -> Result<Reader, String> {
+    let bbox = bbox.map(|(a, b, c, d)| [a, b, c, d]);
+    BatchReader::open_flatgeobuf(&path, bbox, batch_size).map(new_reader)
+}
+
+type NextBatch<'a> = Option<(Handle, Option<String>, Binary<'a>, Secondary)>;
+
+/// The next batch as `{geometry, geometry_column | nil, attributes_ipc, secondary}`, or `nil`
+/// at the end of the file (or after `close_reader`).
+#[rustler::nif(schedule = "DirtyIo")]
+fn next_batch<'a>(env: Env<'a>, reader: Reader) -> Result<NextBatch<'a>, String> {
+    let mut guard = reader
+        .0
+        .lock()
+        .map_err(|_| "the reader is poisoned".to_string())?;
+    let Some(open) = guard.as_mut() else {
+        return Ok(None);
+    };
+    let Some(batch) = open.next_batch()? else {
+        return Ok(None);
+    };
+    let ipc = binary(env, &batch.attributes_ipc);
+    let secondary = batch
+        .secondary_geometries
+        .into_iter()
+        .map(|(name, column)| (name, wrap(column)))
+        .collect();
+    Ok(Some((
+        wrap(batch.geometry),
+        batch.geometry_column,
+        ipc,
+        secondary,
+    )))
+}
+
+/// Releases the file now; later `next_batch` calls return `nil`. Idempotent.
+#[rustler::nif]
+fn close_reader(reader: Reader) -> rustler::Atom {
+    if let Ok(mut guard) = reader.0.lock() {
+        guard.take();
+    }
+    ok()
+}
+
+/// How many batch readers are open in this VM (a diagnostic used by the tests).
+#[rustler::nif]
+fn open_readers() -> usize {
+    open_batch_readers()
 }
 
 rustler::init!("Elixir.GeoFrame.Native");
