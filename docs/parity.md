@@ -135,7 +135,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `geom_type` | `dimension_of`/dtype | `geom_type/1` | ✅ | |
 | `x`, `y` | `x`,`y` yes | `x/1`, `y/1` | ✅ | nil for non-points (GeoPandas raises) |
 | `z`, `m` | `z`,`m` yes | `z/1`, `m/1` (aliases `get_z/1`, `get_m/1`) | ✅ | point ordinates as f64 series; nil for non-points, empty points, points without that ordinate and nulls (GeoPandas raises for non-points, NaN otherwise); see [Z and M](#z-and-m) |
-| `get_coordinates` | `coordinates` (x/y lists) | `get_coordinates/2` | 🟡 | DataFrame `x`,`y`; `include_index:` adds row position; `include_z:` and `include_m:` add `z`/`m` columns (NaN for a vertex without the ordinate; an XYM geometry has a NaN `z`), checked against GeoPandas in `zm_coords.json`; no `ignore_index`, `index_parts`; see [Z and M](#z-and-m) |
+| `get_coordinates` | `coordinates` (x/y lists) | `get_coordinates/2` | 🟡 | DataFrame `x`,`y`; `include_index:` adds row position; `include_z:` and `include_m:` add `z`/`m` columns (NaN for a vertex without the ordinate; an XYM geometry has a NaN `z`), checked against GeoPandas in `zm_coords.json`; `ignore_index` and `index_parts` are ⛔ (they assume a pandas index; `include_index:` gives the row position); see [Z and M](#z-and-m) |
 | `count_coordinates` | yes | `count_coordinates/1` | ✅ | |
 | `count_geometries` | — | `count_geometries/1` | ✅ | null rows are `nil` (Shapely: 0); an empty atomic geometry gives 0 (Shapely: 1) |
 | `count_interior_rings` | — | `count_interior_rings/1` | ✅ | 0 for non-polygons as Shapely; null rows `nil` |
@@ -152,7 +152,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `representative_point` | — | `representative_point/1` | ✅ | geo `InteriorPoint`. Z kept for lines (GEOS picks a vertex), 2D for points and areas (the point is new); M dropped; see [Z and M](#z-and-m) |
 | — | `mean_coordinate` yes | `mean_coordinate/1` | ✅ | vertex mean; polygon ring closing vertex not double counted |
 | — | `is_geographic` yes | `is_geographic/1`, `GeoFrame.CRS.geographic?/1` | ✅ | proj4rs `is_latlong`; `nil` without or with an unresolvable CRS |
-| — | `rings_overlap`, `self_intersects` yes | `self_intersects/1` | 🟡 | `self_intersects`: not `is_simple` for lines and multi-lines, `false` for other types (no GeoPolars source to check the definition); `rings_overlap` is not implemented (its semantics are not documented in the snapshot) |
+| — | `rings_overlap`, `self_intersects` yes | `self_intersects/1` | 🟡 | `self_intersects`: not `is_simple` for lines and multi-lines, `false` for other types (no GeoPolars source to check the definition); `rings_overlap` is ⛔ out of scope: its semantics are undocumented and the reference snapshot has no GEOS or Shapely source to check a definition against |
 
 ## 3. Unary predicates
 
@@ -640,7 +640,7 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
 | — | `affine_transform` | `affine_transform/2` | ✅ | see §7 |
 | — | `rotate_about_centroid`, `scale_about_centroid` | `rotate`/`scale` with `origin: :centroid` | ✅ | |
 | — | `is_geographic` | `is_geographic/1` | ✅ | see §2 |
-| — | `rings_overlap`, `self_intersects` | `self_intersects/1` | 🟡 | see §2; `rings_overlap` not implemented |
+| — | `rings_overlap`, `self_intersects` | `self_intersects/1` | 🟡 | see §2; `rings_overlap` ⛔ out of scope (undocumented semantics, no GEOS/Shapely source in the snapshot) |
 | — | `with_covering` (GeoParquet bbox covering) | `write_parquet(write_covering_bbox: true)` | ✅ | see §13 |
 | — | `geoparquet_metadata` | `GeoFrame.geoparquet_metadata/1`, `geoparquet_metadata!/1` | ✅ | the `geo` footer key as a decoded map (string keys), exactly as stored; reads only the Parquet footer |
 | — | `is_close` (internal) | — | ⛔ | internal helper |
