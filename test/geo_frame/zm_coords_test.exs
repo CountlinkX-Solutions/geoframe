@@ -57,6 +57,48 @@ defmodule GeoFrame.ZmCoordsTest do
     end
   end
 
+  describe "vertex constructors with Z" do
+    @constructors %{
+      "line_string" => &GeoSeries.line_strings_from_vertices/2,
+      "multi_point" => &GeoSeries.multi_points_from_vertices/2,
+      "polygon" => &GeoSeries.polygons_from_rings/2,
+      "multi_line_string" => &GeoSeries.multi_line_strings_from_lines/2,
+      "multi_polygon" => &GeoSeries.multi_polygons_from_polygons/2
+    }
+
+    test "match Shapely 2.2 linestrings, multipoints, polygons and the multi constructors" do
+      for c <- @fixture["vertices"] do
+        series = @constructors[c["kind"]].(c["rows"], [])
+        assert GeoSeries.to_wkt(series) == c["wkt"], "#{c["kind"]} #{inspect(c["rows"])}"
+      end
+    end
+
+    test "tuples and lists build the same Z geometry" do
+      a = GeoSeries.line_strings_from_vertices([[{0, 0, 1}, {1, 1, 2}]])
+      b = GeoSeries.line_strings_from_vertices([[[0, 0, 1], [1, 1, 2]]])
+      assert GeoSeries.to_wkt(a) == GeoSeries.to_wkt(b)
+      assert list(GeoSeries.has_z(a)) == [true]
+    end
+
+    test "rows of different dimensions share a column" do
+      series = GeoSeries.line_strings_from_vertices([[{0, 0, 1}, {1, 1, 2}], [{0, 0}, {1, 1}]])
+      assert list(GeoSeries.has_z(series)) == [true, false]
+    end
+
+    test "keeps the crs" do
+      series = GeoSeries.multi_points_from_vertices([[{0, 0, 1}]], crs: "EPSG:4979")
+      assert GeoSeries.crs(series) =~ "4979"
+    end
+
+    test "Shapely rejects these rows and so do the constructors" do
+      for c <- @fixture["vertex_errors"] do
+        assert_raise ArgumentError, ~r/row 0/, fn ->
+          @constructors[c["kind"]].([c["row"]], [])
+        end
+      end
+    end
+  end
+
   describe "get_coordinates include_z / include_m" do
     @rows [
       "POINT Z (1 2 3)",

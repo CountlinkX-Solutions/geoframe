@@ -75,7 +75,7 @@ pub use gpkg_io::{
 };
 pub use offset_curve::{OffsetJoin, OffsetParams, MAX_QUAD_SEGS};
 pub use parity_e::{GridFeature, GridType};
-pub use parity_i::{PrecisionMode, VertexKind, VertexParts};
+pub use parity_i::{FlatVertexParts, PrecisionMode, VertexKind, VertexParts, VertexRing};
 pub use parity_j::NO_CLEARANCE;
 pub use parquet_io::{
     geoparquet_metadata, read_geoparquet, read_geoparquet_filtered, write_geoparquet,

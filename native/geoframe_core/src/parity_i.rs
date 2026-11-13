@@ -50,6 +50,7 @@ use rstar::{RTree, AABB};
 use crate::parity_a::normalize as to_stored;
 use crate::predicates::guarded;
 use crate::zm_bridge::{Keep, Restore};
+use crate::zm_io::{Vertex, WkbOut};
 use crate::GeoColumn;
 
 // -- is_simple ----------------------------------------------------------------------------
@@ -694,35 +695,66 @@ impl VertexKind {
     }
 }
 
-/// One row of vertices: parts, each a list of rings, each a list of `(x, y)`.
-pub type VertexParts = Vec<Vec<Vec<(f64, f64)>>>;
+/// One list of vertices: the `(x, y)` pairs and, for a Z list, one Z per vertex.
+pub type VertexRing = (Vec<(f64, f64)>, Option<Vec<f64>>);
 
-fn vertices(ring: &[(f64, f64)], row: usize) -> Result<Vec<Coord<f64>>, String> {
-    ring.iter()
-        .map(|&(x, y)| {
-            if x.is_finite() && y.is_finite() {
-                Ok(Coord { x, y })
-            } else {
-                Err(format!("row {row}: non-finite coordinate ({x}, {y})"))
-            }
-        })
-        .collect()
+/// One row of vertices: parts, each a list of rings (lists of vertices).
+pub type VertexParts = Vec<Vec<VertexRing>>;
+
+/// One row of 2D vertices: parts, each a list of rings, each a list of `(x, y)`.
+pub type FlatVertexParts = Vec<Vec<Vec<(f64, f64)>>>;
+
+/// Coordinates of a ring, pushing the Z of every vertex onto `zs` (NaN for a 2D list, which
+/// Shapely promotes the same way next to a Z list).
+fn vertices(ring: &VertexRing, row: usize, zs: &mut Vec<f64>) -> Result<Vec<Coord<f64>>, String> {
+    let (xy, z) = ring;
+    if z.as_ref().is_some_and(|z| z.len() != xy.len()) {
+        return Err(format!("row {row}: a list needs one Z per vertex"));
+    }
+    let mut coords = Vec::with_capacity(xy.len());
+    for (i, &(x, y)) in xy.iter().enumerate() {
+        if !(x.is_finite() && y.is_finite()) {
+            return Err(format!("row {row}: non-finite coordinate ({x}, {y})"));
+        }
+        coords.push(Coord { x, y });
+        zs.push(z.as_ref().map_or(f64::NAN, |z| z[i]));
+    }
+    Ok(coords)
 }
 
-fn line_from(ring: &[(f64, f64)], row: usize) -> Result<LineString<f64>, String> {
-    let coords = vertices(ring, row)?;
+fn line_from(ring: &VertexRing, row: usize, zs: &mut Vec<f64>) -> Result<LineString<f64>, String> {
+    let coords = vertices(ring, row, zs)?;
     if coords.len() == 1 {
         return Err(format!("row {row}: a line needs at least two vertices"));
     }
     Ok(LineString::new(coords))
 }
 
-fn polygon_from(rings: &[Vec<(f64, f64)>], row: usize) -> Result<Polygon<f64>, String> {
+/// Z values equal as GEOS compares them when it decides whether a ring is closed: NaN equals
+/// NaN.
+fn same_z(a: f64, b: f64) -> bool {
+    a == b || (a.is_nan() && b.is_nan())
+}
+
+fn polygon_from(
+    rings: &[VertexRing],
+    row: usize,
+    zs: &mut Vec<f64>,
+) -> Result<Polygon<f64>, String> {
     let mut built = Vec::with_capacity(rings.len());
     for ring in rings {
-        let mut coords = vertices(ring, row)?;
-        if coords.first() != coords.last() {
+        let mut ring_z = Vec::new();
+        let mut coords = vertices(ring, row, &mut ring_z)?;
+        // Shapely closes a ring that is not closed in every ordinate, with the first vertex.
+        let open = coords.first() != coords.last()
+            || (ring.1.is_some()
+                && ring_z
+                    .first()
+                    .zip(ring_z.last())
+                    .is_some_and(|(a, b)| !same_z(*a, *b)));
+        if open && !coords.is_empty() {
             coords.push(coords[0]);
+            ring_z.push(ring_z[0]);
         }
         let distinct: HashSet<(u64, u64)> = coords
             .iter()
@@ -733,6 +765,7 @@ fn polygon_from(rings: &[Vec<(f64, f64)>], row: usize) -> Result<Polygon<f64>, S
                 "row {row}: a ring needs at least three distinct vertices"
             ));
         }
+        zs.extend(ring_z);
         built.push(LineString::new(coords));
     }
     let mut built = built.into_iter();
@@ -742,65 +775,174 @@ fn polygon_from(rings: &[Vec<(f64, f64)>], row: usize) -> Result<Polygon<f64>, S
     }
 }
 
-fn single_ring(part: &[Vec<(f64, f64)>], row: usize) -> Result<&[(f64, f64)], String> {
+fn single_ring(part: &[VertexRing], row: usize) -> Result<&VertexRing, String> {
     match part {
         [ring] => Ok(ring),
         _ => Err(format!("row {row}: expected one list of vertices")),
     }
 }
 
+/// The geometry of one row and its Z values, one per coordinate in coordinate order.
 fn geometry_from(
     kind: VertexKind,
     parts: &VertexParts,
     row: usize,
-) -> Result<Geometry<f64>, String> {
-    match kind {
+) -> Result<(Geometry<f64>, Vec<f64>), String> {
+    let mut zs = Vec::new();
+    let geometry = match kind {
         VertexKind::LineString | VertexKind::MultiPoint => {
             let [part] = parts.as_slice() else {
                 return Err(format!("row {row}: expected one list of vertices"));
             };
             let ring = single_ring(part, row)?;
             if kind == VertexKind::LineString {
-                Ok(Geometry::LineString(line_from(ring, row)?))
+                Geometry::LineString(line_from(ring, row, &mut zs)?)
             } else {
-                Ok(Geometry::MultiPoint(MultiPoint::new(
-                    vertices(ring, row)?.into_iter().map(Point::from).collect(),
-                )))
+                Geometry::MultiPoint(MultiPoint::new(
+                    vertices(ring, row, &mut zs)?
+                        .into_iter()
+                        .map(Point::from)
+                        .collect(),
+                ))
             }
         }
         VertexKind::Polygon => {
             let [part] = parts.as_slice() else {
                 return Err(format!("row {row}: expected one list of rings"));
             };
-            Ok(Geometry::Polygon(polygon_from(part, row)?))
+            Geometry::Polygon(polygon_from(part, row, &mut zs)?)
         }
-        VertexKind::MultiLineString => Ok(Geometry::MultiLineString(MultiLineString::new(
+        VertexKind::MultiLineString => Geometry::MultiLineString(MultiLineString::new(
             parts
                 .iter()
-                .map(|part| line_from(single_ring(part, row)?, row))
+                .map(|part| line_from(single_ring(part, row)?, row, &mut zs))
                 .collect::<Result<_, _>>()?,
-        ))),
-        VertexKind::MultiPolygon => Ok(Geometry::MultiPolygon(MultiPolygon::new(
+        )),
+        VertexKind::MultiPolygon => Geometry::MultiPolygon(MultiPolygon::new(
             parts
                 .iter()
-                .map(|part| polygon_from(part, row))
+                .map(|part| polygon_from(part, row, &mut zs))
                 .collect::<Result<_, _>>()?,
-        ))),
+        )),
+    };
+    Ok((geometry, zs))
+}
+
+/// Hands out the Z of each coordinate in the order the geometry is walked.
+struct Zs<'a> {
+    values: Option<&'a [f64]>,
+    at: usize,
+}
+
+impl Zs<'_> {
+    fn next(&mut self) -> f64 {
+        let z = self.values.map_or(f64::NAN, |v| v[self.at]);
+        self.at += 1;
+        z
+    }
+
+    fn coord(&mut self, c: &Coord<f64>) -> Vertex {
+        Vertex {
+            x: c.x,
+            y: c.y,
+            z: self.next(),
+            m: f64::NAN,
+        }
+    }
+
+    fn line(&mut self, line: &LineString<f64>) -> Vec<Vertex> {
+        line.coords().map(|c| self.coord(c)).collect()
     }
 }
 
+fn write_polygon(out: &mut WkbOut, zs: &mut Zs, polygon: &Polygon<f64>) -> Result<(), String> {
+    if polygon.exterior().0.is_empty() {
+        return out.count(0);
+    }
+    out.count(1 + polygon.interiors().len())?;
+    out.vertices(&zs.line(polygon.exterior()))?;
+    for hole in polygon.interiors() {
+        out.vertices(&zs.line(hole))?;
+    }
+    Ok(())
+}
+
+/// ISO WKB of a row; `z` holds one value per coordinate for a Z geometry and `None` for 2D.
+fn row_wkb(geometry: &Geometry<f64>, z: Option<&[f64]>) -> Result<Vec<u8>, String> {
+    let mut out = WkbOut::new(z.is_some(), false);
+    let mut zs = Zs { values: z, at: 0 };
+    match geometry {
+        Geometry::LineString(l) => {
+            out.header(2);
+            out.vertices(&zs.line(l))?;
+        }
+        Geometry::MultiPoint(points) => {
+            out.header(4);
+            out.count(points.0.len())?;
+            for p in &points.0 {
+                out.header(1);
+                out.vertex(zs.coord(&p.0));
+            }
+        }
+        Geometry::Polygon(p) => {
+            out.header(3);
+            write_polygon(&mut out, &mut zs, p)?;
+        }
+        Geometry::MultiLineString(lines) => {
+            out.header(5);
+            out.count(lines.0.len())?;
+            for l in &lines.0 {
+                out.header(2);
+                out.vertices(&zs.line(l))?;
+            }
+        }
+        Geometry::MultiPolygon(polygons) => {
+            out.header(6);
+            out.count(polygons.0.len())?;
+            for p in &polygons.0 {
+                out.header(3);
+                write_polygon(&mut out, &mut zs, p)?;
+            }
+        }
+        _ => return Err("unsupported geometry".to_string()),
+    }
+    Ok(out.bytes)
+}
+
 impl GeoColumn {
-    /// Builds a column from vertex lists: each row is `None` (null) or a list of parts, each a
-    /// list of rings, each a list of `(x, y)`; `kind` says how a row nests (one part with one
-    /// ring for a line or multipoint, one part with the rings for a polygon, one single-ring
-    /// part per line for a multi-line, one ring list per polygon for a multipolygon). Open
-    /// rings are closed. Errors name the row.
+    /// Builds a column from 2D vertex lists; see [`GeoColumn::from_vertices_z`].
     pub fn from_vertices(
+        kind: VertexKind,
+        rows: &[Option<FlatVertexParts>],
+        crs: Option<&str>,
+    ) -> Result<Self, String> {
+        let rows: Vec<Option<VertexParts>> = rows
+            .iter()
+            .map(|row| {
+                row.as_ref().map(|parts| {
+                    parts
+                        .iter()
+                        .map(|part| part.iter().map(|ring| (ring.clone(), None)).collect())
+                        .collect()
+                })
+            })
+            .collect();
+        Self::from_vertices_z(kind, &rows, crs)
+    }
+
+    /// Builds a column from vertex lists: each row is `None` (null) or a list of parts, each a
+    /// list of rings, each a list of vertices (`(x, y)` with, for a Z list, one Z per vertex);
+    /// `kind` says how a row nests (one part with one ring for a line or multipoint, one part
+    /// with the rings for a polygon, one single-ring part per line for a multi-line, one ring
+    /// list per polygon for a multipolygon). Open rings are closed. A row with a Z list is a Z
+    /// geometry, and the 2D lists next to it get a NaN Z, as Shapely promotes them; a column
+    /// may mix 2D and Z rows. Errors name the row.
+    pub fn from_vertices_z(
         kind: VertexKind,
         rows: &[Option<VertexParts>],
         crs: Option<&str>,
     ) -> Result<Self, String> {
-        let geoms: Vec<Option<Geometry<f64>>> = rows
+        let built: Vec<Option<(Geometry<f64>, Vec<f64>)>> = rows
             .iter()
             .enumerate()
             .map(|(row, parts)| {
@@ -810,6 +952,23 @@ impl GeoColumn {
                     .transpose()
             })
             .collect::<Result<_, _>>()?;
-        GeoColumn::from_wkt::<&str>(&[], crs)?.rebuild(&geoms)
+        let has_z =
+            |row: &Option<VertexParts>| row.iter().flatten().flatten().any(|ring| ring.1.is_some());
+        if !rows.iter().any(has_z) {
+            let geoms: Vec<Option<Geometry<f64>>> =
+                built.into_iter().map(|b| b.map(|(g, _)| g)).collect();
+            return GeoColumn::from_wkt::<&str>(&[], crs)?.rebuild(&geoms);
+        }
+        let wkb: Vec<Option<Vec<u8>>> = built
+            .iter()
+            .zip(rows)
+            .map(|(built, row)| {
+                built
+                    .as_ref()
+                    .map(|(geometry, zs)| row_wkb(geometry, has_z(row).then_some(zs.as_slice())))
+                    .transpose()
+            })
+            .collect::<Result<_, _>>()?;
+        GeoColumn::from_wkb(&wkb, crs)
     }
 }
