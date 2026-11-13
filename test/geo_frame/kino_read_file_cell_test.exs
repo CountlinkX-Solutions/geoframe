@@ -82,7 +82,9 @@ defmodule GeoFrame.Kino.ReadFileCellTest do
 
     test "an unparsable bbox is left out" do
       for bbox <- ["1,2,3", "a,b,c,d", "1,2,3,4,5", "  "] do
-        refute source(ReadFileCell, read_attrs(%{"bbox" => bbox})) =~ "bbox"
+        # The generated source holds the file path, which may itself contain "bbox", so look
+        # for the option, not the word.
+        refute source(ReadFileCell, read_attrs(%{"bbox" => bbox})) =~ "bbox:"
       end
     end
 
