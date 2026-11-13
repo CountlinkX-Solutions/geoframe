@@ -1,11 +1,16 @@
 # A tour of GeoFrame: Europe
 
 ```elixir
-Mix.install([
-  {:geoframe, path: Path.join(__DIR__, "..")},
-  {:kino, "~> 0.19"},
-  {:req, "~> 0.5"}
-])
+Mix.install(
+  [
+    {:geoframe, path: Path.join(__DIR__, "..")},
+    {:kino, "~> 0.19"},
+    {:req, "~> 0.5"}
+  ],
+  # A checkout has no precompiled NIF for its own version, so build GeoFrame from source
+  # (needs a Rust toolchain); from Hex the precompiled NIF is used instead.
+  system_env: %{"GEOFRAME_BUILD" => "true"}
+)
 ```
 
 ## What this notebook does

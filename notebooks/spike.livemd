@@ -1,12 +1,17 @@
 # GeoFrame spike
 
 ```elixir
-Mix.install([
-  {:geoframe, path: Path.join(__DIR__, "..")},
-  {:kino, "~> 0.19"},
-  {:maplibre, "~> 0.1.9"},
-  {:kino_maplibre, "~> 0.1.13"}
-])
+Mix.install(
+  [
+    {:geoframe, path: Path.join(__DIR__, "..")},
+    {:kino, "~> 0.19"},
+    {:maplibre, "~> 0.1.9"},
+    {:kino_maplibre, "~> 0.1.13"}
+  ],
+  # A checkout has no precompiled NIF for its own version, so build GeoFrame from source
+  # (needs a Rust toolchain); from Hex the precompiled NIF is used instead.
+  system_env: %{"GEOFRAME_BUILD" => "true"}
+)
 ```
 
 ## Introduction

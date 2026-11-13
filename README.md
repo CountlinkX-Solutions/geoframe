@@ -45,10 +45,29 @@ end
 ```
 
 GeoFrame is not on Hex yet, so depend on the `v0.1.2` git tag as above (or use a `path:`
-dependency on a checkout). The NIF is
-compiled on your machine by [Rustler](https://hex.pm/packages/rustler) (a dependency of
-GeoFrame; you do not add it), so you need a stable Rust toolchain. Elixir 1.17 or later;
-development uses Elixir 1.19 / OTP 28.
+dependency on a checkout). Up to `0.1.x` the NIF is compiled on your machine by
+[Rustler](https://hex.pm/packages/rustler) (a dependency of GeoFrame; you do not add it), so
+you need a stable Rust toolchain. Elixir 1.17 or later; development uses Elixir 1.19 / OTP 28.
+
+### Precompiled NIFs (from 0.2.0)
+
+From `0.2.0`, the NIF is downloaded as a precompiled library instead of being compiled, so
+**no Rust toolchain is needed** when you install from Hex. Each release attaches builds for
+`aarch64-apple-darwin`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`,
+`x86_64-apple-darwin`, `x86_64-pc-windows-gnu`, `x86_64-pc-windows-msvc`,
+`x86_64-unknown-freebsd`, `x86_64-unknown-linux-gnu` and `x86_64-unknown-linux-musl` (NIF
+version 2.15), through [rustler_precompiled](https://hex.pm/packages/rustler_precompiled). The
+download is verified against the checksum file shipped in the Hex package.
+
+- **Build from source** (needs Rust) with `GEOFRAME_BUILD=true`, or if your platform has no
+  precompiled build. Set the variable for both `mix deps.get` and `mix deps.compile`
+  (Rustler is then pulled in as a dependency of GeoFrame), or add `{:rustler, "~> 0.38"}` to
+  your own deps.
+  GeoFrame always builds from source in `:dev` and `:test` inside its own checkout.
+- **Git dependencies** do not carry the checksum file (it is generated from the release
+  assets, after the tag exists), so a `github:`/`git:` dependency cannot verify a download and
+  must be built from source with `GEOFRAME_BUILD=true`, as before. Use the Hex package to get
+  the precompiled NIF.
 
 ## Quickstart
 
@@ -206,7 +225,8 @@ extracts a notebook's code cells and runs them in order. It also runs the Python
 
 ## Development
 
-Requires Elixir 1.19 / OTP 28 (see `.tool-versions`) and a Rust toolchain.
+Requires Elixir 1.19 / OTP 28 (see `.tool-versions`) and a Rust toolchain. A checkout always
+builds the NIF from source in `:dev` and `:test`.
 
 ```sh
 mix deps.get
@@ -231,6 +251,20 @@ mix docs                  # ExDoc; CI fails on warnings
   ```
 
 - **Benchmarks**: `mix run scripts/bench_sjoin.exs` times large spatial joins.
+- **Releasing precompiled NIFs**: pushing a `v*` tag runs `.github/workflows/release.yml`,
+  which builds `libgeoframe_native` for every target listed in `lib/geo_frame/native.ex` and attaches the
+  archives to the GitHub release of that tag (creating it if needed; the tag must equal
+  `v` plus the `mix.exs` version). `workflow_dispatch` runs the same builds without
+  publishing. Once the release has all assets, before `mix hex.publish`, generate the checksum
+  file that goes into the package:
+
+  ```sh
+  mix rustler_precompiled.download GeoFrame.Native --all --print
+  ```
+
+  It writes `checksum-Elixir.GeoFrame.Native.exs` (not committed to git; `mix hex.build`
+  picks it up through `checksum-*.exs`). Keep the target list in `release.yml` and
+  `lib/geo_frame/native.ex` in sync.
 
 ## License
 

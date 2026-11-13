@@ -28,3 +28,6 @@ geoframe-*.tar
 
 # Compiled NIF libraries
 /priv/native/
+
+# Generated from the GitHub release assets at release time (see README "Releasing").
+/checksum-*.exs

@@ -59,6 +59,12 @@ defmodule GeoFrame.MixProject do
     ]
   end
 
+  # `checksum-Elixir.GeoFrame.Native.exs` is generated from the GitHub release assets at
+  # release time (`mix rustler_precompiled.download GeoFrame.Native --all --print`, see
+  # README "Releasing"); it is globbed with `Path.wildcard/1` because
+  # Hex fails on a literal `checksum-*.exs` entry that matches nothing, which would break
+  # `mix hex.build` before the first release.
+  #
   # Ship the NIF sources only. `priv/native` is never packaged: Rustler copies every cdylib
   # artifact Cargo reports there, including `proj4rs.so` (proj4rs declares
   # `crate-type = ["cdylib", "rlib"]`), and those build outputs must not reach Hex or a
@@ -68,9 +74,11 @@ defmodule GeoFrame.MixProject do
     [
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib native/geoframe_core/src native/geoframe_core/Cargo.toml
+      files:
+        ~w(lib native/geoframe_core/src native/geoframe_core/Cargo.toml
                 native/geoframe_native/src native/geoframe_native/Cargo.toml
-                Cargo.toml Cargo.lock mix.exs README.md CHANGELOG.md LICENSE NOTICE)
+                .cargo Cargo.toml Cargo.lock mix.exs README.md CHANGELOG.md LICENSE NOTICE) ++
+          Path.wildcard("checksum-*.exs")
     ]
   end
 
@@ -84,11 +92,18 @@ defmodule GeoFrame.MixProject do
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
+  defp force_build?, do: System.get_env("GEOFRAME_BUILD") in ["1", "true"]
+
   defp deps do
     [
       # Hex has no rustler 0.39 yet; the crate is 0.39 (native/geoframe_native/Cargo.toml).
       # "~> 0.38" admits 0.39 once published, so only the lock needs bumping then.
-      {:rustler, "~> 0.38", runtime: false},
+      # Only needed to build the NIF from source: a checkout in :dev / :test, or
+      # `GEOFRAME_BUILD=true` (same rule as in GeoFrame.Native). Everyone else gets a precompiled
+      # NIF through rustler_precompiled, so it stays optional for them.
+      {:rustler, "~> 0.38",
+       optional: not (Mix.env() in [:dev, :test] or force_build?()), runtime: false},
+      {:rustler_precompiled, "~> 0.8"},
       {:explorer, "~> 0.13"},
       {:jason, "~> 1.4"},
       {:postgrex, "~> 0.22", optional: true},
