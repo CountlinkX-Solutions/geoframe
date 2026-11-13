@@ -26,6 +26,8 @@ defmodule GeoFrame.StreamFileTest do
 
   defp written(dir, name, opts \\ [], rows \\ @rows) do
     path = Path.join(dir, name)
+    # GeoJSON refuses a projected CRS unless forced; the coordinates are kept as they are.
+    opts = if Path.extname(name) == ".geojson", do: [force: true] ++ opts, else: opts
     :ok = GeoFrame.write_file(sample(rows), path, opts)
     path
   end
@@ -313,6 +315,82 @@ defmodule GeoFrame.StreamFileTest do
     end
   end
 
+  describe "GeoJSON" do
+    defp geojson_with_late_types(dir) do
+      path = Path.join(dir, "late.geojson")
+
+      features =
+        for i <- 0..8 do
+          ~s({"type":"Feature","properties":{"n":#{i},"s":"a#{i}","flag":true},) <>
+            ~s("geometry":{"type":"Point","coordinates":[#{i},#{i * 2}]}})
+        end
+
+      # The last feature turns `n` into a float, adds `late` and a nested value.
+      last =
+        ~s({"type":"Feature","properties":{"n":2.5,"s":"z","late":"x","flag":null,) <>
+          ~s("nested":{"a":[1,2]}},"geometry":{"type":"Point","coordinates":[9,18]}})
+
+      File.write!(
+        path,
+        ~s({"type":"FeatureCollection","features":[#{Enum.join(features ++ [last], ",")}]})
+      )
+
+      path
+    end
+
+    test "batches have the requested size and concatenate to read_file/2", %{tmp_dir: dir} do
+      path = written(dir, "s.geojson")
+      batches = assert_same_as_read_file(path, [], 7)
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [7, 7, 7, 4]
+      assert Enum.all?(batches, &(GeoDataFrame.crs(&1) == "OGC:CRS84"))
+    end
+
+    test "every batch has the dtypes the whole read infers, even for a late feature", %{
+      tmp_dir: dir
+    } do
+      path = geojson_with_late_types(dir)
+      whole = GeoFrame.read_file!(path)
+      dtypes = whole |> GeoDataFrame.data() |> DataFrame.dtypes()
+      assert dtypes["n"] == {:f, 64}
+      assert Map.has_key?(dtypes, "late")
+
+      batches = assert_same_as_read_file(path, [], 3)
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [3, 3, 3, 1]
+      assert col(hd(batches), "late") == [nil, nil, nil]
+    end
+
+    test "bbox: filters feature by feature and refills batches", %{tmp_dir: dir} do
+      path = written(dir, "s.geojson")
+
+      batches =
+        path |> GeoFrame.stream_file(bbox: {3, 0, 9, 100}, batch_size: 3) |> Enum.to_list()
+
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [3, 3, 1]
+      assert Enum.flat_map(batches, &col(&1, "id")) == Enum.to_list(3..9)
+
+      assert_raise ArgumentError, ~r/bbox must have minx/, fn ->
+        GeoFrame.stream_file(path, bbox: {9, 0, 3, 100})
+      end
+    end
+
+    test "an empty collection yields no batches and a bad file raises", %{tmp_dir: dir} do
+      empty = Path.join(dir, "empty.geojson")
+      File.write!(empty, ~s({"type":"FeatureCollection","features":[]}))
+      assert empty |> GeoFrame.stream_file() |> Enum.to_list() == []
+
+      junk = Path.join(dir, "junk.json")
+      File.write!(junk, ~s({"type":"FeatureCollection","features":[{"type":"Feature"))
+
+      assert_raise ArgumentError, ~r/invalid GeoJSON/, fn ->
+        junk |> GeoFrame.stream_file() |> Enum.to_list()
+      end
+
+      assert_raise ArgumentError, ~r/unknown option/, fn ->
+        GeoFrame.stream_file(empty, columns: ["id"])
+      end
+    end
+  end
+
   describe "resource lifetime" do
     test "the stream is lazy: nothing opens before it is enumerated", %{tmp_dir: dir} do
       path = written(dir, "s.parquet")
@@ -327,7 +405,8 @@ defmodule GeoFrame.StreamFileTest do
           {"Feather", "s.feather", []},
           {"Shapefile", "s.shp", []},
           {"Shapefile zip", "s.zip", []},
-          {"GeoPackage", "s.gpkg", []}
+          {"GeoPackage", "s.gpkg", []},
+          {"GeoJSON", "s.geojson", []}
         ] do
       test "#{name}: a full run closes the reader", %{tmp_dir: dir} do
         path = written(dir, unquote(file))
@@ -373,14 +452,6 @@ defmodule GeoFrame.StreamFileTest do
   end
 
   describe "errors" do
-    test "formats that cannot stream yet raise ArgumentError naming the format", %{tmp_dir: dir} do
-      for file <- ["a.geojson", "a.json"] do
-        assert_raise ArgumentError, ~r/stream_file\/2 does not support/, fn ->
-          GeoFrame.stream_file(Path.join(dir, file))
-        end
-      end
-    end
-
     test "an unknown extension or driver raises ArgumentError" do
       assert_raise ArgumentError, ~r/cannot infer the format/, fn ->
         GeoFrame.stream_file("a.xyz")

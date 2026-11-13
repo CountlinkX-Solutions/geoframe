@@ -195,6 +195,7 @@ defmodule GeoFrame.Native do
   def open_feather_reader(_path, _columns, _geometry, _batch_size), do: err()
   def open_shapefile_reader(_path, _encoding, _bbox, _batch_size), do: err()
   def open_gpkg_reader(_path, _layer, _columns, _bbox, _batch_size), do: err()
+  def open_geojson_reader(_path, _bbox, _batch_size), do: err()
   def next_batch(_reader), do: err()
   def close_reader(_reader), do: err()
   def open_readers, do: err()

@@ -48,7 +48,7 @@ use crate::attributes::{ipc_from_columns, Cell, Table};
 use crate::column::ColumnBuilder;
 use crate::{GeoColumn, VectorRead};
 
-const CRS84: &str = "OGC:CRS84";
+pub(crate) const CRS84: &str = "OGC:CRS84";
 
 // -- read ---------------------------------------------------------------------------------
 
@@ -65,28 +65,10 @@ pub fn read_geojson_str(text: &str, crs: Option<&str>) -> Result<VectorRead, Str
 }
 
 fn parse_geojson(text: &str, source: &str, crs: Option<&str>) -> Result<VectorRead, String> {
-    let parsed =
-        GeoJson::from_str(text).map_err(|e| format!("invalid GeoJSON in {source}: {e}"))?;
-    let features = match parsed {
-        GeoJson::FeatureCollection(collection) => collection.features,
-        GeoJson::Feature(feature) => vec![feature],
-        GeoJson::Geometry(geometry) => vec![geojson::Feature {
-            geometry: Some(geometry),
-            ..Default::default()
-        }],
-    };
-
+    let features = features_of(text, source)?;
     let mut builder = ColumnBuilder::new(crs);
     for (row, feature) in features.iter().enumerate() {
-        match &feature.geometry {
-            None => builder.push(None::<&geo::Geometry<f64>>)?,
-            Some(geometry) => {
-                let invalid = |e: String| format!("invalid geometry at feature {row}: {e}");
-                let bytes = crate::zm_io::geojson_to_wkb(geometry).map_err(invalid)?;
-                let parsed = wkb::reader::read_wkb(&bytes).map_err(|e| invalid(e.to_string()))?;
-                builder.push(Some(&parsed))?;
-            }
-        }
+        push_geometry(&mut builder, row, feature)?;
     }
 
     let ids = feature_ids(&features);
@@ -103,6 +85,38 @@ fn parse_geojson(text: &str, source: &str, crs: Option<&str>) -> Result<VectorRe
         geometry: builder.finish(),
         attributes_ipc: ipc_from_columns(fields, columns, rows)?,
     })
+}
+
+/// The features of GeoJSON text: a `FeatureCollection`'s, or a lone `Feature` or bare geometry
+/// as a one-feature list.
+pub(crate) fn features_of(text: &str, source: &str) -> Result<Vec<geojson::Feature>, String> {
+    let parsed =
+        GeoJson::from_str(text).map_err(|e| format!("invalid GeoJSON in {source}: {e}"))?;
+    Ok(match parsed {
+        GeoJson::FeatureCollection(collection) => collection.features,
+        GeoJson::Feature(feature) => vec![feature],
+        GeoJson::Geometry(geometry) => vec![geojson::Feature {
+            geometry: Some(geometry),
+            ..Default::default()
+        }],
+    })
+}
+
+/// Appends the geometry of `feature` (the `row`th of the file) to `builder`.
+pub(crate) fn push_geometry(
+    builder: &mut ColumnBuilder,
+    row: usize,
+    feature: &geojson::Feature,
+) -> Result<(), String> {
+    match &feature.geometry {
+        None => builder.push(None::<&geo::Geometry<f64>>),
+        Some(geometry) => {
+            let invalid = |e: String| format!("invalid geometry at feature {row}: {e}");
+            let bytes = crate::zm_io::geojson_to_wkb(geometry).map_err(invalid)?;
+            let parsed = wkb::reader::read_wkb(&bytes).map_err(|e| invalid(e.to_string()))?;
+            builder.push(Some(&parsed))
+        }
+    }
 }
 
 /// The `id` of every feature as a JSON value, or `None` unless all features have one.
@@ -149,7 +163,7 @@ fn collect_properties<'a>(
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Kind {
+pub(crate) enum Kind {
     Unseen,
     Bool,
     Int,
@@ -157,7 +171,7 @@ enum Kind {
     Text,
 }
 
-fn kind_of(value: &Value) -> Kind {
+pub(crate) fn kind_of(value: &Value) -> Kind {
     match value {
         Value::Bool(_) => Kind::Bool,
         Value::Number(n) if n.is_i64() => Kind::Int,
@@ -166,7 +180,7 @@ fn kind_of(value: &Value) -> Kind {
     }
 }
 
-fn merge(a: Kind, b: Kind) -> Kind {
+pub(crate) fn merge(a: Kind, b: Kind) -> Kind {
     match (a, b) {
         (Kind::Unseen, other) | (other, Kind::Unseen) => other,
         (a, b) if a == b => a,
@@ -180,6 +194,12 @@ fn build_column(cells: &[Option<&Value>]) -> ArrayRef {
         .iter()
         .flatten()
         .fold(Kind::Unseen, |kind, value| merge(kind, kind_of(value)));
+    build_column_as(kind, cells)
+}
+
+/// A column of type `kind` from `cells` (`None` = null); a streamed file fixes `kind` from a
+/// first pass over the whole file.
+pub(crate) fn build_column_as(kind: Kind, cells: &[Option<&Value>]) -> ArrayRef {
     let present = || cells.iter().map(|c| c.as_deref());
     match kind {
         Kind::Bool => Arc::new(BooleanArray::from_iter(

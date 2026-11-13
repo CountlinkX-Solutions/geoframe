@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::feather_stream::FeatherStream;
 use crate::flatgeobuf_io::FgbStream;
+use crate::geojson_stream::GeojsonStream;
 use crate::gpkg_stream::GpkgStream;
 use crate::parquet_io::ParquetStream;
 use crate::shapefile_stream::ShapefileStream;
@@ -44,6 +45,7 @@ enum Source {
     Feather(Box<FeatherStream>),
     Shapefile(Box<ShapefileStream>),
     GeoPackage(Box<GpkgStream>),
+    GeoJson(Box<GeojsonStream>),
 }
 
 /// An open file read batch by batch.
@@ -118,6 +120,18 @@ impl BatchReader {
         Ok(Self::counted(Source::GeoPackage(Box::new(stream))))
     }
 
+    /// Opens a GeoJSON file (a `FeatureCollection` read feature by feature; a lone `Feature` or
+    /// geometry is a one-row file). `bbox` keeps the features whose geometry bounding box
+    /// intersects it.
+    pub fn open_geojson(
+        path: &str,
+        bbox: Option<[f64; 4]>,
+        batch_size: usize,
+    ) -> Result<Self, String> {
+        let stream = GeojsonStream::open(path, bbox, batch_size)?;
+        Ok(Self::counted(Source::GeoJson(Box::new(stream))))
+    }
+
     /// The next batch, `None` once the file is exhausted. A batch has `batch_size` rows except
     /// the last one.
     pub fn next_batch(&mut self) -> Result<Option<StreamBatch>, String> {
@@ -141,6 +155,12 @@ impl BatchReader {
                 attributes_ipc: read.attributes_ipc,
             })),
             Source::GeoPackage(stream) => Ok(stream.next_batch()?.map(|read| StreamBatch {
+                geometry: read.geometry,
+                geometry_column: None,
+                secondary_geometries: Vec::new(),
+                attributes_ipc: read.attributes_ipc,
+            })),
+            Source::GeoJson(stream) => Ok(stream.next_batch()?.map(|read| StreamBatch {
                 geometry: read.geometry,
                 geometry_column: None,
                 secondary_geometries: Vec::new(),

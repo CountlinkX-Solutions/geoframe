@@ -1465,6 +1465,17 @@ fn open_gpkg_reader(
     .map(new_reader)
 }
 
+/// Opens a GeoJSON file for batched reading (`bbox` is applied feature by feature).
+#[rustler::nif(schedule = "DirtyIo")]
+fn open_geojson_reader(
+    path: String,
+    bbox: Option<(f64, f64, f64, f64)>,
+    batch_size: usize,
+) -> Result<Reader, String> {
+    let bbox = bbox.map(|(a, b, c, d)| [a, b, c, d]);
+    BatchReader::open_geojson(&path, bbox, batch_size).map(new_reader)
+}
+
 type NextBatch<'a> = Option<(Handle, Option<String>, Binary<'a>, Secondary)>;
 
 /// The next batch as `{geometry, geometry_column | nil, attributes_ipc, secondary}`, or `nil`
