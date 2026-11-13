@@ -32,6 +32,57 @@ defmodule GeoFrame.SjoinTest do
 
   defp col(gdf, name), do: gdf |> GeoDataFrame.data() |> DataFrame.pull(name) |> Series.to_list()
 
+  # Generator (GeoPandas 1.2 / Shapely 2.2):
+  #   tree = GeoSeries.from_wkt(["POINT (0 0)", "POINT (1 1)", "POINT (2 2)", "POINT (1 1)"])
+  #   tree.sindex.query(box)                        # [1 3 2] (unsorted; sorted: [1 2 3])
+  #   tree.sindex.query(box, predicate="contains")  # [1 3 2]
+  #   tree.sindex.query(None) / query(POINT EMPTY)  # []
+  #   tree.sindex.query(POINT (1 1), predicate="dwithin", distance=1.0)  # [1 3]
+  #   tree.sindex.query(GeoSeries(["POINT (2 2)", "POINT (1 1)"]).values, sort=True)
+  #     # [[0 1 1], [2 1 3]]
+  # In GeoFrame the first argument is the input geometry and the second the tree.
+  describe "sindex_query/4 input modes and :sort" do
+    @box "POLYGON ((0.5 0.5, 3 0.5, 3 3, 0.5 3, 0.5 0.5))"
+
+    defp tree, do: s(["POINT (0 0)", "POINT (1 1)", "POINT (2 2)", "POINT (1 1)"])
+
+    test "a WKT string is one input geometry: a list of tree indices" do
+      assert GeoSeries.sindex_query(@box, tree()) == [1, 2, 3]
+      assert GeoSeries.sindex_query(@box, tree(), :contains) == [1, 2, 3]
+      assert GeoSeries.sindex_query(@box, tree(), :intersects, sort: true) == [1, 2, 3]
+      assert GeoSeries.sindex_query("POINT (1 1)", tree(), :dwithin, distance: 1.0) == [1, 3]
+      assert GeoSeries.sindex_query("POINT EMPTY", tree()) == []
+      assert GeoSeries.sindex_query(nil, tree()) == []
+    end
+
+    test "a list of WKT strings is an array of input geometries: {input_idx, tree_idx}" do
+      assert GeoSeries.sindex_query(["POINT (2 2)", "POINT (1 1)"], tree(), :intersects,
+               sort: true
+             ) ==
+               {[0, 1, 1], [2, 1, 3]}
+
+      assert GeoSeries.sindex_query(["POINT (2 2)", nil, "POINT (1 1)"], tree()) ==
+               {[0, 2, 2], [2, 1, 3]}
+    end
+
+    test "the single and list forms take the tree's CRS" do
+      t = s(["POINT (0 0)"], crs: "EPSG:4326")
+      assert GeoSeries.sindex_query("POINT (0 0)", t) == [0]
+      assert GeoSeries.sindex_query(["POINT (0 0)"], t) == {[0], [0]}
+    end
+
+    test ":sort is accepted (results are always ordered) and must be a boolean" do
+      a = s(["POINT (2 2)", "POINT (1 1)"])
+
+      assert GeoSeries.sindex_query(a, tree(), :intersects, sort: false) ==
+               GeoSeries.sindex_query(a, tree(), :intersects, sort: true)
+
+      assert_raise ArgumentError, ~r/sort/, fn ->
+        GeoSeries.sindex_query(a, tree(), :intersects, sort: :yes)
+      end
+    end
+  end
+
   describe "sindex_query/4" do
     test "returns parallel index lists ordered by (left, right)" do
       left = s(["POINT (1 1)", "POINT (11 11)", "POINT (50 50)", "POINT (2 2)"])
