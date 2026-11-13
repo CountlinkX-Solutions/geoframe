@@ -56,6 +56,28 @@ defmodule GeoFrame.ParityITest do
   end
 
   describe "set_precision/3 and get_precision/1" do
+    test "an invalid multipolygon is merged where GEOS raises (decision, 0.3.0 B13)" do
+      # Shapely 2.2 / GEOS 3.14:
+      #   g = from_wkt("MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((1 1, 3 1, 3 3, 1 3, 1 1)))")
+      #   set_precision(g, 0.1, mode="valid_output" | "keep_collapsed")
+      #     -> GEOSException: TopologyException: side location conflict at 1 2
+      #   set_precision(g, 0.1, mode="pointwise") -> g unchanged (still invalid)
+      # GeoFrame keeps the merged, valid result instead of raising (see docs/parity.md).
+      wkt = "MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((1 1, 3 1, 3 3, 1 3, 1 1)))"
+
+      for mode <- [:valid_output, :keep_collapsed] do
+        out = GeoSeries.set_precision(s([wkt]), 0.1, mode: mode)
+        assert GeoSeries.to_wkt(out) == ["MULTIPOLYGON(((0 2,0 0,2 0,2 1,3 1,3 3,1 3,1 2,0 2)))"]
+        assert Series.to_list(GeoSeries.is_valid(out)) == [true]
+      end
+
+      out = GeoSeries.set_precision(s([wkt]), 0.1, mode: :pointwise)
+
+      assert GeoSeries.to_wkt(out) == [
+               "MULTIPOLYGON(((0 0,2 0,2 2,0 2,0 0)),((1 1,3 1,3 3,1 3,1 1)))"
+             ]
+    end
+
     test "a new series has floating precision" do
       assert list(GeoSeries.get_precision(s(["POINT (1 1)", nil]))) == [0.0, nil]
     end
