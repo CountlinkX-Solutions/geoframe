@@ -409,6 +409,17 @@ impl GeoColumn {
     }
 
     pub fn to_wkt(&self) -> Result<Vec<Option<String>>, String> {
+        // The batch writer panics on a MULTIPOINT with an empty member point and writes an
+        // empty member line or ring as `()`; a column holding one is written row by row
+        // (`wkt_write`), which gives the same text for the rest.
+        let special = self.map_scalars(|s| crate::wkt_write::has_empty_member(s));
+        if special.contains(&Some(true)) {
+            return self
+                .map_scalars(|s| crate::wkt_write::geometry_wkt(s))
+                .into_iter()
+                .map(Option::transpose)
+                .collect();
+        }
         let wkt = to_wkt::<i32>(&self.array).map_err(|e| e.to_string())?;
         Ok(wkt
             .inner()
