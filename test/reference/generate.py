@@ -583,6 +583,13 @@ def build_constructive():
             label="buffer(1.0, square, bevel)", args={"distance": 1.0, "cap_style": "square", "join_style": "bevel"})
     w.group("buffer", "geom", "buf", lambda a, b: a.buffer(1.0, quad_segs=4),
             label="buffer(1.0, quad_segs=4)", args={"distance": 1.0, "quad_segs": 4})
+    # single_sided: left of the line for d > 0, right for d < 0; polygons give the ring band.
+    for d in [1.0, -1.0]:
+        for join in ["round", "mitre", "bevel"]:
+            w.group("buffer", "geom", "buf",
+                    lambda a, b, d=d, j=join: a.buffer(d, join_style=j, single_sided=True),
+                    label=f"buffer({d}, single_sided, {join})",
+                    args={"distance": d, "join_style": join, "single_sided": True})
     w.add_set("simp_collapse", singles(sorted(S_CORPUS)))
     w.add_set("simp", singles(["line_diag", "line_dup", "sq", "sq_hole", "ell", "tri", "mpoly", "line_self"]))
     w.group("simplify", "geom", "simp", lambda a, b: a.simplify(1.0, preserve_topology=False),
