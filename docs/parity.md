@@ -272,6 +272,16 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 
 ## 9. Aggregation / dissolve
 
+Grouping follows Explorer's API rather than pandas' object model: `group_by/2` marks the groups, `summarise/3` aggregates and `group_map/4` applies a function.
+
+| GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
+|---|---|---|---|---|
+| `gdf.groupby(by).agg(...)` | no | `group_by/2` + `summarise/3` (`GeoFrame.GroupBy`) | 🟡 | one row per group, keys first then the aggregated attributes then the geometry; attributes `sum`, `mean`, `median`, `min`, `max`, `count`, `first`, `last`, `n_distinct`; geometry `union_all`, `intersection_all`, `collect`, `envelope`, `convex_hull`, `centroid`, `first`, `last`, `count` aggregated in one NIF call over all groups; `sort:` and `dropna:` as pandas. Differences: no index (keys are columns); `first`/`last` skip nulls as pandas (not as `Explorer.Series.first/last`); `n_distinct` ignores nulls as `nunique` (not as Explorer's); a group's `centroid` is that of its union (pandas has no grouped centroid); geometry columns cannot be keys; aggregations are `out: {func, column}`, not named aggregation objects or callables |
+| `gdf.groupby(by).apply(fun)` | no | `group_map/4` | 🟡 | `fun` receives each group's `GeoDataFrame` (key columns included: pandas 3 removes them and uses them as the index) in key order and the results are concatenated, also for Explorer dataframes (a mix, a CRS or geometry column mismatch raise `ArgumentError` naming the group). `group_keys=True` becomes: key columns `fun` dropped are prepended as columns, there is no index. `fun` returning a scalar or a Series is not supported |
+| `groupby(by).head(n)`, `.tail(n)`, `.nth`, `.sample` | no | `head/2`, `tail/2`, `slice/3`, `sample/2` on a grouped frame | 🟡 | per group as Explorer; `head`, `tail` and `slice` return rows in original order like pandas; `sample` lists group after group (unspecified order); no `nth`, no `cumcount`, `transform`, `filter` or `rolling` |
+
+Dissolve and its options:
+
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
 | `union_all` | no | ✅ | ✅ | the result can have a few vertices fewer than GEOS: collinear and near-duplicate vertices are dropped (Natural Earth 50m continents: Antarctica 4 660 vs 4 923, Asia 12 257 vs 12 259, the rest equal), areas agree to 3e-8 (`notebooks/compare.livemd`) |
@@ -577,7 +587,7 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
 | `dissolve`, `sjoin`, `sjoin_nearest` | no | ✅/🟡 | see §9/§11 | |
 | `clip`, `overlay` | no | `clip/3`, `overlay/3` (also on `GeoFrame`) | ✅ | see §5 |
 | pandas ops (`head`, `tail`, `take`, `select`, `rename`, filter, sort, mutate, `drop_duplicates`, `dropna`, `sample`, `shape`, `dtypes`) | polars | `head`, `tail`, `take`, `slice`, `select`, `discard`, `rename`, `put`, `pull`, `filter`/`filter_with`, `sort_by`/`sort_with`, `mutate`/`mutate_with`, `distinct`, `drop_nil`, `sample`, `shuffle`, `shape`, `n_columns`, `dtypes` | ✅ | wraps Explorer; `filter`/`mutate`/`sort_by` are macros (`require GeoFrame.GeoDataFrame`) whose query sees attribute columns only; geometry follows every row change; `pull(gdf, geometry_column)` returns the GeoSeries, `dtypes` maps it to `:geometry`; GDF-level delegation of geometry methods exists for `area`, `length`, `bounds`, `centroid` only; others via `gdf.geometry` |
-| index/groupby/apply/concat of GDFs | polars | `GeoFrame.concat/1`, `GeoDataFrame.concat_rows/1`, `GeoSeries.concat/1` | 🟡 | row-wise concat done (CRS and geometry column must match); `groupby`/`apply` only through `dissolve` or Explorer on `.data` |
+| index/groupby/apply/concat of GDFs | polars | `GeoFrame.concat/1`, `GeoDataFrame.concat_rows/1`, `GeoSeries.concat/1` | 🟡 | row-wise concat done (CRS and geometry column must match); grouping through `group_by`/`summarise`/`group_map` (see §9, Grouping) |
 | `merge` (attribute join) | polars | `GeoDataFrame.join/3`, `GeoFrame.merge/3` | ✅ | `how:` inner/left/right/outer/cross via Explorer; right is a DataFrame or GeoDataFrame (its geometry is dropped, single geometry column); left geometry follows rows, null for right-only rows. Deviations: `:outer` puts left-only rows last (pandas sorts by key) and keeps `k`/`k_right` instead of coalescing; inner/left/right match pandas row order |
 
 ## 13. I/O
