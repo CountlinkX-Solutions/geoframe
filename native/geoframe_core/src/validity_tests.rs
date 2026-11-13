@@ -127,3 +127,80 @@ fn make_valid_of_a_collinear_polygon_with_z_keeps_z() {
         norm("MULTILINESTRING Z ((0 0 1, 1 1 3), (1 1 3, 2 2 5))")
     );
 }
+
+// -- is_valid_reason in GEOS' words ---------------------------------------------------------
+//
+// GEOS' `IsValidOp` reports the first error in its check order as `<text>[<x> <y>]`:
+// coordinates, too few points, area intersections (`Self-intersection` for a crossing or an
+// overlap, `Ring Self-intersection` for a ring touching itself), hole outside shell, nested
+// holes (`Holes are nested`), nested shells, disconnected interior. Expected values:
+//
+// ```python
+// from shapely import wkt, is_valid_reason
+// is_valid_reason(wkt.loads("POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0))"))   # 'Self-intersection[2 2]'
+// ```
+
+fn reason(wkt: &str) -> String {
+    col(&[Some(wkt)]).is_valid_reason().remove(0).unwrap()
+}
+
+/// Cases where GeoFrame reproduces GEOS' text and coordinate.
+const GEOS_REASONS: &[(&str, &str)] = &[
+    ("POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0))", "Self-intersection[2 2]"),  // bowtie
+    ("LINESTRING (1 1, 1 1)", "Too few points in geometry component[1 1]"),  // line_zero
+    ("LINESTRING (3 4, 3 4, 3 4)", "Too few points in geometry component[3 4]"),  // line_one_pt
+    ("POLYGON ((0 0, 1 1, 2 2, 0 0))", "Self-intersection[1 1]"),  // coll_ring
+    ("POLYGON ((1 1, 1 1, 1 1, 1 1))", "Too few points in geometry component[1 1]"),  // zero_ring
+    ("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (20 20, 21 20, 21 21, 20 21, 20 20))", "Hole lies outside shell[20 20]"),  // hole_out
+    ("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (5 5, 15 5, 15 6, 5 6, 5 5))", "Self-intersection[10 5]"),  // hole_cross
+    ("POLYGON ((0 0, 20 0, 20 20, 0 20, 0 0), (2 2, 18 2, 18 18, 2 18, 2 2), (5 5, 8 5, 8 8, 5 8, 5 5))", "Holes are nested[5 5]"),  // nested_holes
+    ("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 5, 5 0, 5 1, 1 5, 0 5), (5 0, 10 5, 9 5, 5 1, 5 0))", "Self-intersection[5 1]"),  // disconnected
+    ("MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((2 2, 4 2, 4 4, 2 4, 2 2)))", "Nested shells[2 2]"),  // nested_shells
+    ("MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((10 0, 20 0, 20 10, 10 10, 10 0)))", "Self-intersection[10 10]"),  // mp_edge
+    ("POLYGON ((0 0, 10 0, 10 10, 5 0, 5 5, 0 5, 0 0))", "Ring Self-intersection[5 0]"),  // ring_selfint
+    ("POLYGON ((0 0, 10 0, 10 10, 5 5, 5 10, 5 5, 0 10, 0 0))", "Ring Self-intersection[5 5]"),  // inverted
+    ("POLYGON ((0 0, 1 1, 0 0))", "Too few points in geometry component[0 0]"),  // few4
+    ("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 3 3, 2 2))", "Too few points in geometry component[2 2]"),  // few_hole
+    ("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 6 2, 6 6, 2 6, 2 2, 4 4, 2 2))", "Ring Self-intersection[2 2]"),  // hole_selftouch
+    ("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (1 1, 5 1, 5 5, 1 5, 1 1), (5 1, 9 1, 9 5, 5 5, 5 1))", "Self-intersection[5 5]"),  // holes_touch
+    ("LINESTRING (0 0, 1 1)", "Valid Geometry"),  // line_ok
+    ("GEOMETRYCOLLECTION (POINT (1 1), POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0)))", "Self-intersection[2 2]"),  // gc_bad
+    ("GEOMETRYCOLLECTION (LINESTRING (1 1, 1 1), POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0)))", "Too few points in geometry component[1 1]"),  // gc_bad2
+    ("MULTILINESTRING ((0 0, 1 1), (2 2, 2 2))", "Too few points in geometry component[2 2]"),  // mls_bad
+    ("MULTIPOINT ((1 1), (2 2))", "Valid Geometry"),  // mpt
+    ("POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0), (10 10, 11 10, 11 11, 10 11, 10 10))", "Self-intersection[2 2]"),  // two_selfint
+    ("POLYGON ((0 0, 10 0, 10 10, 5 5, 0 10, 0 0))", "Valid Geometry"),  // ring_closed_selftouch
+    ("POLYGON ((0 0, 4 0, 4 4, 2 0, 0 4, 0 0))", "Ring Self-intersection[2 0]"),  // shell_selftouch
+    ("POLYGON ((0 0, 3 0, 3 3, 1 -1, 0 3, 0 0))", "Self-intersection[1.5 0]"),  // selfint_x
+    ("POLYGON EMPTY", "Valid Geometry"),  // epoly
+    ("MULTIPOLYGON (((0 0, 1 0, 1 1, 0 1, 0 0)), ((5 5, 9 9, 9 5, 5 9, 5 5)))", "Self-intersection[7 7]"),  // mp_member_bad
+    ("POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0), (20 20, 21 20, 21 21, 20 21, 20 20))", "Self-intersection[2 2]"),  // hole_outside_and_bowtie
+    ("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (30 30, 31 30, 31 31, 30 31, 30 30), (20 20, 21 20, 21 21, 20 21, 20 20))", "Hole lies outside shell[30 30]"),  // disjoint_holes_outside_two
+];
+
+/// Several errors of one class: GEOS reports the one its monotone-chain traversal meets
+/// first, GeoFrame the first in ring and segment order. The text agrees, the coordinate may not.
+const GEOS_REASONS_OTHER_COORDINATE: &[(&str, &str)] = &[
+    ("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 0, 5 0, 5 5, 0 5, 0 0))", "Self-intersection[0 5]"),
+    ("MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((0 0, 10 0, 10 10, 0 10, 0 0)))", "Self-intersection[10 10]"),
+    ("MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((5 5, 15 5, 15 15, 5 15, 5 5)))", "Self-intersection[5 10]"),
+    ("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (1 1, 6 1, 6 6, 1 6, 1 1), (4 4, 9 4, 9 9, 4 9, 4 4))", "Self-intersection[4 6]"),
+];
+
+#[test]
+fn several_errors_of_one_class_keep_geos_text() {
+    for (wkt, expected) in GEOS_REASONS_OTHER_COORDINATE {
+        let (text, _) = expected.split_once('[').unwrap();
+        assert_eq!(reason(wkt).split_once('[').unwrap().0, text, "{wkt}");
+    }
+}
+
+#[test]
+fn the_reason_is_geos_text_and_coordinate() {
+    let bad: Vec<String> = GEOS_REASONS
+        .iter()
+        .filter(|(wkt, expected)| reason(wkt) != *expected)
+        .map(|(wkt, expected)| format!("{wkt}: {} vs {expected}", reason(wkt)))
+        .collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+}

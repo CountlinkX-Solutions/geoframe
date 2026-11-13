@@ -291,14 +291,17 @@ impl GeoColumn {
         })
     }
 
-    /// `"Valid Geometry"` or the first reason `geo` gives for invalidity; null for null rows.
-    /// The wording is `geo`'s, not GEOS' (`"Self-intersection[x y]"`).
+    /// `"Valid Geometry"` or GEOS' first reason, `<text>[<x> <y>]`; null for null rows. A
+    /// geometry `geo` rejects that the GEOS-order analysis passes keeps `geo`'s wording.
     pub fn is_valid_reason(&self) -> Vec<Option<String>> {
         self.map_scalars(|scalar| match geometry_to_geo(scalar) {
-            Ok(g) => catch_unwind(AssertUnwindSafe(|| match g.check_validation() {
-                Err(e) => e.to_string(),
-                Ok(()) => {
-                    crate::validity::collapsed_reason(&g).unwrap_or_else(|| VALID.to_string())
+            Ok(g) => catch_unwind(AssertUnwindSafe(|| {
+                let geo_reason = g.check_validation().err().map(|e| e.to_string());
+                match geo_reason {
+                    None if crate::validity::is_valid(&g) => VALID.to_string(),
+                    geo_reason => crate::validity_reason::geos_reason(&g)
+                        .or(geo_reason)
+                        .unwrap_or_else(|| "Invalid Geometry".to_string()),
                 }
             }))
             .unwrap_or_else(|_| "validation failed".to_string()),

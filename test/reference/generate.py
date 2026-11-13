@@ -288,6 +288,44 @@ S_CORPUS = {
 CORPUS.update(S_CORPUS)
 
 
+# B9: invalid geometries for is_valid_reason (GEOS' IsValidOp wording and first error).
+VR_CORPUS = {
+    "vr_line_one_pt": "LINESTRING (3 4, 3 4, 3 4)",
+    "vr_coll_ring": "POLYGON ((0 0, 1 1, 2 2, 0 0))",
+    "vr_zero_ring": "POLYGON ((1 1, 1 1, 1 1, 1 1))",
+    "vr_hole_out": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (20 20, 21 20, 21 21, 20 21, 20 20))",
+    "vr_hole_cross": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (5 5, 15 5, 15 6, 5 6, 5 5))",
+    "vr_hole_touch2": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 0, 5 0, 5 5, 0 5, 0 0))",
+    "vr_nested_holes": "POLYGON ((0 0, 20 0, 20 20, 0 20, 0 0), (2 2, 18 2, 18 18, 2 18, 2 2), (5 5, 8 5, 8 8, 5 8, 5 5))",
+    "vr_disconnected": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 5, 5 0, 5 1, 1 5, 0 5), (5 0, 10 5, 9 5, 5 1, 5 0))",
+    "vr_disc2": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (5 0, 10 5, 5 10, 0 5, 5 0))",
+    "vr_nested_shells": "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((2 2, 4 2, 4 4, 2 4, 2 2)))",
+    "vr_dup_rings": "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((0 0, 10 0, 10 10, 0 10, 0 0)))",
+    "vr_mp_overlap": "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((5 5, 15 5, 15 15, 5 15, 5 5)))",
+    "vr_mp_edge": "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((10 0, 20 0, 20 10, 10 10, 10 0)))",
+    "vr_ring_selfint": "POLYGON ((0 0, 10 0, 10 10, 5 0, 5 5, 0 5, 0 0))",
+    "vr_inverted": "POLYGON ((0 0, 10 0, 10 10, 5 5, 5 10, 5 5, 0 10, 0 0))",
+    "vr_spike": "POLYGON ((0 0, 10 0, 10 10, 5 10, 5 12, 5 10, 0 10, 0 0))",
+    "vr_few4": "POLYGON ((0 0, 1 1, 0 0))",
+    "vr_few_hole": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 3 3, 2 2))",
+    "vr_hole_selftouch": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 6 2, 6 6, 2 6, 2 2, 4 4, 2 2))",
+    "vr_shell_hole_touch_two": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 0, 5 5, 0 10, 3 5, 0 0))",
+    "vr_holes_touch": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (1 1, 5 1, 5 5, 1 5, 1 1), (5 1, 9 1, 9 5, 5 5, 5 1))",
+    "vr_holes_cross": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (1 1, 6 1, 6 6, 1 6, 1 1), (4 4, 9 4, 9 9, 4 9, 4 4))",
+    "vr_gc_bad": "GEOMETRYCOLLECTION (POINT (1 1), POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0)))",
+    "vr_gc_bad2": "GEOMETRYCOLLECTION (LINESTRING (1 1, 1 1), POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0)))",
+    "vr_mls_bad": "MULTILINESTRING ((0 0, 1 1), (2 2, 2 2))",
+    "vr_two_selfint": "POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0), (10 10, 11 10, 11 11, 10 11, 10 10))",
+    "vr_ring_closed_selftouch": "POLYGON ((0 0, 10 0, 10 10, 5 5, 0 10, 0 0))",
+    "vr_shell_selftouch": "POLYGON ((0 0, 4 0, 4 4, 2 0, 0 4, 0 0))",
+    "vr_selfint_x": "POLYGON ((0 0, 3 0, 3 3, 1 -1, 0 3, 0 0))",
+    "vr_mp_member_bad": "MULTIPOLYGON (((0 0, 1 0, 1 1, 0 1, 0 0)), ((5 5, 9 9, 9 5, 5 9, 5 5)))",
+    "vr_hole_outside_and_bowtie": "POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0), (20 20, 21 20, 21 21, 20 21, 20 20))",
+    "vr_disjoint_holes_outside_two": "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (30 30, 31 30, 31 31, 30 31, 30 30), (20 20, 21 20, 21 21, 20 21, 20 20))",
+}
+CORPUS.update(VR_CORPUS)
+
+
 def geom(cid):
     w = CORPUS[cid]
     return None if w is None else swkt.loads(w)
@@ -406,7 +444,7 @@ def singles(ids):
 NON_EMPTY_2D = [
     k for k, w in CORPUS.items()
     if w is not None and "EMPTY" not in w
-    and not k.startswith(("g_", "e_", "i_", "j_", "z_", "z2_", "z3_", "h_", "s_"))
+    and not k.startswith(("g_", "e_", "i_", "j_", "z_", "z2_", "z3_", "h_", "s_", "vr_"))
 ]
 EMPTIES = ["pt_empty", "line_empty", "poly_empty", "coll_empty", "null"]
 GEO = [k for k in CORPUS if k.startswith("g_")]
@@ -479,6 +517,8 @@ def build_unary_predicates():
     w.group("is_closed", "bool", "all", lambda a, b: a.is_closed)
     w.group("is_ccw", "bool", "all", lambda a, b: a.is_ccw)
     w.group("is_valid_reason", "string", "all", lambda a, b: a.is_valid_reason())
+    w.add_set("vr", singles(list(VR_CORPUS)))
+    w.group("is_valid_reason", "string", "vr", lambda a, b: a.is_valid_reason())
     w.group("isna", "bool", "all", lambda a, b: a.isna())
     w.dump()
 
