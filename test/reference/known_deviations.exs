@@ -482,10 +482,29 @@ zm_deviations ++
     },
     %{
       reason:
-        "is_valid_reason uses geo's wording (first reason only), not GEOS' text and coordinates.",
+        "is_valid_reason, several errors of one class: GEOS reports the one its monotone-chain traversal meets first, GeoFrame the first in ring and segment order. The text agrees, the reported coordinate differs.",
       doc: "docs/parity.md#reference-testing",
       op: "is_valid_reason",
-      cases: ["is_valid_reason:bowtie", "is_valid_reason:line_zero"]
+      cases: [
+        "is_valid_reason:vr_hole_touch2",
+        "is_valid_reason:vr_dup_rings",
+        "is_valid_reason:vr_mp_overlap",
+        "is_valid_reason:vr_holes_cross"
+      ]
+    },
+    %{
+      reason:
+        "is_valid_reason, a spike that is also a repeated vertex: GEOS reports the overlap (Self-intersection), GeoFrame the first finding in ring order (Ring Self-intersection).",
+      doc: "docs/parity.md#reference-testing",
+      op: "is_valid_reason",
+      cases: ["is_valid_reason:vr_spike"]
+    },
+    %{
+      reason:
+        "is_valid_reason, a hole ring that disconnects the interior by touching the shell at two or more points: geo's validation (and so is_valid) accepts it, GEOS reports Interior is disconnected.",
+      doc: "docs/parity.md#reference-testing",
+      op: "is_valid_reason",
+      cases: ["is_valid_reason:vr_disc2", "is_valid_reason:vr_shell_hole_touch_two"]
     },
     %{
       reason:

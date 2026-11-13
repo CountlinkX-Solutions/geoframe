@@ -49,6 +49,7 @@ mod unary;
 mod utm;
 mod utm_crs;
 mod validity;
+mod validity_reason;
 mod wkt1_projjson;
 mod wkt2_projjson;
 mod zm;

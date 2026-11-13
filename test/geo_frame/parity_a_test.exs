@@ -397,6 +397,28 @@ defmodule GeoFrame.ParityATest do
       assert line =~ ~r/^MULTILINESTRING\s*\(\(0 0,\s*1 1\),\s*\(1 1,\s*2 2\)\)$/
     end
 
+    # Shapely 2.2 / GEOS 3.14: shapely.is_valid_reason(wkt.loads(...))
+    test "is_valid_reason is GEOS' text and coordinate" do
+      series =
+        s([
+          "POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0))",
+          "LINESTRING (1 1, 1 1)",
+          "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (20 20, 21 20, 21 21, 20 21, 20 20))",
+          "POLYGON ((0 0, 20 0, 20 20, 0 20, 0 0), (2 2, 18 2, 18 18, 2 18, 2 2), (5 5, 8 5, 8 8, 5 8, 5 5))",
+          "MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)), ((2 2, 4 2, 4 4, 2 4, 2 2)))",
+          "POLYGON ((0 0, 3 0, 3 3, 1 -1, 0 3, 0 0))"
+        ])
+
+      assert list(GeoSeries.is_valid_reason(series)) == [
+               "Self-intersection[2 2]",
+               "Too few points in geometry component[1 1]",
+               "Hole lies outside shell[20 20]",
+               "Holes are nested[5 5]",
+               "Nested shells[2 2]",
+               "Self-intersection[1.5 0]"
+             ]
+    end
+
     test "is_valid_reason and null_out_invalid" do
       series = s([@square, @bowtie, nil])
       assert [valid, reason, nil] = list(GeoSeries.is_valid_reason(series))
