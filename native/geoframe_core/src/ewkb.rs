@@ -4,6 +4,8 @@
 //! 4-byte SRID. The `wkb` reader only understands ISO, so rows are rewritten to ISO first
 //! (the SRID is returned separately), and standard WKB is rewritten to EWKB on output.
 
+use crate::curves;
+
 const FLAG_Z: u32 = 0x8000_0000;
 const FLAG_M: u32 = 0x4000_0000;
 const FLAG_SRID: u32 = 0x2000_0000;
@@ -40,7 +42,7 @@ enum Target {
     Ewkb,
 }
 
-fn take<'a>(bytes: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8], String> {
+pub(crate) fn take<'a>(bytes: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8], String> {
     let end = pos
         .checked_add(n)
         .filter(|&end| end <= bytes.len())
@@ -50,7 +52,7 @@ fn take<'a>(bytes: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8], Stri
     Ok(slice)
 }
 
-fn read_u32(bytes: &[u8], pos: &mut usize, little: bool) -> Result<u32, String> {
+pub(crate) fn read_u32(bytes: &[u8], pos: &mut usize, little: bool) -> Result<u32, String> {
     let raw: [u8; 4] = take(bytes, pos, 4)?.try_into().expect("4 bytes");
     Ok(if little {
         u32::from_le_bytes(raw)
@@ -87,7 +89,7 @@ fn rewrite(
     };
     let code = read_u32(bytes, pos, little)?;
     let low = code & TYPE_MASK;
-    let (base, iso_dim) = (low % 1000, low / 1000);
+    let (src_base, iso_dim) = (low % 1000, low / 1000);
     let z = code & FLAG_Z != 0 || iso_dim == 1 || iso_dim == 3;
     let m = code & FLAG_M != 0 || iso_dim == 2 || iso_dim == 3;
     let srid = if code & FLAG_SRID != 0 {
@@ -97,6 +99,14 @@ fn rewrite(
     };
 
     out.push(order);
+    // Curves are written as their linear equivalents (see `curves`).
+    let base = match src_base {
+        8 | 9 => 2,
+        10 => 3,
+        11 => 5,
+        12 => 6,
+        other => other,
+    };
     let new_code = match target {
         Target::Iso => base + 1000 * (u32::from(z) + 2 * u32::from(m)),
         Target::Ewkb => {
@@ -131,8 +141,32 @@ fn rewrite(
         write_u32(out, n, little);
         Ok(n as usize)
     };
-    match base {
+    match src_base {
         1 => coords(pos, out, 1)?,
+        8 | 9 => {
+            let points = curves::read_curve_body(bytes, pos, little, src_base, z, m, depth)?;
+            curves::write_points(out, &points, little, z, m);
+        }
+        10 => {
+            let rings = read_u32(bytes, pos, little)?;
+            write_u32(out, rings, little);
+            for _ in 0..rings {
+                if !matches!(curves::peek_base(bytes, *pos)?, 2 | 8 | 9) {
+                    return Err("a curve polygon ring must be a line or curve".into());
+                }
+                let ring = curves::read_curve_member(bytes, pos, depth + 1)?;
+                curves::write_points(out, &ring, little, z, m);
+            }
+        }
+        11 | 12 => {
+            let allowed: &[u32] = if src_base == 11 { &[2, 8, 9] } else { &[3, 10] };
+            for _ in 0..count(pos, out)? {
+                if !allowed.contains(&curves::peek_base(bytes, *pos)?) {
+                    return Err(format!("invalid member of WKB type {src_base}"));
+                }
+                rewrite(bytes, pos, out, target, false, None, depth + 1)?;
+            }
+        }
         2 => {
             let n = count(pos, out)?;
             coords(pos, out, n)?;

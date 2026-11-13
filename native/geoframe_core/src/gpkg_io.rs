@@ -356,14 +356,15 @@ pub(crate) fn layer_rows(conn: &Connection) -> Result<Vec<LayerRow>, String> {
 }
 
 /// pyogrio's name for a GeoPackage geometry type.
-fn display_geometry_type(name: &str, z: i64, m: i64) -> String {
+pub(crate) fn display_geometry_type(name: &str, z: i64, m: i64) -> String {
     let base = match name.to_ascii_uppercase().as_str() {
         "POINT" => "Point",
-        "LINESTRING" => "LineString",
-        "POLYGON" => "Polygon",
+        // Curve layers are linearized on read, and pyogrio reports the linear type.
+        "LINESTRING" | "CIRCULARSTRING" | "COMPOUNDCURVE" | "CURVE" => "LineString",
+        "POLYGON" | "CURVEPOLYGON" | "SURFACE" => "Polygon",
         "MULTIPOINT" => "MultiPoint",
-        "MULTILINESTRING" => "MultiLineString",
-        "MULTIPOLYGON" => "MultiPolygon",
+        "MULTILINESTRING" | "MULTICURVE" => "MultiLineString",
+        "MULTIPOLYGON" | "MULTISURFACE" => "MultiPolygon",
         "GEOMETRYCOLLECTION" => "GeometryCollection",
         "GEOMETRY" => "Unknown",
         _ => name,
