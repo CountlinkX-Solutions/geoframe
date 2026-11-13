@@ -563,7 +563,7 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
 | `GeoDataFrame(...)` | DataFrame + geometry column | `GeoDataFrame.new/3` | ✅ | |
-| `from_features` | — | `GeoDataFrame.from_features/2` | 🟡 | list or FeatureCollection; `crs:`, `columns:`; GeoJSON inference; property columns sorted by name (Elixir maps) |
+| `from_features` | — | `GeoDataFrame.from_features/2` | ✅ | list or FeatureCollection; `crs:`, `columns:`, `geometry_column:`; GeoJSON inference; property columns in first-appearance order across features (verified against GeoPandas 1.2) when the properties are ordered (keyword list, `{key, value}` pair list, or JSON decoded with `Jason.decode!(json, objects: :ordered_objects)`); plain Elixir maps carry no order and give columns sorted by name. The geometry column comes last (GeoPandas: first) |
 | `from_arrow` / `to_arrow` | geoarrow native | `GeoDataFrame.from_arrow/2`, `to_arrow/2` | ✅ | see §1; interchange verified against GeoPandas 1.2 / pyarrow 26 both ways |
 | `from_postgis` / `to_postgis` / `read_postgis` | roadmap | `GeoFrame.read_postgis/3`, `to_postgis/4` (+ `!`), `GeoDataFrame.from_postgis/3`, `to_postgis/4` | ✅ | optional Postgrex; EWKB with SRID; see Batch G2; verified against GeoPandas 1.2 both ways |
 | `to_geo_dict` | — | `to_geo_interface/1`, `to_json/2`, `to_geojson/1` | 🟡 | `to_geo_interface/1` is the dict with GeoPandas' defaults (`na: :null`, bboxes, ids); no per-call `na`/`show_bbox`/`drop_id` on the map variant (use the `to_json/2` options); `to_geojson/1` is the plain features list; secondary geometry columns are properties holding GeoJSON geometry maps (GeoPandas keeps the shapely objects there) |

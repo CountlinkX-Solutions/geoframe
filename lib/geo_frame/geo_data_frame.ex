@@ -121,8 +121,12 @@ defmodule GeoFrame.GeoDataFrame do
   geometry map counts as one feature. Property types are inferred over all features exactly
   as `GeoFrame.read_geojson/2` does (booleans, `s64`, `f64`, otherwise strings; nested values
   as JSON text; a feature `id` becomes a leading `"id"` column when every feature has one).
-  A `nil` geometry is a null row. Elixir maps have no insertion order, so property columns
-  appear sorted by name; use `:columns` to choose the order.
+  A `nil` geometry is a null row. Property columns follow their first appearance across the
+  features (as GeoPandas does) when the properties are *ordered*: a keyword list or a list of
+  `{key, value}` pairs, or JSON decoded with `Jason.decode!(json, objects: :ordered_objects)`.
+  Plain Elixir maps have no insertion order, so their columns appear sorted by name; use
+  `:columns` to choose the order explicitly. (The geometry column comes last, as in every
+  `GeoDataFrame` here, where GeoPandas puts it first.)
 
   Options:
 
@@ -152,9 +156,40 @@ defmodule GeoFrame.GeoDataFrame do
   def from_features!(features, opts \\ []), do: features |> from_features(opts) |> unwrap!()
 
   defp feature_collection(features) when is_list(features),
-    do: %{"type" => "FeatureCollection", "features" => features}
+    do: %{"type" => "FeatureCollection", "features" => Enum.map(features, &ordered_feature/1)}
+
+  defp feature_collection(%{} = map) when not is_struct(map) do
+    Map.new(map, fn
+      {key, features} when key in ["features", :features] and is_list(features) ->
+        {key, Enum.map(features, &ordered_feature/1)}
+
+      pair ->
+        pair
+    end)
+  end
 
   defp feature_collection(%{} = map), do: map
+
+  # Keyword lists and `{key, value}` pair lists under "properties" keep their order by
+  # becoming ordered JSON objects; maps and ordered objects pass through unchanged.
+  defp ordered_feature(%{} = feature) when not is_struct(feature) do
+    Map.new(feature, fn
+      {key, [_ | _] = pairs} when key in ["properties", :properties] ->
+        {key, ordered_properties(pairs)}
+
+      pair ->
+        pair
+    end)
+  end
+
+  defp ordered_feature(other), do: other
+
+  defp ordered_properties(pairs) do
+    if Enum.all?(pairs, &match?({key, _} when is_binary(key) or is_atom(key), &1)),
+      do:
+        Jason.OrderedObject.new(Enum.map(pairs, fn {key, value} -> {to_string(key), value} end)),
+      else: pairs
+  end
 
   defp select_columns(data, nil), do: {:ok, data}
 

@@ -100,6 +100,48 @@ defmodule GeoFrame.ParityATest do
       assert GeoDataFrame.crs(gdf) == "EPSG:4326"
     end
 
+    # GeoPandas 1.2: from_features([{"b":1,"a":2}, {"c":3,"a":5}]).columns
+    #   == ["geometry", "b", "a", "c"] (first appearance across features); columns=["c","a"]
+    #   gives ["c","a"].
+    test "keeps property order for keyword lists and pair lists (first appearance)" do
+      point = %{"type" => "Point", "coordinates" => [0, 0]}
+
+      features = [
+        %{"type" => "Feature", "geometry" => point, "properties" => [{"b", 1}, {"a", 2}]},
+        %{"type" => "Feature", "geometry" => point, "properties" => [c: 3, a: 5]}
+      ]
+
+      gdf = GeoDataFrame.from_features!(features)
+      assert GeoDataFrame.names(gdf) == ["b", "a", "c", "geometry"]
+      assert gdf.data["b"] |> list() == [1, nil]
+      assert gdf.data["c"] |> list() == [nil, 3]
+
+      assert GeoDataFrame.names(GeoDataFrame.from_features!(features, columns: ["c", "a"])) ==
+               ["c", "a", "geometry"]
+    end
+
+    test "keeps property order of JSON decoded with ordered objects" do
+      json = ~s({"type":"FeatureCollection","features":[{"type":"Feature","geometry":null,
+        "properties":{"z":1,"y":2,"x":3}}]})
+
+      collection = Jason.decode!(json, objects: :ordered_objects)
+
+      assert GeoDataFrame.names(GeoDataFrame.from_features!(collection)) == [
+               "z",
+               "y",
+               "x",
+               "geometry"
+             ]
+    end
+
+    test "plain map properties stay sorted by name" do
+      features = [
+        %{"type" => "Feature", "geometry" => nil, "properties" => %{"b" => 1, "a" => 2}}
+      ]
+
+      assert GeoDataFrame.names(GeoDataFrame.from_features!(features)) == ["a", "b", "geometry"]
+    end
+
     test "errors on invalid input" do
       assert {:error, _} = GeoDataFrame.from_features([%{"type" => "Feature", "geometry" => 5}])
       assert {:error, message} = GeoDataFrame.from_features(@features, columns: ["missing"])
