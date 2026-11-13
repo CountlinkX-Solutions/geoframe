@@ -196,4 +196,142 @@ defmodule GeoFrame.DissolveTest do
 
   defp rect_wkt(x, y, w, h),
     do: "POLYGON ((#{x} #{y}, #{x + w} #{y}, #{x + w} #{y + h}, #{x} #{y + h}, #{x} #{y}))"
+
+  describe "as_index, level, observed" do
+    # GeoPandas 1.2 / pandas 3.1:
+    #   g = gpd.GeoDataFrame({"k": pd.Categorical(["a","a","c"], categories=list("abcd")),
+    #                         "v": [1, 2, 3]}, geometry=[Point(0,0), Point(1,1), Point(2,2)])
+    #   g.dissolve("k", observed=False)               -> k a,b,c,d; v 1,NaN,3,NaN;
+    #       geometry MULTIPOINT ((0 0), (1 1)), GEOMETRYCOLLECTION EMPTY, POINT (2 2), GEOMETRYCOLLECTION EMPTY
+    #   g.dissolve("k", aggfunc="sum", observed=False) -> v 3,0,3,0
+    #   g.dissolve("k", observed=True)                 -> a, c only
+    #   g.dissolve("k", as_index=False).columns       -> k, geometry, v (k is a column)
+    defp categorical do
+      data =
+        DataFrame.new(
+          k: Series.from_list(["a", "a", "c", "b", "d"], dtype: :category),
+          v: Series.from_list([1, 2, 3, 4, 5])
+        )
+
+      geometry =
+        GeoSeries.from_wkt!(
+          ["POINT (0 0)", "POINT (1 1)", "POINT (2 2)", "POINT (3 3)", "POINT (4 4)"],
+          crs: "EPSG:4326"
+        )
+
+      GeoDataFrame.take(GeoDataFrame.new(data, geometry), [0, 1, 2])
+    end
+
+    defp wkts(gdf),
+      do:
+        gdf.geometry
+        |> GeoSeries.to_wkt()
+        |> Enum.map(&String.replace(&1, " ", ""))
+
+    defp same?(a, b),
+      do: wkts(a) == wkts(b) and DataFrame.to_columns(a.data) == DataFrame.to_columns(b.data)
+
+    test "as_index: false is accepted and equals the default", %{gdf: gdf} do
+      assert same?(
+               GeoDataFrame.dissolve(gdf, by: "key", as_index: false),
+               GeoDataFrame.dissolve(gdf, by: "key")
+             )
+    end
+
+    test "as_index: true raises, there is no index", %{gdf: gdf} do
+      assert_raise ArgumentError, ~r/as_index: true.*no index/s, fn ->
+        GeoDataFrame.dissolve(gdf, by: "key", as_index: true)
+      end
+
+      assert_raise ArgumentError, ~r/as_index/, fn ->
+        GeoDataFrame.dissolve(gdf, by: "key", as_index: :yes)
+      end
+    end
+
+    test "level raises, there is no index", %{gdf: gdf} do
+      assert_raise ArgumentError, ~r/level.*no index/s, fn ->
+        GeoDataFrame.dissolve(gdf, level: 0)
+      end
+    end
+
+    test "observed defaults to true: unobserved categories are dropped" do
+      out = GeoDataFrame.dissolve(categorical(), by: "k")
+      assert col(out, "k") == ["a", "c"]
+      assert same?(GeoDataFrame.dissolve(categorical(), by: "k", observed: true), out)
+    end
+
+    test "observed: false adds the unobserved categories as empty groups" do
+      out = GeoDataFrame.dissolve(categorical(), by: "k", observed: false)
+      assert col(out, "k") == ["a", "b", "c", "d"]
+      assert col(out, "v") == [1, nil, 3, nil]
+
+      assert wkts(out) == [
+               "MULTIPOINT((00),(11))",
+               "GEOMETRYCOLLECTION EMPTY" |> String.replace(" ", ""),
+               "POINT(22)",
+               "GEOMETRYCOLLECTION EMPTY" |> String.replace(" ", "")
+             ]
+
+      assert GeoDataFrame.crs(out) == "EPSG:4326"
+    end
+
+    test "observed: false counts and sums empty groups as 0" do
+      out = GeoDataFrame.dissolve(categorical(), by: "k", aggfunc: :sum, observed: false)
+      assert col(out, "v") == [3, 0, 3, 0]
+      out = GeoDataFrame.dissolve(categorical(), by: "k", aggfunc: :count, observed: false)
+      assert col(out, "v") == [2, 0, 1, 0]
+    end
+
+    test "observed: false is a no-op without categorical keys", %{gdf: gdf} do
+      assert same?(
+               GeoDataFrame.dissolve(gdf, by: "key", observed: false),
+               GeoDataFrame.dissolve(gdf, by: "key")
+             )
+    end
+
+    test "observed: false with mixed categorical and plain keys raises" do
+      gdf = categorical()
+      gdf = %{gdf | data: DataFrame.put(gdf.data, "z", Series.from_list([1, 1, 2]))}
+
+      assert_raise ArgumentError, ~r/observed: false/, fn ->
+        GeoDataFrame.dissolve(gdf, by: ["k", "z"], observed: false)
+      end
+    end
+
+    test "observed: false takes every combination of several category keys" do
+      # g = GeoDataFrame({"k": Categorical(["b","a"], list("ab")), "j": Categorical(["a","a"],
+      #   list("ab")), "v": [1, 2]}, geometry=[Point(0,0), Point(1,1)])
+      # g.dissolve(["k","j"], observed=False, as_index=False[, sort=False]) -> v
+      #   sort: k,j = aa 2, ab NaN, ba 1, bb NaN; sort=False: ba 1, bb NaN, aa 2, ab NaN
+      cat = fn values -> Series.from_list(values ++ ["a", "b"], dtype: :category) end
+
+      data =
+        DataFrame.new(k: cat.(["b", "a"]), j: cat.(["a", "a"]), v: Series.from_list([1, 2, 0, 0]))
+
+      geometry = GeoSeries.from_wkt!(List.duplicate("POINT (0 0)", 4))
+      gdf = GeoDataFrame.take(GeoDataFrame.new(data, geometry), [0, 1])
+
+      out = GeoDataFrame.dissolve(gdf, by: ["k", "j"], observed: false)
+
+      assert Enum.zip(col(out, "k"), col(out, "j")) == [
+               {"a", "a"},
+               {"a", "b"},
+               {"b", "a"},
+               {"b", "b"}
+             ]
+
+      assert col(out, "v") == [2, nil, 1, nil]
+
+      out = GeoDataFrame.dissolve(gdf, by: ["k", "j"], observed: false, sort: false)
+
+      assert Enum.zip(col(out, "k"), col(out, "j")) == [
+               {"b", "a"},
+               {"b", "b"},
+               {"a", "a"},
+               {"a", "b"}
+             ]
+
+      assert col(out, "v") == [1, nil, 2, nil]
+    end
+  end
 end

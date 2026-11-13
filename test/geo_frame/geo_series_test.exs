@@ -51,7 +51,7 @@ defmodule GeoFrame.GeoSeriesTest do
   describe "crs" do
     test "set_crs/2 replaces metadata only" do
       s = GeoSeries.from_wkt!(["POINT (1 2)"], crs: "EPSG:4326")
-      moved = GeoSeries.set_crs(s, "EPSG:3857")
+      moved = GeoSeries.set_crs(s, "EPSG:3857", allow_override: true)
       assert GeoSeries.crs(moved) == "EPSG:3857"
       assert GeoSeries.to_wkt(moved) == GeoSeries.to_wkt(s)
       assert GeoSeries.crs(s) == "EPSG:4326"
@@ -60,9 +60,12 @@ defmodule GeoFrame.GeoSeriesTest do
 
     test "set_crs/2 accepts an integer EPSG code, stored as the EPSG string" do
       s = GeoSeries.from_wkt!(["POINT (1 2)"], crs: "EPSG:4326")
-      moved = GeoSeries.set_crs(s, 3857)
+      moved = GeoSeries.set_crs(s, 3857, allow_override: true)
       assert GeoSeries.crs(moved) == "EPSG:3857"
-      assert GeoSeries.crs(moved) == GeoSeries.crs(GeoSeries.set_crs(s, "EPSG:3857"))
+
+      assert GeoSeries.crs(moved) ==
+               GeoSeries.crs(GeoSeries.set_crs(s, "EPSG:3857", allow_override: true))
+
       assert GeoSeries.to_wkt(moved) == GeoSeries.to_wkt(s)
     end
 
@@ -73,6 +76,50 @@ defmodule GeoFrame.GeoSeriesTest do
         assert_raise(ArgumentError, fn -> GeoSeries.to_crs(s, bad) end)
         assert_raise(ArgumentError, ~r/positive integer/, fn -> GeoSeries.set_crs(s, bad) end)
       end
+    end
+  end
+
+  describe "set_crs allow_override" do
+    # GeoPandas 1.2: s = gpd.GeoSeries.from_wkt(["POINT (1 2)"], crs=4326)
+    #   s.set_crs(3857)                       -> ValueError "already has a CRS which is not equal ..."
+    #   s.set_crs(4326)                       -> EPSG:4326 (same CRS, no-op)
+    #   s.set_crs(3857, allow_override=True)  -> EPSG:3857, coordinates untouched
+    #   gpd.GeoSeries.from_wkt(["POINT (1 2)"]).set_crs(3857) -> EPSG:3857 (no CRS yet)
+    setup do
+      %{s: GeoSeries.from_wkt!(["POINT (1 2)"], crs: "EPSG:4326")}
+    end
+
+    test "a different CRS raises unless allow_override: true", %{s: s} do
+      assert_raise ArgumentError, ~r/already has a CRS.*allow_override: true.*to_crs/s, fn ->
+        GeoSeries.set_crs(s, "EPSG:3857")
+      end
+
+      assert_raise ArgumentError, ~r/allow_override/, fn -> GeoSeries.set_crs(s, 3857) end
+      moved = GeoSeries.set_crs(s, 3857, allow_override: true)
+      assert GeoSeries.crs(moved) == "EPSG:3857"
+      assert GeoSeries.to_wkt(moved) == GeoSeries.to_wkt(s)
+    end
+
+    test "the same CRS is a no-op", %{s: s} do
+      assert GeoSeries.crs(GeoSeries.set_crs(s, "EPSG:4326")) == "EPSG:4326"
+      assert GeoSeries.crs(GeoSeries.set_crs(s, 4326)) == "EPSG:4326"
+    end
+
+    test "a series without a CRS takes any CRS" do
+      s = GeoSeries.from_wkt!(["POINT (1 2)"])
+      assert GeoSeries.crs(GeoSeries.set_crs(s, 3857)) == "EPSG:3857"
+    end
+
+    test "nil clears the CRS without allow_override", %{s: s} do
+      assert GeoSeries.crs(GeoSeries.set_crs(s, nil)) == nil
+    end
+
+    test "allow_override must be a boolean and unknown options raise", %{s: s} do
+      assert_raise ArgumentError, ~r/allow_override/, fn ->
+        GeoSeries.set_crs(s, 3857, allow_override: :yes)
+      end
+
+      assert_raise ArgumentError, ~r/unknown option/, fn -> GeoSeries.set_crs(s, 3857, foo: 1) end
     end
   end
 
