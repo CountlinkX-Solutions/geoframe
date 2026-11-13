@@ -116,7 +116,7 @@ matrix and the known deviations are in [docs/parity.md](docs/parity.md).
 | GeoParquet 1.0/1.1 | `read_parquet/2` (`bbox:` filter) | `write_parquet/3` (compression, row groups, native GeoArrow, covering bbox) | `.parquet`, `.geoparquet` |
 | GeoJSON (RFC 7946) | `read_geojson/2` | `write_geojson/3` | `.geojson`, `.json` |
 | FlatGeobuf | `read_flatgeobuf/2` (`bbox:` via the index) | `write_flatgeobuf/3` | `.fgb` |
-| Feather v2 (Arrow IPC file) | `read_feather/2` | `write_feather/3` | `.feather`, `.arrow` |
+| Feather v2 (Arrow IPC file) | `read_feather/2` | `write_feather/3` (`record_batch_size:`) | `.feather`, `.arrow` |
 | Shapefile (`.cpg`, `.prj`, zipped) | `read_shapefile/2` | `write_shapefile/3` | `.shp`, `.zip` |
 | GeoPackage (several layers, rtree) | `read_gpkg/2` (`layer:`) | `write_gpkg/3` (`layer:`, `mode:`) | `.gpkg` |
 | PostGIS (optional `:postgrex`) | `read_postgis/3` | `to_postgis/4` | database |
@@ -218,7 +218,7 @@ extracts a notebook's code cells and runs them in order. It also runs the Python
 - Inputs that would abort the VM (a stack overflow, a huge allocation) are rejected with an
   error; the caps (WKT depth, grid cells, buffer vertices, ...) are in
   [Resource limits](docs/parity.md#resource-limits).
-- `read_file/2` reads a file into memory whole. `GeoFrame.stream_file/2` reads GeoParquet, FlatGeobuf, Arrow IPC / Feather, Shapefile (`.shp`, `.zip`), GeoPackage and GeoJSON lazily as a stream of `GeoDataFrame` batches (`batch_size:`, and where the format supports it `columns:`, `bbox:`, `layer:`, `encoding:`), so a file larger than memory can be processed (GeoJSON is read twice, once to infer the column types, so every batch has the dtypes of `read_file/2`); `read_file(path, rows: n | first..last)` reads only those rows through the same readers (GeoParquet skips row groups), so the first rows of a huge file are cheap.
+- `read_file/2` reads a file into memory whole. `GeoFrame.stream_file/2` reads GeoParquet, FlatGeobuf, Arrow IPC / Feather, Shapefile (`.shp`, `.zip`), GeoPackage and GeoJSON lazily as a stream of `GeoDataFrame` batches (`batch_size:`, and where the format supports it `columns:`, `bbox:`, `layer:`, `encoding:`), so a file larger than memory can be processed (GeoJSON is read twice, once to infer the column types, so every batch has the dtypes of `read_file/2`); `read_file(path, bbox: {minx, miny, maxx, maxy})` filters every format but Feather as GeoPandas does (the GDAL formats keep the features whose geometry intersects the box); `read_file(path, rows: n | first..last)` reads only those rows through the same readers (GeoParquet skips row groups), so the first rows of a huge file are cheap.
 - Not planned: `plot` (use the Kino map), geocoding, pandas index alignment, a persistent
   spatial index object, and OGR drivers that need GDAL (GML, KML, GPX, FileGDB, ...; convert
   with `ogr2ogr` first).

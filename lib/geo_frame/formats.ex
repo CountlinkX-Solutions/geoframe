@@ -27,6 +27,8 @@ defmodule GeoFrame.Formats do
 
   @parquet_compressions [:snappy, :zstd, :gzip, :lz4, :brotli, :none]
   @feather_compressions [:lz4, :zstd, :uncompressed]
+  # Rows per Arrow record batch; pyarrow's `write_feather(chunksize=65536)` default.
+  @record_batch_size 65_536
   @encodings [:wkb, :geoarrow]
   @schema_versions ["1.0.0", "1.1.0"]
 
@@ -91,9 +93,10 @@ defmodule GeoFrame.Formats do
   end
 
   def write_feather(%GeoDataFrame{} = gdf, path, opts) do
-    validate_options!(opts, [:compression, :geometry_encoding])
+    validate_options!(opts, [:compression, :geometry_encoding, :record_batch_size])
     compression = enum!(opts, :compression, @feather_compressions, :lz4)
     encoding = enum!(opts, :geometry_encoding, @encodings, :wkb)
+    record_batch_size = record_batch_size!(opts)
 
     with {:ok, ipc} <- Attributes.dump(gdf.data),
          {:ok, _} <-
@@ -103,7 +106,7 @@ defmodule GeoFrame.Formats do
              ipc,
              to_string(path),
              Atom.to_string(encoding),
-             Atom.to_string(compression),
+             {Atom.to_string(compression), record_batch_size},
              secondary_refs(gdf)
            ) do
       :ok
@@ -111,8 +114,9 @@ defmodule GeoFrame.Formats do
   end
 
   def to_arrow(%GeoDataFrame{} = gdf, opts) do
-    validate_options!(opts, [:geometry_encoding])
+    validate_options!(opts, [:geometry_encoding, :record_batch_size])
     encoding = enum!(opts, :geometry_encoding, @encodings, :wkb)
+    record_batch_size = record_batch_size!(opts)
 
     with {:ok, ipc} <- Attributes.dump(gdf.data),
          {:ok, bytes} <-
@@ -121,6 +125,7 @@ defmodule GeoFrame.Formats do
              gdf.geometry_column,
              ipc,
              Atom.to_string(encoding),
+             record_batch_size,
              secondary_refs(gdf)
            ) do
       bytes
@@ -133,7 +138,14 @@ defmodule GeoFrame.Formats do
     validate_options!(opts, [:geometry_encoding])
     encoding = enum!(opts, :geometry_encoding, @encodings, :wkb)
 
-    case Native.to_arrow_stream(ref, "geometry", <<>>, Atom.to_string(encoding), []) do
+    case Native.to_arrow_stream(
+           ref,
+           "geometry",
+           <<>>,
+           Atom.to_string(encoding),
+           @record_batch_size,
+           []
+         ) do
       {:ok, bytes} -> bytes
       {:error, message} -> raise ArgumentError, message
     end
@@ -228,7 +240,24 @@ defmodule GeoFrame.Formats do
     end
   end
 
-  defp read_whole(driver, path, opts) do
+  @bbox_read_options [shapefile: [:encoding], gpkg: [:layer], geojson: [:geometry_column]]
+
+  # GeoParquet and FlatGeobuf filter inside their whole readers; the other formats have no
+  # index there, so a bbox read goes through the `stream_file/2` readers (the same filter) and
+  # concatenates the batches.
+  defp read_whole(driver, path, opts) when driver in [:shapefile, :gpkg, :geojson] do
+    if Keyword.get(opts, :bbox) == nil do
+      read_unfiltered(driver, path, Keyword.delete(opts, :bbox))
+    else
+      validate_options!(opts, [:bbox | @bbox_read_options[driver]])
+      read_rows(driver, path, {0, :all}, opts)
+    end
+  end
+
+  defp read_whole(driver, path, opts), do: read_unfiltered(driver, path, opts)
+
+  # The whole read of `driver` with its own options (no `bbox:` for Shapefile, GeoPackage, GeoJSON).
+  defp read_unfiltered(driver, path, opts) do
     case driver do
       :parquet -> GeoFrame.read_parquet(path, opts)
       :geojson -> read_geojson(path, opts)
@@ -259,7 +288,10 @@ defmodule GeoFrame.Formats do
 
   defp read_rows(driver, path, {offset, length}, opts) do
     path = to_string(path)
-    batch_size = length |> min(@rows_batch_cap) |> max(1)
+
+    batch_size =
+      if length == :all, do: @rows_batch_cap, else: length |> min(@rows_batch_cap) |> max(1)
+
     open = stream_opener(driver, path, opts, batch_size)
 
     try do
@@ -297,13 +329,21 @@ defmodule GeoFrame.Formats do
 
       {:ok, batch} ->
         gdf = unwrap_batch!(batch, driver, opts)
-        gdf = if GeoDataFrame.n_rows(gdf) > left, do: GeoDataFrame.head(gdf, left), else: gdf
-        take_rows(reader, driver, opts, left - GeoDataFrame.n_rows(gdf), [gdf | frames])
+
+        gdf =
+          if left != :all and GeoDataFrame.n_rows(gdf) > left,
+            do: GeoDataFrame.head(gdf, left),
+            else: gdf
+
+        take_rows(reader, driver, opts, rows_left(left, gdf), [gdf | frames])
 
       {:error, message} ->
         raise ArgumentError, message
     end
   end
+
+  defp rows_left(:all, _gdf), do: :all
+  defp rows_left(left, gdf), do: left - GeoDataFrame.n_rows(gdf)
 
   defp rows_frame([], driver, path, opts), do: empty_rows_frame(driver, path, opts)
   defp rows_frame([only], _driver, _path, _opts), do: only
@@ -561,6 +601,10 @@ defmodule GeoFrame.Formats do
       value when is_integer(value) -> value
       other -> raise ArgumentError, "#{inspect(key)} must be an integer, got: #{inspect(other)}"
     end
+  end
+
+  defp record_batch_size!(opts) do
+    optional_positive_integer!(opts, :record_batch_size) || @record_batch_size
   end
 
   defp optional_positive_integer!(opts, key) do

@@ -34,6 +34,7 @@ use serde_json::Value;
 use crate::attributes::ipc_from_columns;
 use crate::column::ColumnBuilder;
 use crate::geojson_io::{build_column_as, features_of, kind_of, merge, push_geometry, Kind, CRS84};
+use crate::parquet_io::geometry_meets_bbox;
 use crate::VectorRead;
 
 // -- scanner ------------------------------------------------------------------------------
@@ -428,16 +429,25 @@ fn bounds_of(value: &GeometryValue, bounds: &mut Option<[f64; 4]>) {
     }
 }
 
-/// Whether the feature's geometry has a bounding box intersecting `query` (no geometry never
-/// does, as in every other streamed format).
+/// Whether the feature's geometry intersects `query` (GDAL's spatial filter: the geometry
+/// itself, after a cheap envelope test; no geometry never does, as in every other streamed
+/// format). A geometry `geo` cannot represent keeps its envelope answer.
 fn intersects(feature: &Feature, query: [f64; 4]) -> bool {
+    let Some(geometry) = &feature.geometry else {
+        return false;
+    };
     let mut bounds = None;
-    if let Some(geometry) = &feature.geometry {
-        bounds_of(&geometry.value, &mut bounds);
-    }
-    bounds.is_some_and(|b| {
+    bounds_of(&geometry.value, &mut bounds);
+    let envelope = bounds.is_some_and(|b| {
         b[0] <= query[2] && b[2] >= query[0] && b[1] <= query[3] && b[3] >= query[1]
-    })
+    });
+    if !envelope {
+        return false;
+    }
+    match geo::Geometry::<f64>::try_from(&geometry.value) {
+        Ok(g) => geometry_meets_bbox(&g, query),
+        Err(_) => true,
+    }
 }
 
 // -- stream -------------------------------------------------------------------------------
