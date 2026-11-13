@@ -252,7 +252,7 @@ mix docs                  # ExDoc; CI fails on warnings
 
 - **Benchmarks**: `mix run scripts/bench_sjoin.exs` times large spatial joins.
 - **Releasing precompiled NIFs**: pushing a `v*` tag runs `.github/workflows/release.yml`,
-  which builds `libgeoframe_native` for every target in `GeoFrame.Native` and attaches the
+  which builds `libgeoframe_native` for every target listed in `lib/geo_frame/native.ex` and attaches the
   archives to the GitHub release of that tag (creating it if needed; the tag must equal
   `v` plus the `mix.exs` version). `workflow_dispatch` runs the same builds without
   publishing. Once the release has all assets, before `mix hex.publish`, generate the checksum
@@ -264,7 +264,7 @@ mix docs                  # ExDoc; CI fails on warnings
 
   It writes `checksum-Elixir.GeoFrame.Native.exs` (not committed to git; `mix hex.build`
   picks it up through `checksum-*.exs`). Keep the target list in `release.yml` and
-  `GeoFrame.Native` in sync.
+  `lib/geo_frame/native.ex` in sync.
 
 ## License
 
