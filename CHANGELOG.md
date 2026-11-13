@@ -8,6 +8,20 @@ change before 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- WKT without a `Z`, `M` or `ZM` tag whose coordinates have three or four ordinates is read as
+  GEOS reads it instead of raising: `POINT (1 2 3)` is `POINT Z (1 2 3)` and four ordinates are
+  ZM (never M). The first coordinate sets the dimension, and every other coordinate of that
+  geometry must match it, as in GEOS. A collection member infers its own dimension
+  (`GEOMETRYCOLLECTION Z (POINT (1 2 3))` is valid; `GEOMETRYCOLLECTION M (POINT (1 2 3))`
+  raises "cannot mix dimensionality"). This applies to `GeoSeries.from_wkt` and to WKT geometry
+  columns in GeoParquet, Feather and Arrow. Text that was read before is read the same way. On
+  12 000 random WKT texts, accepted and rejected inputs match Shapely 2.2, and so do the
+  coordinates, except for one GEOS quirk: `MULTIPOINT (1 2 3 4, 5 6 7 8)` (no inner
+  parentheses) is ZM here, while GEOS drops its M
+  ([#157](https://github.com/CountlinkX-Solutions/geoframe/pull/157)).
+
 ## [0.3.0] - 2026-11-13
 
 Like earlier releases, it is distributed through the `v0.3.0` git tag and GitHub release, not

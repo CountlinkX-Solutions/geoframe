@@ -21,7 +21,6 @@
 //! Computations go through [`geo`] types and drop Z/M ordinates; storage keeps them.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::str::FromStr;
 use std::sync::Arc;
 
 use geo::{Area, BoundingRect, Centroid, Geometry};
@@ -240,7 +239,7 @@ impl GeoColumn {
                     if wkt_nesting_exceeds(text.as_ref(), MAX_WKT_NESTING_DEPTH) {
                         return Err(format!("invalid WKT at row {i}: nesting too deep"));
                     }
-                    let parsed = wkt::Wkt::<f64>::from_str(text.as_ref())
+                    let parsed = crate::wkt_read::parse(text.as_ref())
                         .map_err(|e| format!("invalid WKT at row {i}: {e}"))?;
                     if crate::mixed_dims::tagged_collection_conflict(&parsed) {
                         return Err(format!(
@@ -575,6 +574,7 @@ fn polygon_perimeter(polygon: &geo::Polygon<f64>) -> f64 {
 #[cfg(test)]
 mod mixed_dimension_tests {
     use super::*;
+    use std::str::FromStr;
 
     fn mixed(text: &str) -> bool {
         mixes_dimensions(&wkt::Wkt::<f64>::from_str(text).unwrap())
