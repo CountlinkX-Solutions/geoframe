@@ -412,10 +412,28 @@ defmodule GeoFrame.GeoSeries do
   @doc """
   The `__geo_interface__` of the series: a `FeatureCollection` map (string keys) with an `id`,
   empty `properties`, `geometry` and `bbox` per feature, and the collection `bbox`.
+
+  See `to_geo_dict/2` for the variant with options.
   """
   @spec to_geo_interface(t()) :: map()
-  def to_geo_interface(%__MODULE__{} = series) do
-    Features.build(series, nil, Features.options!([], true), :map)
+  def to_geo_interface(%__MODULE__{} = series), do: to_geo_dict(series)
+
+  @doc """
+  The series as a GeoJSON-like map, like GeoPandas `GeoSeries.to_geo_dict`; with the default
+  options it equals `to_geo_interface/1`.
+
+  Options: `:show_bbox` (default `true`) and `:drop_id` (default `false`); `:na` is accepted
+  for symmetry with `GeoFrame.GeoDataFrame.to_geo_dict/2` (a series has no properties).
+  Unknown options raise `ArgumentError`.
+  """
+  @spec to_geo_dict(t(), keyword()) :: map()
+  def to_geo_dict(%__MODULE__{} = series, opts \\ []) do
+    opts =
+      opts
+      |> Keyword.validate!(na: :null, show_bbox: true, drop_id: false)
+      |> Features.options!(true, :map)
+
+    Features.build(series, nil, opts, :map)
   end
 
   @doc "Number of rows, nulls included."
