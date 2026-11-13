@@ -2,7 +2,37 @@ defmodule GeoFrame.Native do
   @moduledoc false
   # NIF bindings to the `geoframe_native` Rust crate. Each function below is replaced
   # when the NIF library loads; the bodies only run if loading failed.
-  use Rustler, otp_app: :geoframe, crate: "geoframe_native"
+  #
+  # Released versions download a precompiled NIF from the GitHub release of `v<version>`
+  # (checksum-verified, see `checksum-Elixir.GeoFrame.Native.exs`), so no Rust toolchain is
+  # needed. The NIF is built from source (Rustler) when `GEOFRAME_BUILD` is `1` or `true`,
+  # and always in :dev and :test, where a checkout has no release to download.
+  mix_config = Mix.Project.config()
+  version = mix_config[:version]
+  github_url = mix_config[:package][:links]["GitHub"]
+  # Rustler >= 0.27 needs the mode set per env: debug builds faster in dev and test.
+  mode = if Mix.env() in [:dev, :test], do: :debug, else: :release
+
+  use RustlerPrecompiled,
+    otp_app: :geoframe,
+    crate: "geoframe_native",
+    version: version,
+    base_url: "#{github_url}/releases/download/v#{version}",
+    targets: ~w(
+      aarch64-apple-darwin
+      aarch64-unknown-linux-gnu
+      aarch64-unknown-linux-musl
+      x86_64-apple-darwin
+      x86_64-pc-windows-msvc
+      x86_64-pc-windows-gnu
+      x86_64-unknown-linux-gnu
+      x86_64-unknown-linux-musl
+      x86_64-unknown-freebsd
+    ),
+    # No newer NIF API is used, so 2.15 (the Rustler default) is enough.
+    nif_versions: ["2.15"],
+    mode: mode,
+    force_build: System.get_env("GEOFRAME_BUILD") in ["1", "true"] or Mix.env() in [:dev, :test]
 
   def from_wkt(_rows, _crs), do: err()
   def from_wkb(_rows, _crs), do: err()
