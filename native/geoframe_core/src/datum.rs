@@ -103,6 +103,21 @@ pub(crate) fn has_operations(code: u32) -> bool {
         || DATUM_GRIDS.binary_search_by_key(&code, |(c, _)| *c).is_ok()
 }
 
+/// Whether PROJ shifts the geographic CRS `code` to WGS 84 by more than a null operation: a grid,
+/// or a Helmert / offset that is not zero.
+pub(crate) fn shifts_to_wgs84(code: u32) -> bool {
+    if !grid_names(code).is_empty() {
+        return true;
+    }
+    DATUM_HELMERT
+        .binary_search_by_key(&code, |(c, _)| *c)
+        .is_ok_and(|i| {
+            HELMERT_LISTS[DATUM_HELMERT[i].1 as usize]
+                .iter()
+                .any(|(_, p, kind)| (kind & !CATCH_ALL) > 1 || p.iter().any(|v| *v != 0.0))
+        })
+}
+
 /// The grid files, best first, that may shift the geographic CRS `code` to WGS 84.
 pub(crate) fn grid_names(code: u32) -> Vec<String> {
     if let Some((_, names)) = REGISTERED.read().unwrap().iter().find(|(c, _)| *c == code) {
@@ -259,12 +274,100 @@ pub(crate) struct AreaOp {
 /// A `geogoffset` operation, which `proj4rs` has no datum parameter for: the geographic
 /// coordinates on the ellipsoid of the CRS (`geo`, Greenwich-based) are moved by `dlat`/`dlon`
 /// (radians) and then read as the geographic CRS `post` (WGS 84, or GRS80 with a translation).
+/// A null operation is the zero offset (`noop`: PROJ keeps the coordinates whatever the
+/// ellipsoids). An exact Helmert step replaces the offset when `exact` is set.
 pub(crate) struct Offset {
     pub(crate) dlat: f64,
     pub(crate) dlon: f64,
     pub(crate) geo: Proj,
     pub(crate) post: Proj,
+    exact: Option<ExactHelmert>,
 }
+
+/// PROJ's `helmert exact` on geocentric coordinates, for rotations too large for the small-angle
+/// `+towgs84` formula of `proj4rs` (Saba: 2e-3 rad, which is 9 m).
+struct ExactHelmert {
+    /// Geocentric coordinates on the ellipsoid of the CRS and on WGS 84.
+    cart: Proj,
+    wgs_cart: Proj,
+    /// The rotation (orthonormal), the scale (1 + ppm) and the translation in metres.
+    rotation: [[f64; 3]; 3],
+    scale: f64,
+    translation: [f64; 3],
+}
+
+impl ExactHelmert {
+    /// `set` is a `+towgs84` set: translations in metres, rotations in arc-seconds (position
+    /// vector convention) and the scale in ppm.
+    fn new(set: &[f64; 7], ellipsoid: &str) -> Option<Self> {
+        // PROJ builds the rotation of the coordinate frame angles, the position vector ones negated.
+        let [cr, cp, cy] = [-set[3], -set[4], -set[5]].map(|a| (a * ARC_SECOND).cos());
+        let [sr, sp, sy] = [-set[3], -set[4], -set[5]].map(|a| (a * ARC_SECOND).sin());
+        Some(Self {
+            cart: Proj::from_proj_string(&format!("+proj=geocent {ellipsoid} +no_defs")).ok()?,
+            wgs_cart: Proj::from_proj_string("+proj=geocent +ellps=WGS84 +no_defs").ok()?,
+            rotation: [
+                [cp * cy, cr * sy + sr * sp * cy, sr * sy - cr * sp * cy],
+                [-cp * sy, cr * cy - sr * sp * sy, sr * cy + cr * sp * sy],
+                [sp, -sr * cp, cr * cp],
+            ],
+            scale: 1.0 + set[6] * 1e-6,
+            translation: [set[0], set[1], set[2]],
+        })
+    }
+
+    fn apply(&self, x: [f64; 3], inverse: bool) -> [f64; 3] {
+        let r = &self.rotation;
+        if inverse {
+            let d: Vec<f64> = (0..3)
+                .map(|i| (x[i] - self.translation[i]) / self.scale)
+                .collect();
+            // the transpose of an orthonormal matrix is its inverse
+            [0, 1, 2].map(|i| r[0][i] * d[0] + r[1][i] * d[1] + r[2][i] * d[2])
+        } else {
+            [0, 1, 2].map(|i| {
+                self.scale * (r[i][0] * x[0] + r[i][1] * x[1] + r[i][2] * x[2])
+                    + self.translation[i]
+            })
+        }
+    }
+}
+
+fn step(from: &Proj, to: &Proj, point: (f64, f64, f64)) -> Result<(f64, f64, f64), String> {
+    let mut p = point;
+    proj4rs::transform::transform(from, to, &mut p)
+        .map(|_| p)
+        .map_err(|e| e.to_string())
+}
+
+impl Offset {
+    /// Geographic coordinates (radians) on the ellipsoid of the CRS, as `wgs` (WGS 84) ones.
+    pub(crate) fn to_wgs84(&self, wgs: &Proj, lon: f64, lat: f64) -> Result<(f64, f64), String> {
+        if let Some(h) = &self.exact {
+            let (x, y, z) = step(&self.geo, &h.cart, (lon, lat, 0.0))?;
+            let [x, y, z] = h.apply([x, y, z], false);
+            return step(&h.wgs_cart, wgs, (x, y, z)).map(|p| (p.0, p.1));
+        }
+        step(&self.post, wgs, (lon + self.dlon, lat + self.dlat, 0.0)).map(|p| (p.0, p.1))
+    }
+
+    /// The inverse of [`Offset::to_wgs84`].
+    pub(crate) fn to_geo(&self, wgs: &Proj, lon: f64, lat: f64) -> Result<(f64, f64), String> {
+        if let Some(h) = &self.exact {
+            let (x, y, z) = step(wgs, &h.wgs_cart, (lon, lat, 0.0))?;
+            let [x, y, z] = h.apply([x, y, z], true);
+            return step(&h.cart, &self.geo, (x, y, z)).map(|p| (p.0, p.1));
+        }
+        let (lon, lat, _) = step(wgs, &self.post, (lon, lat, 0.0))?;
+        Ok((lon - self.dlon, lat - self.dlat))
+    }
+}
+
+/// The `kind` of an exact Helmert step in `datum_helmert.rs`.
+const EXACT_HELMERT: u8 = 4;
+
+/// Added to the `kind` of the catch-all operation of `datum_helmert.rs`.
+const CATCH_ALL: u8 = 16;
 
 const ARC_SECOND: f64 = std::f64::consts::PI / 648_000.0;
 
@@ -308,9 +411,19 @@ pub(crate) fn area_variants(proj: &str, code: Option<u32>) -> Vec<AreaOp> {
             proj,
             offset: None,
         });
-    HELMERT_LISTS[DATUM_HELMERT[i].1 as usize]
-        .iter()
+    // PROJ's own first operation, listed last with the world as its area of use, is what a point
+    // outside every area gets (Minna at 40E 10N), and the only operation of a datum applies
+    // everywhere (RD/83: that one is the whole list). For a projected CRS PROJ first keeps the
+    // operations that meet the area of use of that CRS, which is not known here: a point outside
+    // every area stays on the ballpark (DHDN / Gauss-Kruger zone 1, in the sea).
+    let geographic = proj
+        .split_whitespace()
+        .any(|t| matches!(t, "+proj=longlat" | "+proj=latlong" | "+proj=geocent"));
+    let list = HELMERT_LISTS[DATUM_HELMERT[i].1 as usize];
+    list.iter()
+        .filter(|(.., kind)| geographic || kind & CATCH_ALL == 0)
         .filter_map(|(area, p, kind)| {
+            let kind = &(kind & !CATCH_ALL);
             if *kind == 0 {
                 let set: Vec<String> = p.iter().map(|v| v.to_string()).collect();
                 let text = format!("{} +towgs84={}", base.join(" "), set.join(","));
@@ -320,7 +433,7 @@ pub(crate) fn area_variants(proj: &str, code: Option<u32>) -> Vec<AreaOp> {
                     offset: None,
                 });
             }
-            let post = if *kind == 1 {
+            let post = if *kind == 1 || *kind == EXACT_HELMERT {
                 "+proj=longlat +datum=WGS84 +no_defs".to_string()
             } else {
                 format!(
@@ -336,6 +449,11 @@ pub(crate) fn area_variants(proj: &str, code: Option<u32>) -> Vec<AreaOp> {
                     dlon: p[1] * ARC_SECOND,
                     geo: Proj::from_proj_string(&geo).ok()?,
                     post: Proj::from_proj_string(&post).ok()?,
+                    exact: if *kind == EXACT_HELMERT {
+                        Some(ExactHelmert::new(p, &ellipsoid.join(" "))?)
+                    } else {
+                        None
+                    },
                 }),
             })
         })

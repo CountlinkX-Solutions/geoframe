@@ -56,10 +56,14 @@ fn esri_wkt_shifts_its_datum_like_pyproj() {
 }
 
 /// A definition with a prime meridian other than Greenwich (Ferro, Paris, Rome) is not moved by
-/// the datum-name lookup: its result stays what it was before (fixture
-/// `crs_esri_prime_meridian.json`: GeoFrame without the lookup).
+/// the datum-name lookup, and when PROJ shifts its datum to WGS 84 (MGI, Monte Mario, NTF) it is
+/// refused instead of answered without the shift (v0.1.2 C2; GeoFrame answered 53 to 81 m off). A
+/// datum PROJ does not shift (ATF Paris RGS) keeps its answer (fixture
+/// `crs_esri_prime_meridian.json`: GeoFrame on origin/main).
 #[test]
-fn esri_wkt_with_another_prime_meridian_keeps_its_result() {
+fn esri_wkt_with_another_prime_meridian_is_refused_where_proj_shifts_it() {
+    // MGI (Ferro), Monte Mario (Rome), NTF (Paris): PROJ shifts them, by 53 to 81 m
+    const SHIFTED: [&str; 3] = ["4805", "4806", "4807"];
     let text = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../test/reference/fixtures/crs_datum/crs_esri_prime_meridian.json"
@@ -67,17 +71,26 @@ fn esri_wkt_with_another_prime_meridian_keeps_its_result() {
     .unwrap();
     let data: Value = serde_json::from_str(&text).unwrap();
     for (code, e) in data["crs"].as_object().unwrap() {
-        let (gx, gy) = transform_xy(
+        let result = transform_xy(
             e["wkt"].as_str().unwrap(),
             "EPSG:4326",
             num(&e["x"]),
             num(&e["y"]),
-        )
-        .unwrap();
-        let [bx, by] = [0, 1].map(|i| num(&e["before"][i]));
-        assert!(
-            (gx - bx).abs() < 1e-9 && (gy - by).abs() < 1e-9,
-            "{code}: got {gx} {gy}, before {bx} {by}"
         );
+        let [bx, by] = [0, 1].map(|i| num(&e["before"][i]));
+        if SHIFTED.contains(&code.as_str()) {
+            let err = result.expect_err(&format!("{code} must be refused"));
+            assert!(
+                err.starts_with("unsupported WKT CRS") && err.contains("prime meridian"),
+                "{code}: {err}"
+            );
+        } else {
+            // PROJ keeps the coordinates of this datum too: the answer stays what it was
+            let (gx, gy) = result.unwrap_or_else(|e| panic!("{code}: {e}"));
+            assert!(
+                (gx - bx).abs() < 1e-9 && (gy - by).abs() < 1e-9,
+                "{code}: got {gx} {gy}, before {bx} {by}"
+            );
+        }
     }
 }

@@ -153,7 +153,17 @@ def _helmert_step(kv, inverse):
     g = lambda k, f=1.0: float(kv.get(k, 0.0)) * f
     t = np.array([g("x"), g("y"), g("z")])
     rad = np.array([g("rx", sign), g("ry", sign), g("rz", sign)]) * np.pi / 180 / 3600
-    mat = (1 + g("s") * 1e-6) * np.array([[1, -rad[2], rad[1]], [rad[2], 1, -rad[0]], [-rad[1], rad[0], 1]])
+    if kv.get("exact"):
+        # PROJ's `helmert exact`: the exact rotation matrix of the coordinate frame angles (those of
+        # the position vector convention, negated), not the small-angle one. The verified formula
+        # (pyproj `from_pipeline`, Saba: 0.00 mm).
+        cr, sr, cp, sp, cy, sy = (f(a) for a in -rad for f in (np.cos, np.sin))
+        rotation = np.array([[cp * cy, cr * sy + sr * sp * cy, sr * sy - cr * sp * cy],
+                             [-cp * sy, cr * cy - sr * sp * sy, sr * cy + cr * sp * sy],
+                             [sp, -sr * cp, cr * cp]])
+    else:
+        rotation = np.array([[1, -rad[2], rad[1]], [rad[2], 1, -rad[0]], [-rad[1], rad[0], 1]])
+    mat = (1 + g("s") * 1e-6) * rotation
     if "px" in kv:  # Molodensky-Badekas: X' = P + T + M (X - P)
         pivot = np.array([g("px"), g("py"), g("pz")])
         t = pivot + t - mat @ pivot
@@ -176,13 +186,21 @@ def _as_params(mat, t):
 def parse_op(definition):
     """The operation a PROJ pipeline holds, as (kind, params): (0, +towgs84 set) for one or more
     Helmert / Molodensky-Badekas steps (composed into one), (1, [dlat, dlon, 0, 0, 0, 0, 0]) for a
-    `geogoffset` (arc-seconds) and (2, [dlat, dlon, tx, ty, tz, 0, 0]) for a geogoffset followed by
-    a translation on the GRS80 ellipsoid (the Greek datum); else None."""
+    `geogoffset` (arc-seconds), (2, [dlat, dlon, tx, ty, tz, 0, 0]) for a geogoffset followed by
+    a translation on the GRS80 ellipsoid (the Greek datum) and (4, +towgs84 set) for a single
+    `helmert exact` step (the exact rotation matrix, where the rotations are too large for the
+    engine's small-angle `+towgs84`: Saba, 2e-3 rad); else None. A null operation (`proj=noop`:
+    the coordinates are kept, the ellipsoid change is ignored) is a zero geogoffset."""
     import re
     import numpy as np
     d = re.sub(r"\s+", " ", definition)
     if any(k in d for k in SKIP_STEPS):
         return None
+    if d.strip().startswith("proj=noop"):
+        return (1, [0.0] * 7)
+    exact = False
+    exact_set = None
+    geocentric = False
     mat, t = np.eye(3), np.zeros(3)
     offset = None
     helmerts = 0
@@ -194,6 +212,9 @@ def parse_op(definition):
             return None
         name, rest = m.groups()
         kv = dict(tok.split("=", 1) for tok in rest.split() if "=" in tok)
+        if "exact" in rest.split():
+            kv["exact"] = "1"
+            exact = True
         if name == "geogoffset":
             if offset is not None or helmerts or inverse:
                 return None
@@ -204,10 +225,20 @@ def parse_op(definition):
                 return None
             mat, t = one[0] @ mat, one[0] @ t + one[1]
             helmerts += 1
-        elif name not in ("unitconvert", "push", "pop", "cart", "longlat", "noop"):
+            sign = -1.0 if kv.get("convention") == "coordinate_frame" else 1.0
+            exact_set = [float(kv.get(k, 0.0)) * f for k, f in (("x", 1), ("y", 1), ("z", 1), ("rx", sign), ("ry", sign), ("rz", sign), ("s", 1))]
+            exact_set = None if inverse or "px" in kv else exact_set
+        elif name == "cart":
+            geocentric = True
+        elif name not in ("unitconvert", "push", "pop", "longlat", "noop"):
             return None
     if offset is None:
-        return (0, _as_params(mat, t)) if helmerts else None
+        if not helmerts:
+            # geocentric on the two ellipsoids with no step between (GSK-2011): a zero shift
+            return (0, [0.0] * 7) if geocentric else None
+        if exact:
+            return (4, exact_set) if helmerts == 1 and exact_set else None
+        return (0, _as_params(mat, t))
     if not helmerts:
         return (1, [offset[0], offset[1], 0.0, 0.0, 0.0, 0.0, 0.0])
     params = _as_params(mat, t)
@@ -216,12 +247,43 @@ def parse_op(definition):
     return (2, [offset[0], offset[1], *params[:3], 0.0, 0.0])
 
 
-def is_pure_offshore(area_name):
-    """PROJ prefers an operation whose area is not an offshore-only one, whatever the accuracies
-    (measured: 99.2 % of ~2 800 sampled points agree with the choice of pyproj, against 97.9 %
-    without the rule)."""
+def is_offshore(area_name):
+    """PROJ prefers an operation whose area is not an offshore one, whatever the accuracies: the
+    name says "offshore" and does not say "onshore" before it ("Norway - offshore north of 62°N.
+    Also Svalbard - onshore and offshore." is offshore, "Nigeria - onshore and offshore." is not).
+    Measured against `Transformer.get_last_used_operation` on ~5 500 sampled points: 256
+    differences, against 259 when "onshore" anywhere makes the area not offshore, and the
+    onshore Finnish and Norwegian Lapland (Tromso, Rovaniemi) go the PROJ way."""
     n = (area_name or "").lower()
-    return "offshore" in n and "onshore" not in n
+    offshore, onshore = n.find("offshore"), n.find("onshore")
+    return offshore >= 0 and (onshore < 0 or offshore < onshore)
+
+
+def _unlisted_operation(info):
+    """The operation `Transformer.from_crs(code, 4326)` runs at the centre of the area of use when
+    it is not a ballpark one, in the shape of `helmert_ops` entries (else none)."""
+    from pyproj import Transformer
+    area = info.area_of_use
+    if area is None:
+        return []
+    w, s, e, n = area.bounds
+    lon = ((w + ((e + 360 if w > e else e) - w) / 2 + 180) % 360) - 180
+    try:
+        tr = Transformer.from_crs(int(info.code), 4326, always_xy=True)
+        tr.transform(lon, (s + n) / 2)
+        used = tr.get_last_used_operation()
+    except Exception:
+        return []
+    if used is None or used.area_of_use is None or used.description.startswith("Ballpark"):
+        return []
+    op = parse_op(used.definition)
+    if op is None:
+        return []
+    bw, bs, be, bn = used.area_of_use.bounds
+    acc = used.accuracy if used.accuracy is not None and used.accuracy >= 0 else 1e9
+    size = (be - bw) % 360 * (bn - bs) if bw > be else (be - bw) * (bn - bs)
+    # the only operation of the list: PROJ applies it everywhere, whatever its area of use
+    return [(False, acc, size, 0, [-180.0, -90.0, 180.0, 90.0], op)]
 
 
 def helmert_ops():
@@ -236,7 +298,7 @@ def helmert_ops():
     out = {}
     skipped = 0
     for info in query_crs_info("EPSG", pj_types=[PJType.GEOGRAPHIC_2D_CRS]):
-        if info.deprecated:
+        if info.deprecated or int(info.code) == 4326:
             continue
         try:
             group = TransformerGroup(int(info.code), 4326, always_xy=True, allow_ballpark=True)
@@ -244,6 +306,7 @@ def helmert_ops():
             continue
         ops = []
         ballpark_only = True
+        listed_ballpark = any(t.description.startswith(("Ballpark", "Transformation from")) for t in group.transformers)
         for idx, t in enumerate(group.transformers):
             if t.area_of_use is None or t.description.startswith(("Ballpark", "Transformation from")):
                 continue
@@ -255,8 +318,26 @@ def helmert_ops():
             w, s, e, n = t.area_of_use.bounds
             acc = t.accuracy if t.accuracy is not None and t.accuracy >= 0 else 1e9
             area = (e - w) % 360 * (n - s) if w > e else (e - w) * (n - s)
-            ops.append((is_pure_offshore(t.area_of_use.name), acc, area, idx, [w, s, e, n], op))
+            ops.append((is_offshore(t.area_of_use.name), acc, area, idx, [w, s, e, n], op))
+        if ballpark_only and group.unavailable_operations:
+            # PROJ's own `Transformer` may still pick an operation the group does not list when the
+            # direct one needs a missing grid (RD/83 and PD/83: Helmert to ETRS89, then a null step).
+            ops += _unlisted_operation(info)
+            ballpark_only = not ops
         ops.sort(key=lambda o: o[:4])
+        world = [-180.0, -90.0, 180.0, 90.0]
+        if len(ops) == 1 and not listed_ballpark:
+            # a lone operation applies everywhere: its own area is the world
+            ops[0] = ops[0][:4] + (world, ops[0][5])
+        elif ops and not listed_ballpark and not any(o[4] == world for o in ops):
+            # PROJ's list has no ballpark entry: a point outside every area of use gets its first
+            # operation (Minna at 40E 10N, NZGD49 anywhere). Kind + 16 marks this catch-all, which
+            # only a geographic CRS takes (PROJ keeps the operations that meet the area of a
+            # projected one).
+            first = group.transformers[0]
+            op = parse_op(first.definition) if first.area_of_use is not None else None
+            if op is not None:
+                ops.append((False, 1e10, 1e10, 0, world, (op[0] + 16, op[1])))
         if ops or ballpark_only:
             # ballpark only: PROJ keeps the coordinates, so the list is empty (no shift anywhere)
             out[int(info.code)] = [(o[4], o[5]) for o in ops]
@@ -294,8 +375,13 @@ def generate_helmert_table():
         "//! Kind 0 is a `+towgs84` set (position vector convention: metres, arc-seconds, ppm; several\n"
         "//! Helmert steps are composed into one). Kind 1 is a `geogoffset` ([dlat, dlon] arc-seconds) and\n"
         "//! kind 2 a `geogoffset` followed by a translation [tx, ty, tz] metres on the GRS80 ellipsoid.\n"
-        "//! Operations are in the order they are tried: not offshore-only first, known accuracy first,\n"
-        "//! best accuracy first, smaller area first, PROJ's order.\n"
+        "//! A null operation (`noop`: the coordinates are kept, whatever the ellipsoids) is a zero offset.\n"
+        "//! Kind 4 is one exact Helmert step ([tx, ty, tz, rx, ry, rz, scale] as a `+towgs84` set, applied with\n"
+        "//! the exact rotation matrix: rotations too large for the small-angle formula).\n"
+        "//! Operations are in the order they are tried: not offshore first, known accuracy first,\n"
+        "//! best accuracy first, smaller area first, PROJ's order. A last operation with the whole world as\n"
+        "//! its area and 16 added to its kind is PROJ's first operation, for the CRSs whose PROJ list has no\n"
+        "//! ballpark entry: what a point outside every area of use gets (a geographic CRS only).\n"
         "//! `DATUM_HELMERT` maps a CRS code to an index of `HELMERT_LISTS`.\n\n"
         "pub(crate) type HelmertOp = ([f64; 4], [f64; 7], u8);\n\n"
         % (pyproj.__version__, pyproj.proj_version_str)
@@ -567,10 +653,6 @@ def generate_esri_wkt():
     print("crs esri datum written")
 
 
-# GDA94 (4283), GDA2020 (7844) and CR-SIRGAS (8907): PROJ runs a null operation first (pyproj: no
-# shift, 3 m accuracy) where the Helmert table runs the 0.3 to 1.7 m step, a difference that exists
-# for the code too (EPSG:4283, 28355). A name must not move an `.prj` that agrees with pyproj today.
-NO_NAME_SHIFT = {4283, 7844, 8907}
 
 
 def generate_datum_name_table():
@@ -602,8 +684,6 @@ def generate_datum_name_table():
         # an official name wins over an alias; an alias two datums share says nothing
         if k not in official and len(v) == 1:
             rows[k] = min(v)
-    for k in [k for k, v in rows.items() if v in NO_NAME_SHIFT]:
-        del rows[k]
     lines = ['    ("%s", %d),' % (k.replace("\\", "\\\\").replace('"', '\\"'), rows[k]) for k in sorted(rows)]
     header = (
         "//! Generated by test/reference/generate_crs_datum.py (`datum_name_table`) from the PROJ database\n"

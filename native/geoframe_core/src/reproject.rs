@@ -391,14 +391,14 @@ fn via_wgs84(
         let mid = match src.offset_at(at) {
             Some((proj, o)) => {
                 let (lon, lat) = step(proj, &o.geo, xy)?;
-                step(&o.post, wgs, (lon + o.dlon, lat + o.dlat))?
+                o.to_wgs84(wgs, lon, lat)?
             }
             None => step(src.primary_at(at), wgs, xy)?,
         };
         match dst.offset_at(at) {
             Some((proj, o)) => {
-                let (lon, lat) = step(wgs, &o.post, mid)?;
-                step(&o.geo, proj, (lon - o.dlon, lat - o.dlat))
+                let (lon, lat) = o.to_geo(wgs, mid.0, mid.1)?;
+                step(&o.geo, proj, (lon, lat))
             }
             None => step(wgs, dst.primary_at(at), mid),
         }

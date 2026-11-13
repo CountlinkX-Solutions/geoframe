@@ -42,6 +42,13 @@ pub(crate) struct Definition {
 
 /// Converts a PROJJSON object.
 pub(crate) fn from_projjson(value: &Value) -> Result<Definition, String> {
+    if let Some(reason) = unshiftable_prime_meridian(value) {
+        return Err(reason);
+    }
+    convert(value)
+}
+
+fn convert(value: &Value) -> Result<Definition, String> {
     match type_of(value)? {
         "GeographicCRS" | "GeodeticCRS" => geodetic(value),
         "ProjectedCRS" => projected(value),
@@ -52,7 +59,7 @@ pub(crate) fn from_projjson(value: &Value) -> Result<Definition, String> {
                 .and_then(Value::as_array)
                 .and_then(|c| c.first())
                 .ok_or("a compound CRS without components")?;
-            from_projjson(first)
+            convert(first)
         }
         other => Err(format!("unsupported CRS type {other:?}")),
     }
@@ -72,16 +79,12 @@ fn type_of(value: &Value) -> Result<&str, String> {
 /// name of the CRS.
 fn geographic_code(value: &Value) -> Option<u32> {
     let id = epsg_code(value);
-    // A 3D geographic CRS (LUREF 3D) has no operations of its own: its 2D namesake has them.
-    id.filter(|code| crate::datum::has_operations(*code))
-        .or_else(|| {
-            let name = value.get("name")?.as_str()?;
-            lookup(crate::crs_names::CRS_NAMES, name)
-        })
+    geographic_code_without_datum_name(value)
         .or_else(|| {
             let datum = value.get("datum")?;
             // The table is Greenwich-based: a definition with another prime meridian (Ferro,
-            // Paris, Rome, ...) keeps the result it had without the lookup.
+            // Paris, Rome, ...) keeps the result it had without the lookup (when PROJ shifts
+            // its datum it is refused, see `unshiftable_prime_meridian`).
             if datum.get("prime_meridian").is_some() {
                 return None;
             }
@@ -91,6 +94,58 @@ fn geographic_code(value: &Value) -> Option<u32> {
             )
         })
         .or(id)
+}
+
+/// The code from the identifier or the name of the CRS, before the datum name is tried.
+fn geographic_code_without_datum_name(value: &Value) -> Option<u32> {
+    let id = epsg_code(value);
+    // A 3D geographic CRS (LUREF 3D) has no operations of its own: its 2D namesake has them.
+    id.filter(|code| crate::datum::has_operations(*code))
+        .or_else(|| {
+            let name = value.get("name")?.as_str()?;
+            lookup(crate::crs_names::CRS_NAMES, name)
+        })
+}
+
+/// Why a definition with a prime meridian other than Greenwich and no identifier is refused, when
+/// PROJ shifts its datum to WGS 84 and GeoFrame would not: a name finds the datum shifts only for a
+/// Greenwich-based definition (the table is Greenwich-based and the shifts are chosen by the
+/// longitude of the point), so an answer would silently leave the datum unshifted, by tens to
+/// hundreds of metres (Ferro, Paris, Jakarta, Bern, Oslo, Lisbon). A datum PROJ does not shift
+/// (Brussels, Stockholm, Voirol 1879) keeps its answer, and so does a definition with `TOWGS84`
+/// (a bound CRS) or one that is looked up by its EPSG code or its name.
+fn unshiftable_prime_meridian(value: &Value) -> Option<String> {
+    let crs = match value.get("type").and_then(Value::as_str)? {
+        "ProjectedCRS" => value.get("base_crs")?,
+        "CompoundCRS" => value.get("components")?.as_array()?.first()?,
+        "GeographicCRS" | "GeodeticCRS" => value,
+        _ => return None,
+    };
+    if matches!(
+        crs.get("type").and_then(Value::as_str),
+        Some("BoundCRS" | "CompoundCRS" | "ProjectedCRS")
+    ) {
+        return unshiftable_prime_meridian(crs);
+    }
+    let datum = crs.get("datum")?;
+    let pm = datum.get("prime_meridian")?;
+    let degrees = match pm.get("longitude")? {
+        Value::Number(n) => n.as_f64()?,
+        other => quantity(other).ok()? / DEGREE,
+    };
+    if degrees == 0.0 || geographic_code_without_datum_name(crs).is_some() {
+        return None;
+    }
+    let name = datum.get("name")?.as_str()?;
+    let code = lookup(crate::crs_datum_names::DATUM_NAMES, name)?;
+    crate::datum::shifts_to_wgs84(code).then(|| {
+        format!(
+            "the datum {name:?} has a prime meridian at {degrees} degrees and no identifier, and \
+             PROJ shifts it to WGS 84; GeoFrame finds that shift by the datum name only for a \
+             Greenwich-based definition, so the CRS is refused rather than answered off by the \
+             datum shift (give it as its EPSG code)"
+        )
+    })
 }
 
 /// The code a sorted name table gives `name` (lower case, `_` as a space).
@@ -648,7 +703,7 @@ fn projected(crs: &Value) -> Result<Definition, String> {
     let base = crs
         .get("base_crs")
         .ok_or("a projected CRS without base_crs")?;
-    let geographic = from_projjson(base)?;
+    let geographic = convert(base)?;
     let datum = datum_tokens_of(base)?;
     let axes = axes_of(crs.get("coordinate_system"))?.unwrap_or(Axes {
         unit: 1.0,
@@ -715,7 +770,7 @@ fn bound(crs: &Value) -> Result<Definition, String> {
     let source = crs
         .get("source_crs")
         .ok_or("a bound CRS without source_crs")?;
-    let mut definition = from_projjson(source)?;
+    let mut definition = convert(source)?;
     if let Some(set) = towgs84(crs.get("transformation"))? {
         definition.proj = format!(
             "{} +towgs84={}",
