@@ -159,6 +159,10 @@ On `GeoSeries`; the common ones are also on `GeoDataFrame` and `GeoFrame`.
   `voronoi_polygons`, `polygonize`, `snap`, `segmentize`, `set_precision`, `make_valid`.
 - *Set operations*: `union`, `intersection`, `difference`, `symmetric_difference`, `union_all`,
   `clip`, `overlay` (all five `how`s), `explode`, `dissolve`.
+- *Grouping*: `group_by` / `summarise` (attribute aggregations and geometry aggregations per
+  group: `union_all`, `intersection_all`, `collect`, `envelope`, `convex_hull`, `centroid`,
+  `first`, `last`), `group_map` (a function per group, like pandas `groupby.apply`), and grouped
+  `head`, `tail`, `slice` and `sample`.
 - *Joins*: `sjoin` and `sjoin_nearest` (R-tree, every predicate, `dwithin`), `sindex_query`,
   `sindex_nearest`.
 - *Transforms*: `translate`, `rotate`, `scale`, `skew`, `affine_transform`, `wrap_longitude`.

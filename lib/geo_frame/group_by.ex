@@ -247,33 +247,12 @@ defmodule GeoFrame.GroupBy do
   defp concat_results([]), do: DataFrame.new([])
 
   defp concat_results([{_, %GeoDataFrame{} = first} | _] = results) do
-    crs = GeoDataFrame.crs(first)
-
-    frames =
-      for {key, result} <- results do
-        case result do
-          %GeoDataFrame{} ->
-            if GeoDataFrame.crs(result) != crs do
-              raise ArgumentError,
-                    "group #{inspect(key)} returned a GeoDataFrame with a different CRS " <>
-                      "(#{inspect(GeoDataFrame.crs(result))}) than the first group (#{inspect(crs)})"
-            end
-
-            if result.geometry_column != first.geometry_column do
-              raise ArgumentError,
-                    "group #{inspect(key)} returned a different geometry column " <>
-                      "(#{inspect(result.geometry_column)}) than the first group " <>
-                      "(#{inspect(first.geometry_column)})"
-            end
-
-            result
-
-          _ ->
-            raise mix_error(key)
-        end
-      end
-
-    GeoDataFrame.concat_rows(frames)
+    results
+    |> Enum.map(fn
+      {key, %GeoDataFrame{} = result} -> check_compatible!(result, first, key)
+      {key, _} -> raise mix_error(key)
+    end)
+    |> GeoDataFrame.concat_rows()
   end
 
   defp concat_results([{_, %DataFrame{}} | _] = results) do
@@ -283,6 +262,24 @@ defmodule GeoFrame.GroupBy do
       {key, _} -> raise mix_error(key)
     end)
     |> DataFrame.concat_rows()
+  end
+
+  defp check_compatible!(result, first, key) do
+    if GeoDataFrame.crs(result) != GeoDataFrame.crs(first) do
+      raise ArgumentError,
+            "group #{inspect(key)} returned a GeoDataFrame with a different CRS " <>
+              "(#{inspect(GeoDataFrame.crs(result))}) than the first group " <>
+              "(#{inspect(GeoDataFrame.crs(first))})"
+    end
+
+    if result.geometry_column != first.geometry_column do
+      raise ArgumentError,
+            "group #{inspect(key)} returned a different geometry column " <>
+              "(#{inspect(result.geometry_column)}) than the first group " <>
+              "(#{inspect(first.geometry_column)})"
+    end
+
+    result
   end
 
   defp mix_error(key),

@@ -13,7 +13,8 @@ defmodule GeoFrame.GroupMapTest do
   #   df = pd.DataFrame(dict(key=["b","b","a","b","a",None], zone=[1,1,2,2,2,3],
   #        pop=[10,20,5,None,7,1], name=["p","q",None,"s","t","u"]))
   #   g = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(range(6), range(6)), crs=3857)
-  #   g.groupby("key").apply(lambda d: d.nlargest(1, "pop"))  -> (a, row 4, 7.0), (b, row 1, 20.0), GeoDataFrame, EPSG:3857
+  #   g.groupby("key").apply(lambda d: d.nlargest(1, "pop"))
+  #     -> (a, row 4, 7.0), (b, row 1, 20.0), GeoDataFrame, EPSG:3857
   #   g.groupby("key", dropna=False).apply(lambda d: d.head(1)) -> rows 2 (a), 0 (b), 5 (nil)
   #   g.groupby("key").head(1).index -> [0, 2]; .tail(1).index -> [3, 4]   (original row order)
   #   g.groupby(["key","zone"])["name"].nunique() -> (a,2): 1, (b,1): 2, (b,2): 1
