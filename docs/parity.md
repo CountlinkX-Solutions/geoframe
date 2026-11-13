@@ -139,7 +139,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `count_coordinates` | yes | `count_coordinates/1` | ✅ | |
 | `count_geometries` | — | `count_geometries/1` | ✅ | null rows are `nil` (Shapely: 0); an empty atomic geometry gives 0 (Shapely: 1) |
 | `count_interior_rings` | — | `count_interior_rings/1` | ✅ | 0 for non-polygons as Shapely; null rows `nil` |
-| `get_geometry(index)` | — | `get_geometry/2` | 🟡 | scalar integer index only (negative from end); no per-row index array |
+| `get_geometry(index)` | — | `get_geometry/2` | ✅ | integer index, or one index per row (list / Explorer series, `nil` gives null); negative from end, out of range gives null |
 | `get_precision` / `set_precision` | — | `get_precision/1`, `set_precision/3` (`mode: :valid_output \| :pointwise \| :keep_collapsed`) | 🟡 | GEOS rounding (`floor(x/grid + 0.5)*grid`); pointwise is exact, valid_output/keep_collapsed drop repeated vertices and collapsed parts and repair invalid snapped polygons with `make_valid`/boolean ops (lines are not noded; invalid multipolygon input is merged, where GEOS keeps, merges or raises by edge contact after snapping); the grid size lives on the `GeoSeries` struct (GeoArrow has no precision), so only the result of `set_precision/3` reports it. Reference-tested (836 cases, 6 documented on invalid input) |
 | `hausdorff_distance` | — | `hausdorff_distance/3` | ✅ | GEOS discrete algorithm (vertex to the other geometry's linework, so polygons count as their rings, not their area), `densify:`; 588 polygon/multipolygon/mixed reference cases; not geo's vertex-to-vertex `HausdorffDistance` |
 | `frechet_distance` | — | `frechet_distance/3` | 🟡 | `densify:`; discrete over vertices; `LineString` only, other types are `nil` |
@@ -245,7 +245,7 @@ empty inputs instead of `nil`; `remove_repeated_points` reduced a collapsed line
 | `constrained_delaunay_triangles` | no | `constrained_delaunay_triangles/1` | ✅ | per row, a `GeometryCollection` of triangles filling each polygon (holes respected); other types give an empty collection; cocircular vertices allow several triangulations |
 | `voronoi_polygons` | no | `voronoi_polygons/2` | ✅ | `tolerance:`, `extend_to:`, `only_edges:` (and Shapely's `ordered:`: cells always come in vertex order); whole series is one cloud, one row per cell; built from the spade triangulation with exact half-plane clipping to GEOS' envelope (not `geo::Voronoi`, whose clip and rays differ); tolerance snapping differs on clustered input (documented) |
 | `explode` | no | `explode/2` | ✅ | `{parts, positions}` (the pandas index becomes the parallel list of source rows); `index_parts: true` adds part numbers; collections explode one level |
-| `get_geometry` / `geometry` parts | no | `get_geometry/2`, `explode/2` | 🟡 | already covered: see §2 for `get_geometry` (scalar index only); all parts of every row come from `explode/2` |
+| `get_geometry` / `geometry` parts | no | `get_geometry/2`, `explode/2` | ✅ | `get_geometry` takes a scalar or per-row index (see §2); all parts of every row come from `explode/2` |
 
 ## 7. Affine transformations
 
@@ -549,7 +549,7 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
 | GeoPandas | GeoPolars dev | GeoFrame | Status | Notes |
 |---|---|---|---|---|
 | `sindex` / `has_sindex` | no | (internal rstar) | ⛔ | built per call, not a persistent object |
-| `sindex.query` | no | `sindex_query/4` | 🟡 | returns `{left_idx, right_idx}`; predicates incl. `:dwithin` w/ `:distance`; no `sort`, no single-geometry/array-of-geometry input mode |
+| `sindex.query` | no | `sindex_query/4` | ✅ | input = series or list of WKT: `{input_idx, tree_idx}`; single WKT string: list of tree indices; predicates incl. `:dwithin` w/ `:distance`; `sort:` accepted (output always ordered); `output_format="dense"` not offered |
 | `sindex.nearest` | no | `sindex_nearest/3` | ✅ | `:max_distance`, `:exclusive`, returns distances |
 | `sindex.intersection` (bbox) | no | `sindex_intersection/2` | ✅ | envelope test, linear scan over bounds (no persistent tree) |
 | `sindex.valid_query_predicates` | no | `sindex_valid_query_predicates/0` | ✅ | list of atoms; `:disjoint` excluded |

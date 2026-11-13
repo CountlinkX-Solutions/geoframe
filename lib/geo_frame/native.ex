@@ -123,6 +123,7 @@ defmodule GeoFrame.Native do
   def count_geometries(_ref), do: err()
   def count_interior_rings(_ref), do: err()
   def get_geometry(_ref, _n), do: err()
+  def get_geometry_rows(_ref, _indices), do: err()
   def interiors(_ref), do: err()
   def extract_unique_points(_ref), do: err()
   def concave_hull(_ref, _ratio, _allow_holes), do: err()

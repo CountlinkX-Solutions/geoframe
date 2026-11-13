@@ -219,6 +219,64 @@ defmodule GeoFrame.ParityATest do
       assert_raise FunctionClauseError, fn -> GeoSeries.get_geometry(series, 1.5) end
     end
 
+    # Generator (Shapely 2.2, GeoPandas 1.2):
+    #   geoms = [POINT (1 1), LINESTRING (0 0, 1 1), MULTIPOINT (0 0, 1 1, 2 2),
+    #            GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (0 0, 1 1)), POLYGON EMPTY,
+    #            GEOMETRYCOLLECTION EMPTY, POLYGON ((0 0, 1 0, 1 1, 0 0)), None]
+    #   shapely.get_geometry(geoms, idx).wkt  # idx below; same as GeoSeries.get_geometry(idx)
+    @per_row_geoms [
+      "POINT (1 1)",
+      "LINESTRING (0 0, 1 1)",
+      "MULTIPOINT (0 0, 1 1, 2 2)",
+      "GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (0 0, 1 1))",
+      "POLYGON EMPTY",
+      "GEOMETRYCOLLECTION EMPTY",
+      "POLYGON ((0 0, 1 0, 1 1, 0 0))",
+      nil
+    ]
+
+    test "get_geometry with one index per row (list)" do
+      series = s(@per_row_geoms)
+
+      assert GeoSeries.to_wkt(GeoSeries.get_geometry(series, [0, 1, 2, -1, 0, 0, -1, 0])) == [
+               "POINT(1 1)",
+               nil,
+               "POINT(2 2)",
+               "LINESTRING(0 0,1 1)",
+               "POLYGON EMPTY",
+               nil,
+               "POLYGON((0 0,1 0,1 1,0 0))",
+               nil
+             ]
+
+      assert GeoSeries.to_wkt(GeoSeries.get_geometry(series, [1, 0, -3, -2, 0, 0, 0, 0])) == [
+               nil,
+               "LINESTRING(0 0,1 1)",
+               "POINT(0 0)",
+               "POINT(1 1)",
+               "POLYGON EMPTY",
+               nil,
+               "POLYGON((0 0,1 0,1 1,0 0))",
+               nil
+             ]
+    end
+
+    test "get_geometry per-row index: nil gives null, Explorer series accepted, length checked" do
+      series = s(["MULTIPOINT (0 0, 1 1, 2 2)", "MULTIPOINT (0 0, 1 1, 2 2)", "POINT (7 7)"])
+      expected = ["POINT(1 1)", nil, nil]
+      assert GeoSeries.to_wkt(GeoSeries.get_geometry(series, [1, nil, 5])) == expected
+      idx = Explorer.Series.from_list([1, nil, 5], dtype: {:s, 64})
+      assert GeoSeries.to_wkt(GeoSeries.get_geometry(series, idx)) == expected
+      assert_raise ArgumentError, ~r/3 rows/, fn -> GeoSeries.get_geometry(series, [0, 1]) end
+      assert_raise ArgumentError, fn -> GeoSeries.get_geometry(series, [0, 1.5, 2]) end
+    end
+
+    test "get_geometry per-row index keeps Z" do
+      series = s(["MULTIPOINT Z (0 0 1, 1 1 2, 2 2 3)", "POINT Z (5 5 5)"])
+      out = GeoSeries.get_geometry(series, [-1, 0])
+      assert list(GeoSeries.z(out)) == [3.0, 5.0]
+    end
+
     test "interiors returns a multilinestring of holes" do
       out = GeoSeries.interiors(s([@donut, @square, "POINT (0 0)"]))
 

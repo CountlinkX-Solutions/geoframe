@@ -2093,11 +2093,30 @@ defmodule GeoFrame.GeoSeries do
   The `n`th part of each geometry (zero-based); a negative `n` counts from the end.
 
   A single geometry is its own part `0`. Out-of-range indices and null rows give `nil`.
-  Only an integer `n` is supported (GeoPandas also accepts an array of indices).
+
+  `n` is an integer (the same index for every row) or one index per row: a list of integers
+  (or `nil`) or an Explorer integer series, as long as the series (otherwise `ArgumentError`),
+  like `shapely.get_geometry(array, indices)`. A `nil` index gives a `nil` row.
   """
-  @spec get_geometry(t(), integer()) :: t()
+  @spec get_geometry(t(), integer() | [integer() | nil] | Series.t()) :: t()
   def get_geometry(%__MODULE__{ref: ref}, n) when is_integer(n) do
     ref |> Native.get_geometry(n) |> wrap() |> unwrap!()
+  end
+
+  def get_geometry(%__MODULE__{} = series, %Series{} = indices) do
+    get_geometry_rows(series, Series.to_list(indices))
+  end
+
+  def get_geometry(%__MODULE__{} = series, indices) when is_list(indices) do
+    get_geometry_rows(series, indices)
+  end
+
+  defp get_geometry_rows(%__MODULE__{ref: ref}, indices) do
+    unless Enum.all?(indices, &(is_nil(&1) or is_integer(&1))) do
+      raise ArgumentError, "get_geometry/2 indices must be integers or nil"
+    end
+
+    ref |> Native.get_geometry_rows(indices) |> wrap() |> unwrap!()
   end
 
   @doc """
@@ -2385,10 +2404,19 @@ defmodule GeoFrame.GeoSeries do
   @doc """
   All pairs of rows `{i, j}` for which `left[i].predicate(right[j])` holds, found with an
   R-tree built over the bounding boxes of `right` and refined with the exact predicate.
+  `left` plays the role of the input geometries and `right` of the tree, so GeoPandas'
+  `tree.sindex.query(geometry, ...)` is `sindex_query(geometry, tree, ...)`.
 
-  Returns `{left_indices, right_indices}`: two parallel lists of zero-based row positions,
-  ordered by left then right position. (Plain lists rather than series: they are consumed as
-  `take/2` indices, and the pair count is data-dependent.) The result equals evaluating the
+  `left` is one of:
+
+    * a series, or a list of WKT strings (`nil` for a null geometry), the array form:
+      returns `{left_indices, right_indices}`, two parallel lists of zero-based row
+      positions, ordered by left then right position. (Plain lists rather than series: they
+      are consumed as `take/2` indices, and the pair count is data-dependent.)
+    * a single WKT string (or `nil`), the scalar form: returns the list of matching `right`
+      positions in ascending order.
+
+  A list or string is parsed with the CRS of `right`. The result equals evaluating the
   predicate over every pair, only faster.
 
   `predicate` is one of `:intersects` (default), `:within`, `:contains`, `:touches`,
@@ -2397,18 +2425,53 @@ defmodule GeoFrame.GeoSeries do
   predicate reads `left.predicate(right)`: `:within` means the left geometry is within the
   right one. `:disjoint` is rejected because a spatial index cannot answer it.
 
-  Options: `:distance` - required, non-negative, in CRS units for `:dwithin`.
+  Options:
+
+    * `:distance` - required, non-negative, in CRS units for `:dwithin`.
+    * `:sort` - boolean, accepted for GeoPandas compatibility. The result is always ordered
+      by (left, right) position, which is what `sort: true` gives there, so it changes
+      nothing (default `false`).
 
   Null and empty rows never match. Differing CRS (both set) raise `ArgumentError`, as do
   unknown predicates and a missing distance. Querying is single-threaded.
   """
-  @spec sindex_query(t(), t(), atom(), keyword()) :: {[non_neg_integer()], [non_neg_integer()]}
+  @spec sindex_query(
+          t() | [String.t() | nil] | String.t() | nil,
+          t(),
+          atom(),
+          keyword()
+        ) :: {[non_neg_integer()], [non_neg_integer()]} | [non_neg_integer()]
   def sindex_query(left, right, predicate \\ :intersects, opts \\ [])
 
   def sindex_query(%__MODULE__{} = left, %__MODULE__{} = right, predicate, opts)
       when is_atom(predicate) and is_list(opts) do
+    opts = validate_sort!(opts)
     {left_rows, right_rows} = sindex_query_binaries(left, right, predicate, opts)
     {u32_list(left_rows), u32_list(right_rows)}
+  end
+
+  def sindex_query(left, %__MODULE__{} = right, predicate, opts)
+      when (is_list(left) or is_binary(left) or is_nil(left)) and is_atom(predicate) and
+             is_list(opts) do
+    input_crs = crs(right)
+
+    case left do
+      rows when is_list(rows) ->
+        rows |> from_wkt!(crs: input_crs) |> sindex_query(right, predicate, opts)
+
+      row ->
+        {_, right_rows} =
+          [row] |> from_wkt!(crs: input_crs) |> sindex_query(right, predicate, opts)
+
+        right_rows
+    end
+  end
+
+  defp validate_sort!(opts) do
+    case Keyword.get(opts, :sort, false) do
+      sort when is_boolean(sort) -> Keyword.delete(opts, :sort)
+      other -> raise ArgumentError, ":sort must be a boolean, got: #{inspect(other)}"
+    end
   end
 
   # The pairs as native-endian u32 binaries, the form the joins consume (no list of millions

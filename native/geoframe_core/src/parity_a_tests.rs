@@ -132,6 +132,51 @@ fn get_geometry_picks_parts_with_negative_indices() {
     assert_eq!(wkts(&out)[0], None);
 }
 
+// Generator (Shapely 2.2): shapely.get_geometry(arr, [0, 1, 2, -1, 0, 0, -1, 0]) over
+// [POINT (1 1), LINESTRING (0 0, 1 1), MULTIPOINT (0 0, 1 1, 2 2),
+//  GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (0 0, 1 1)), POLYGON EMPTY,
+//  GEOMETRYCOLLECTION EMPTY, POLYGON ((0 0, 1 0, 1 1, 0 0)), None].
+#[test]
+fn get_geometry_rows_takes_one_index_per_row() {
+    let c = col(&[
+        Some("POINT (1 1)"),
+        Some("LINESTRING (0 0, 1 1)"),
+        Some("MULTIPOINT (0 0, 1 1, 2 2)"),
+        Some("GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (0 0, 1 1))"),
+        Some("POLYGON EMPTY"),
+        Some("GEOMETRYCOLLECTION EMPTY"),
+        Some("POLYGON ((0 0, 1 0, 1 1, 0 0))"),
+        None,
+    ]);
+    let idx = [
+        Some(0),
+        Some(1),
+        Some(2),
+        Some(-1),
+        Some(0),
+        Some(0),
+        Some(-1),
+        Some(0),
+    ];
+    assert_eq!(
+        wkts(&c.get_geometry_rows(&idx).unwrap()),
+        vec![
+            Some("POINT(1 1)".to_string()),
+            None,
+            Some("POINT(2 2)".to_string()),
+            Some("LINESTRING(0 0,1 1)".to_string()),
+            Some("POLYGON EMPTY".to_string()),
+            None,
+            Some("POLYGON((0 0,1 0,1 1,0 0))".to_string()),
+            None,
+        ]
+    );
+    // A null index gives a null row; a wrong length is an error.
+    let out = c.get_geometry_rows(&[None; 8]).unwrap();
+    assert!(wkts(&out).iter().all(Option::is_none));
+    assert!(c.get_geometry_rows(&[Some(0)]).is_err());
+}
+
 #[test]
 fn interiors_gives_a_multilinestring_of_holes() {
     let c = col(&[
