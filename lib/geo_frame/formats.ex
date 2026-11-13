@@ -27,6 +27,8 @@ defmodule GeoFrame.Formats do
 
   @parquet_compressions [:snappy, :zstd, :gzip, :lz4, :brotli, :none]
   @feather_compressions [:lz4, :zstd, :uncompressed]
+  # Rows per Arrow record batch; pyarrow's `write_feather(chunksize=65536)` default.
+  @record_batch_size 65_536
   @encodings [:wkb, :geoarrow]
   @schema_versions ["1.0.0", "1.1.0"]
 
@@ -91,9 +93,10 @@ defmodule GeoFrame.Formats do
   end
 
   def write_feather(%GeoDataFrame{} = gdf, path, opts) do
-    validate_options!(opts, [:compression, :geometry_encoding])
+    validate_options!(opts, [:compression, :geometry_encoding, :record_batch_size])
     compression = enum!(opts, :compression, @feather_compressions, :lz4)
     encoding = enum!(opts, :geometry_encoding, @encodings, :wkb)
+    record_batch_size = record_batch_size!(opts)
 
     with {:ok, ipc} <- Attributes.dump(gdf.data),
          {:ok, _} <-
@@ -103,7 +106,7 @@ defmodule GeoFrame.Formats do
              ipc,
              to_string(path),
              Atom.to_string(encoding),
-             Atom.to_string(compression),
+             {Atom.to_string(compression), record_batch_size},
              secondary_refs(gdf)
            ) do
       :ok
@@ -111,8 +114,9 @@ defmodule GeoFrame.Formats do
   end
 
   def to_arrow(%GeoDataFrame{} = gdf, opts) do
-    validate_options!(opts, [:geometry_encoding])
+    validate_options!(opts, [:geometry_encoding, :record_batch_size])
     encoding = enum!(opts, :geometry_encoding, @encodings, :wkb)
+    record_batch_size = record_batch_size!(opts)
 
     with {:ok, ipc} <- Attributes.dump(gdf.data),
          {:ok, bytes} <-
@@ -121,6 +125,7 @@ defmodule GeoFrame.Formats do
              gdf.geometry_column,
              ipc,
              Atom.to_string(encoding),
+             record_batch_size,
              secondary_refs(gdf)
            ) do
       bytes
@@ -133,7 +138,14 @@ defmodule GeoFrame.Formats do
     validate_options!(opts, [:geometry_encoding])
     encoding = enum!(opts, :geometry_encoding, @encodings, :wkb)
 
-    case Native.to_arrow_stream(ref, "geometry", <<>>, Atom.to_string(encoding), []) do
+    case Native.to_arrow_stream(
+           ref,
+           "geometry",
+           <<>>,
+           Atom.to_string(encoding),
+           @record_batch_size,
+           []
+         ) do
       {:ok, bytes} -> bytes
       {:error, message} -> raise ArgumentError, message
     end
@@ -561,6 +573,10 @@ defmodule GeoFrame.Formats do
       value when is_integer(value) -> value
       other -> raise ArgumentError, "#{inspect(key)} must be an integer, got: #{inspect(other)}"
     end
+  end
+
+  defp record_batch_size!(opts) do
+    optional_positive_integer!(opts, :record_batch_size) || @record_batch_size
   end
 
   defp optional_positive_integer!(opts, key) do

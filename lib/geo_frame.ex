@@ -307,8 +307,12 @@ defmodule GeoFrame do
   CRS as PROJJSON, and the schema metadata has the GeoParquet-style `geo` entry.
 
   Options: `:compression` - `:lz4` (default, as pyarrow), `:zstd` or `:uncompressed`;
-  `:geometry_encoding` - `:wkb` (default) or `:geoarrow` (see `write_parquet/3`). Secondary
-  geometry columns are written after the active one with their own CRS and `geo` entry.
+  `:geometry_encoding` - `:wkb` (default) or `:geoarrow` (see `write_parquet/3`);
+  `:record_batch_size` - rows per Arrow record batch (positive integer, default 65 536, the
+  `chunksize` of pyarrow's `write_feather`, which GeoPandas `to_feather` goes through): small
+  batches let `stream_file/2` read the file in bounded memory, which a single record batch
+  cannot. Secondary geometry columns are written after the active one with their own CRS and
+  `geo` entry.
 
   Returns `:ok` or `{:error, message}`; a partially written file is removed.
   """

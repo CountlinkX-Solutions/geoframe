@@ -896,3 +896,107 @@ fn geojson_skip_rows() {
         4,
     );
 }
+
+// -- Record batch size of the Feather / Arrow IPC writers ---------------------------------
+
+use crate::{
+    from_arrow_ipc, to_arrow_ipc_multi_batched, write_feather_multi_batched,
+    DEFAULT_RECORD_BATCH_SIZE,
+};
+
+fn record_batch_sizes(file: &str) -> Vec<usize> {
+    use arrow_ipc::reader::FileReader;
+    let reader = FileReader::try_new(std::fs::File::open(file).unwrap(), None).unwrap();
+    reader.map(|b| b.unwrap().num_rows()).collect()
+}
+
+#[test]
+fn feather_writer_emits_record_batches_of_the_requested_size() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let (geometry, attributes) = grid(10, Some("EPSG:3857"));
+    let file = path(&dir, "b.feather");
+    for (size, expected) in [
+        (3, vec![3, 3, 3, 1]),
+        (10, vec![10]),
+        (100, vec![10]),
+        (1, vec![1; 10]),
+    ] {
+        write_feather_multi_batched(
+            &file,
+            &[("geometry", &geometry)],
+            &attributes,
+            GeometryEncoding::Wkb,
+            FeatherCompression::Lz4,
+            size,
+        )
+        .unwrap();
+        assert_eq!(record_batch_sizes(&file), expected, "size {size}");
+        // Same rows whatever the batching, and the streaming reader agrees.
+        let whole = read_feather(&file, None, None).unwrap();
+        assert_eq!(wkt(&whole.geometry), wkt(&geometry), "size {size}");
+        let batches = drain(BatchReader::open_feather(&file, None, None, 4).unwrap());
+        assert_eq!(all_ids(&batches), (0..10).collect::<Vec<i64>>());
+    }
+}
+
+#[test]
+fn feather_writer_rejects_a_zero_record_batch_size_and_leaves_no_file() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let (geometry, attributes) = grid(4, None);
+    let file = path(&dir, "z.feather");
+    let err = write_feather_multi_batched(
+        &file,
+        &[("geometry", &geometry)],
+        &attributes,
+        GeometryEncoding::Wkb,
+        FeatherCompression::Uncompressed,
+        0,
+    )
+    .unwrap_err();
+    assert!(err.contains("record_batch_size"), "{err}");
+    assert!(!std::path::Path::new(&file).exists());
+}
+
+#[test]
+fn an_empty_table_is_one_empty_record_batch_or_none_but_reads_back() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let (geometry, attributes) = grid(0, Some("EPSG:3857"));
+    let file = path(&dir, "e.feather");
+    write_feather_multi_batched(
+        &file,
+        &[("geometry", &geometry)],
+        &attributes,
+        GeometryEncoding::Wkb,
+        FeatherCompression::Uncompressed,
+        5,
+    )
+    .unwrap();
+    let read = read_feather(&file, None, None).unwrap();
+    assert_eq!(read.geometry.len(), 0);
+}
+
+#[test]
+fn arrow_stream_writer_emits_record_batches_of_the_requested_size() {
+    let _guard = serial();
+    let (geometry, attributes) = grid(10, Some("EPSG:4326"));
+    let bytes = to_arrow_ipc_multi_batched(
+        &[("geometry", &geometry)],
+        &attributes,
+        GeometryEncoding::Wkb,
+        4,
+    )
+    .unwrap();
+    let reader = arrow_ipc::reader::StreamReader::try_new(bytes.as_slice(), None).unwrap();
+    let sizes: Vec<usize> = reader.map(|b| b.unwrap().num_rows()).collect();
+    assert_eq!(sizes, vec![4, 4, 2]);
+    let read = from_arrow_ipc(&bytes, None, None).unwrap();
+    assert_eq!(wkt(&read.geometry), wkt(&geometry));
+}
+
+#[test]
+fn the_default_record_batch_size_matches_pyarrow() {
+    assert_eq!(DEFAULT_RECORD_BATCH_SIZE, 65_536);
+}

@@ -116,7 +116,7 @@ matrix and the known deviations are in [docs/parity.md](docs/parity.md).
 | GeoParquet 1.0/1.1 | `read_parquet/2` (`bbox:` filter) | `write_parquet/3` (compression, row groups, native GeoArrow, covering bbox) | `.parquet`, `.geoparquet` |
 | GeoJSON (RFC 7946) | `read_geojson/2` | `write_geojson/3` | `.geojson`, `.json` |
 | FlatGeobuf | `read_flatgeobuf/2` (`bbox:` via the index) | `write_flatgeobuf/3` | `.fgb` |
-| Feather v2 (Arrow IPC file) | `read_feather/2` | `write_feather/3` | `.feather`, `.arrow` |
+| Feather v2 (Arrow IPC file) | `read_feather/2` | `write_feather/3` (`record_batch_size:`) | `.feather`, `.arrow` |
 | Shapefile (`.cpg`, `.prj`, zipped) | `read_shapefile/2` | `write_shapefile/3` | `.shp`, `.zip` |
 | GeoPackage (several layers, rtree) | `read_gpkg/2` (`layer:`) | `write_gpkg/3` (`layer:`, `mode:`) | `.gpkg` |
 | PostGIS (optional `:postgrex`) | `read_postgis/3` | `to_postgis/4` | database |

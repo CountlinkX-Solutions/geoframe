@@ -4,12 +4,12 @@
 use geoframe_core::{
     deck_buffers, from_arrow_ipc, geoparquet_metadata, gpkg_info, gpkg_layers, open_batch_readers,
     read_feather, read_flatgeobuf, read_geojson, read_geojson_str, read_geoparquet_filtered,
-    read_gpkg, read_shapefile, shapefile_info, to_arrow_ipc_multi, write_feather_multi,
-    write_flatgeobuf, write_geojson, write_geoparquet_multi, write_gpkg, write_shapefile,
-    BatchReader, BufferOptions, FeatherCompression, GeoColumn, GeometryEncoding, GpkgWriteOptions,
-    GridFeature, GridType, JoinHow, LayerInfo, NearestPairs, OffsetJoin, OffsetParams, Origin,
-    ParquetOptions, PrecisionMode, Predicate, QueryPredicate, SetOp, TableRead, UnaryOp,
-    VectorRead, VertexKind, VertexParts,
+    read_gpkg, read_shapefile, shapefile_info, to_arrow_ipc_multi_batched,
+    write_feather_multi_batched, write_flatgeobuf, write_geojson, write_geoparquet_multi,
+    write_gpkg, write_shapefile, BatchReader, BufferOptions, FeatherCompression, GeoColumn,
+    GeometryEncoding, GpkgWriteOptions, GridFeature, GridType, JoinHow, LayerInfo, NearestPairs,
+    OffsetJoin, OffsetParams, Origin, ParquetOptions, PrecisionMode, Predicate, QueryPredicate,
+    SetOp, TableRead, UnaryOp, VectorRead, VertexKind, VertexParts,
 };
 use rustler::{Binary, Encoder, Env, OwnedBinary, ResourceArc, Term};
 use std::sync::Mutex;
@@ -726,7 +726,8 @@ fn read_feather_file<'a>(
         .map(|read| table_read(env, read))
 }
 
-/// `secondary` lists `{name, geometry}` of the other geometry columns, written after the primary.
+/// `options` is `{compression, record_batch_size}`; `secondary` lists `{name, geometry}` of the
+/// other geometry columns, written after the primary.
 #[rustler::nif(schedule = "DirtyIo")]
 fn write_feather_file(
     column: Handle,
@@ -734,15 +735,17 @@ fn write_feather_file(
     attributes_ipc: Binary,
     path: String,
     geometry_encoding: String,
-    compression: String,
+    options: (String, usize),
     secondary: Secondary,
 ) -> Result<(), String> {
-    write_feather_multi(
+    let (compression, record_batch_size) = options;
+    write_feather_multi_batched(
         &path,
         &geometry_columns(&column, &geometry_column, &secondary),
         attributes_ipc.as_slice(),
         GeometryEncoding::parse(&geometry_encoding)?,
         FeatherCompression::parse(&compression)?,
+        record_batch_size,
     )
 }
 
@@ -755,12 +758,14 @@ fn to_arrow_stream<'a>(
     geometry_column: String,
     attributes_ipc: Binary,
     geometry_encoding: String,
+    record_batch_size: usize,
     secondary: Secondary,
 ) -> Result<Binary<'a>, String> {
-    let bytes = to_arrow_ipc_multi(
+    let bytes = to_arrow_ipc_multi_batched(
         &geometry_columns(&column, &geometry_column, &secondary),
         attributes_ipc.as_slice(),
         GeometryEncoding::parse(&geometry_encoding)?,
+        record_batch_size,
     )?;
     Ok(binary(env, &bytes))
 }

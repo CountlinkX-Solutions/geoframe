@@ -177,13 +177,20 @@ defmodule GeoFrame.Native do
         _attributes_ipc,
         _path,
         _geometry_encoding,
-        _compression,
+        _options,
         _secondary
       ),
       do: err()
 
-  def to_arrow_stream(_ref, _geometry_column, _attributes_ipc, _geometry_encoding, _secondary),
-    do: err()
+  def to_arrow_stream(
+        _ref,
+        _geometry_column,
+        _attributes_ipc,
+        _geometry_encoding,
+        _record_batch_size,
+        _secondary
+      ),
+      do: err()
 
   def deck_buffers_nif(_ref, _colors, _sizes), do: err()
   def from_arrow_stream(_bytes, _columns, _geometry_column), do: err()

@@ -783,12 +783,52 @@ pub fn write_feather_multi(
     encoding: GeometryEncoding,
     compression: FeatherCompression,
 ) -> Result<(), String> {
+    write_feather_multi_batched(
+        path,
+        geometries,
+        attributes_ipc,
+        encoding,
+        compression,
+        DEFAULT_RECORD_BATCH_SIZE,
+    )
+}
+
+/// Rows per record batch the Feather and Arrow stream writers use unless told otherwise (the
+/// `chunksize` default of pyarrow's `write_feather`, which GeoPandas `to_feather` goes through).
+pub const DEFAULT_RECORD_BATCH_SIZE: usize = 65_536;
+
+/// The record batches `batch` is written as: slices of at most `size` rows (an empty table is
+/// one empty batch, so the file still carries its schema).
+fn record_batches(batch: &RecordBatch, size: usize) -> Result<Vec<RecordBatch>, String> {
+    if size == 0 {
+        return Err("record_batch_size must be a positive number of rows".to_string());
+    }
+    let rows = batch.num_rows();
+    if rows <= size {
+        return Ok(vec![batch.clone()]);
+    }
+    Ok((0..rows)
+        .step_by(size)
+        .map(|offset| batch.slice(offset, size.min(rows - offset)))
+        .collect())
+}
+
+/// Like [`write_feather_multi`] with `record_batch_size` rows per Arrow record batch.
+pub fn write_feather_multi_batched(
+    path: &str,
+    geometries: &[(&str, &GeoColumn)],
+    attributes_ipc: &[u8],
+    encoding: GeometryEncoding,
+    compression: FeatherCompression,
+    record_batch_size: usize,
+) -> Result<(), String> {
     let options = EncodeOptions {
         encoding,
         ..EncodeOptions::default()
     };
     let encoded = encode_table_multi(geometries, attributes_ipc, &options)?;
     let batch = with_geo_metadata(&encoded.batch, &encoded.geo)?;
+    let batches = record_batches(&batch, record_batch_size)?;
 
     let write_options = match compression {
         FeatherCompression::Uncompressed => IpcWriteOptions::default(),
@@ -802,13 +842,41 @@ pub fn write_feather_multi(
     crate::atomic::write_atomic(path, |file| {
         let mut writer = FileWriter::try_new_with_options(file, &batch.schema(), write_options)
             .map_err(|e| format!("cannot write {path}: {e}"))?;
-        writer
-            .write(&batch)
-            .map_err(|e| format!("cannot write {path}: {e}"))?;
+        for part in &batches {
+            writer
+                .write(part)
+                .map_err(|e| format!("cannot write {path}: {e}"))?;
+        }
         writer
             .finish()
             .map_err(|e| format!("cannot write {path}: {e}"))
     })
+}
+
+/// Like [`to_arrow_ipc_multi`] with `record_batch_size` rows per Arrow record batch.
+pub fn to_arrow_ipc_multi_batched(
+    geometries: &[(&str, &GeoColumn)],
+    attributes_ipc: &[u8],
+    encoding: GeometryEncoding,
+    record_batch_size: usize,
+) -> Result<Vec<u8>, String> {
+    let options = EncodeOptions {
+        encoding,
+        ..EncodeOptions::default()
+    };
+    let encoded = encode_table_multi(geometries, attributes_ipc, &options)?;
+    let batch = with_geo_metadata(&encoded.batch, &encoded.geo)?;
+    let batches = record_batches(&batch, record_batch_size)?;
+    let mut out = Vec::new();
+    {
+        let mut writer =
+            StreamWriter::try_new(&mut out, &batch.schema()).map_err(|e| e.to_string())?;
+        for part in &batches {
+            writer.write(part).map_err(|e| e.to_string())?;
+        }
+        writer.finish().map_err(|e| e.to_string())?;
+    }
+    Ok(out)
 }
 
 /// Reads a Feather v2 file written by GeoFrame or GeoPandas `to_feather`.
@@ -844,20 +912,12 @@ pub fn to_arrow_ipc_multi(
     attributes_ipc: &[u8],
     encoding: GeometryEncoding,
 ) -> Result<Vec<u8>, String> {
-    let options = EncodeOptions {
+    to_arrow_ipc_multi_batched(
+        geometries,
+        attributes_ipc,
         encoding,
-        ..EncodeOptions::default()
-    };
-    let encoded = encode_table_multi(geometries, attributes_ipc, &options)?;
-    let batch = with_geo_metadata(&encoded.batch, &encoded.geo)?;
-    let mut out = Vec::new();
-    {
-        let mut writer =
-            StreamWriter::try_new(&mut out, &batch.schema()).map_err(|e| e.to_string())?;
-        writer.write(&batch).map_err(|e| e.to_string())?;
-        writer.finish().map_err(|e| e.to_string())?;
-    }
-    Ok(out)
+        DEFAULT_RECORD_BATCH_SIZE,
+    )
 }
 
 /// Decodes an Arrow IPC stream holding a geometry column (WKB, WKT or native GeoArrow).
