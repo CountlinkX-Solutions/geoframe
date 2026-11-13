@@ -3,10 +3,13 @@ defmodule GeoFrame.Native do
   # NIF bindings to the `geoframe_native` Rust crate. Each function below is replaced
   # when the NIF library loads; the bodies only run if loading failed.
   #
-  # Released versions download a precompiled NIF from the GitHub release of `v<version>`
-  # (checksum-verified, see `checksum-Elixir.GeoFrame.Native.exs`), so no Rust toolchain is
-  # needed. The NIF is built from source (Rustler) when `GEOFRAME_BUILD` is `1` or `true`,
-  # and always in :dev and :test, where a checkout has no release to download.
+  # The Hex package ships `checksum-Elixir.GeoFrame.Native.exs`, so it downloads a
+  # precompiled NIF from the GitHub release of `v<version>` (checksum-verified) and needs no
+  # Rust toolchain. A git or path dependency (or a checkout) has no checksum file, so the NIF
+  # is built from source (Rustler). It is also built from source when `GEOFRAME_BUILD` is `1`
+  # or `true`, and always in :dev and :test. `__DIR__` is the package root's `lib/geo_frame`
+  # both in a checkout and when compiled as a dependency (same rule in `mix.exs`).
+  checksum_file = Path.expand("../../checksum-Elixir.GeoFrame.Native.exs", __DIR__)
   mix_config = Mix.Project.config()
   version = mix_config[:version]
   github_url = mix_config[:package][:links]["GitHub"]
@@ -33,7 +36,9 @@ defmodule GeoFrame.Native do
     # code overflows the stack of a dirty scheduler thread on deep recursion (segfault in the
     # test suite, seed 728805).
     mode: :release,
-    force_build: System.get_env("GEOFRAME_BUILD") in ["1", "true"] or Mix.env() in [:dev, :test]
+    force_build:
+      System.get_env("GEOFRAME_BUILD") in ["1", "true"] or Mix.env() in [:dev, :test] or
+        not File.exists?(checksum_file)
 
   def from_wkt(_rows, _crs), do: err()
   def from_wkb(_rows, _crs), do: err()

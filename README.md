@@ -59,15 +59,17 @@ From `0.2.0`, the NIF is downloaded as a precompiled library instead of being co
 version 2.15), through [rustler_precompiled](https://hex.pm/packages/rustler_precompiled). The
 download is verified against the checksum file shipped in the Hex package.
 
-- **Build from source** (needs Rust) with `GEOFRAME_BUILD=true`, or if your platform has no
-  precompiled build. Set the variable for both `mix deps.get` and `mix deps.compile`
-  (Rustler is then pulled in as a dependency of GeoFrame), or add `{:rustler, "~> 0.38"}` to
-  your own deps.
+- **Git and path dependencies build the NIF from source automatically** (needs a Rust
+  toolchain; Rustler is fetched as a dependency of GeoFrame). The precompiled download is
+  verified against a checksum file that only the Hex package ships (it is generated from the
+  release assets, after the tag exists), so a package without it, such as
+  `{:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.2.0"}`, is compiled instead.
+  No environment variable is needed.
+- **Hex packages** (a later release) carry the checksum file and download the precompiled NIF.
+- **`GEOFRAME_BUILD=true`** forces a source build even when a checksum file is present, for
+  example if your platform has no precompiled build. Set it for both `mix deps.get` and
+  `mix deps.compile`, or add `{:rustler, "~> 0.38"}` to your own deps.
   GeoFrame always builds from source in `:dev` and `:test` inside its own checkout.
-- **Git dependencies** do not carry the checksum file (it is generated from the release
-  assets, after the tag exists), so a `github:`/`git:` dependency cannot verify a download and
-  must be built from source with `GEOFRAME_BUILD=true`, as before. Use the Hex package to get
-  the precompiled NIF.
 
 ## Quickstart
 

@@ -7,10 +7,7 @@ Mix.install(
     {:kino, "~> 0.19"},
     {:req, "~> 0.5"},
     {:pythonx, "~> 0.4.2"}
-  ],
-  # A checkout has no precompiled NIF for its own version, so build GeoFrame from source
-  # (needs a Rust toolchain); from Hex the precompiled NIF is used instead.
-  system_env: %{"GEOFRAME_BUILD" => "true"}
+  ]
 )
 ```
 
