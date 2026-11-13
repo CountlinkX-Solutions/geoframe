@@ -245,7 +245,7 @@ defmodule GeoFrame.ParityBTest do
 
       assert_raise ArgumentError, ~r/CRS/, fn ->
         GeoFrame.clip(
-          GeoDataFrame.set_crs(gdf, "EPSG:3857"),
+          GeoDataFrame.set_crs(gdf, "EPSG:3857", allow_override: true),
           s([rect(0, 0, 1, 1)], crs: "EPSG:4326")
         )
       end
@@ -393,7 +393,7 @@ defmodule GeoFrame.ParityBTest do
         GeoFrame.overlay(mixed, ctx.right)
       end
 
-      other = GeoDataFrame.set_crs(ctx.right, "EPSG:4326")
+      other = GeoDataFrame.set_crs(ctx.right, "EPSG:4326", allow_override: true)
       assert_raise ArgumentError, ~r/CRS/, fn -> GeoFrame.overlay(ctx.left, other) end
     end
   end

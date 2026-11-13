@@ -62,7 +62,7 @@ defmodule GeoFrame.UnknownOptionsTest do
     assert_unknown(
       fn -> GeoFrame.dissolve(frame(), by: "id", sorted: false) end,
       :sorted,
-      [:by, :aggfunc, :dropna, :sort]
+      [:by, :aggfunc, :dropna, :sort, :as_index, :level, :observed]
     )
 
     assert_unknown(

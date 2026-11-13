@@ -183,6 +183,15 @@ defmodule GeoFrame.GeoDataFrameTest do
       assert GeoDataFrame.crs(gdf) == "EPSG:3857"
     end
 
+    test "set_crs/2 refuses to override an existing CRS unless allow_override: true" do
+      gdf = GeoDataFrame.set_crs(sample(), "EPSG:3857")
+      assert_raise ArgumentError, ~r/allow_override/, fn -> GeoDataFrame.set_crs(gdf, 4326) end
+      assert GeoDataFrame.crs(GeoDataFrame.set_crs(gdf, 3857)) == "EPSG:3857"
+
+      assert GeoDataFrame.crs(GeoDataFrame.set_crs(gdf, 4326, allow_override: true)) ==
+               "EPSG:4326"
+    end
+
     test "set_crs/2 accepts an integer EPSG code" do
       assert GeoDataFrame.crs(GeoDataFrame.set_crs(sample(), 3857)) == "EPSG:3857"
     end
