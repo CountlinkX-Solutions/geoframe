@@ -29,11 +29,15 @@ all_zm = [
 
 one_member = Enum.reject(all_zm, fn {label, _} -> label in ["has_z", "has_m", "m"] end)
 
+# has_z, has_m, z, m and force_2d of a mixed-dimension collection agree (0.3.0 B10d).
+mixed_zm =
+  Enum.reject(all_zm, fn {label, _} -> label in ["has_z", "has_m", "z", "m", "force_2d"] end)
+
 zm_deviations =
-  Enum.map(zm_cases.(all_zm, ["z_coll_mixed"]), fn {op, cases} ->
+  Enum.map(zm_cases.(mixed_zm, ["z_coll_mixed"]), fn {op, cases} ->
     %{
       reason:
-        "A GEOMETRYCOLLECTION whose members have different dimensions (here POINT and POINT Z) is rejected with an error: the GeoArrow builder cannot store it. Shapely keeps it and reports Z for the whole collection.",
+        "A GEOMETRYCOLLECTION whose members have different dimensions (here POINT and POINT Z): Shapely keeps each member's dimension; a GeoArrow collection has one, so GeoFrame stores the 2D member with a NaN Z (has_z, has_m, get_coordinates and force_2d agree). The member's WKT and WKB therefore carry Z NaN, and force_3d keeps the NaN where Shapely fills the 2D member.",
       doc: "docs/parity.md#z-and-m",
       op: op,
       cases: cases
@@ -70,14 +74,6 @@ zm_ops_classes = [
    [
      "affine_transform(12):z_coll_mixed",
      "affine_transform(6):z_coll_mixed"
-   ]},
-  {"mixed", "boundary",
-   [
-     "boundary:z_coll_mixed"
-   ]},
-  {"mixed", "exterior",
-   [
-     "exterior:z_coll_mixed"
    ]},
   {"mixed", "get_geometry",
    [
@@ -293,7 +289,7 @@ zm_ops_classes = [
 
 zm_ops_reasons = %{
   "mixed" =>
-    "A GEOMETRYCOLLECTION whose members have different dimensions (POINT and POINT Z) is rejected with an error: the GeoArrow builder cannot store it. Shapely keeps it.",
+    "A GEOMETRYCOLLECTION whose members have different dimensions (POINT and POINT Z): GeoFrame stores the 2D member with a NaN Z (a GeoArrow collection has one dimension), so the result carries Z NaN where Shapely keeps a 2D member.",
   "one" =>
     "A one-member GEOMETRYCOLLECTION is stored as that member when parsed (see geom_type), so the result describes the member where Shapely keeps the collection.",
   "zmnan" =>

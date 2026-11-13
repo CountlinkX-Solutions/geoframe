@@ -32,6 +32,7 @@ mod gpkg_io;
 mod gpkg_stream;
 mod group_agg;
 mod line_merge;
+mod mixed_dims;
 mod mixed_ops;
 mod noding;
 mod offset_curve;
