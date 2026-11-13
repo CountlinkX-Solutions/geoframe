@@ -713,7 +713,7 @@ defmodule GeoFrame.GeoSeries do
       cap style is ignored) and outside corners use the join style. A point gives its
       buffer for a positive distance and an empty polygon otherwise; a polygon gives only
       the band around its rings (its buffer without the polygon, or the polygon without its
-      eroded part for a negative distance). GEOS' result for a closed line, a polygon with
+      eroded part for a negative distance). GEOS' result for a closed line, a polygon (it has no stable rule: it depends on the size relative to the distance) with
       holes or a band that overlaps itself is not reproduced (see `docs/parity.md`).
 
   Invalid options raise `ArgumentError`.

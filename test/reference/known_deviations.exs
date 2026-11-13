@@ -431,7 +431,7 @@ zm_deviations ++
     },
     %{
       reason:
-        "buffer with single_sided on a polygon with a hole: GEOS labels the one-sided ring curves so that the result is the polygon itself for a positive distance and the ordinary negative buffer for a negative one, where GeoFrame (and GEOS for a polygon without holes) returns the band between the polygon and its buffer.",
+        "buffer with single_sided on a polygon: GEOS' one-sided ring curves give no stable rule for polygons. Probed with Shapely 2.2 / GEOS 3.14: a square gives the band between the polygon and its buffer when its side is at most 4 times the distance (side 4, d = 1) and the polygon itself (d > 0) or the ordinary negative buffer (d < 0) from 5 times up (side 5, d = 1; side 10, d = 0.5); polygons with one, two or a near-shell hole give the polygon itself for d > 0 and the ordinary negative buffer for d < 0 except two holes (d = -1: band) and sq_hole / mixed holed multipolygons (d = -1: band with a mitre join, something else with round or bevel). GeoFrame always returns the band, which GEOS only gives for small polygons relative to the distance.",
       doc: "docs/parity.md#reference-testing",
       op: "buffer",
       cases: [
