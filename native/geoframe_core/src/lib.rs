@@ -6,6 +6,7 @@ mod arrow_io;
 mod atomic;
 mod attributes;
 mod buffer_single_sided;
+mod buffer_zero;
 pub(crate) mod column;
 mod coverage;
 mod coverage_simplify;
@@ -105,6 +106,8 @@ pub use unary::{BufferOptions, Origin, UnaryOp};
 mod affine_tests;
 #[cfg(test)]
 mod arrow_multi_tests;
+#[cfg(test)]
+mod buffer_zero_tests;
 #[cfg(test)]
 mod coverage_simplify_tests;
 #[cfg(test)]
