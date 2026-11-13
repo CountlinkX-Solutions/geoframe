@@ -125,6 +125,34 @@ rivers = fetch.("ne_50m_rivers_lake_centerlines.geojson") |> GeoFrame.read_file!
 GeoFrame.Kino.deck(rivers, color: {"scalerank", :viridis}, width: 2, tooltip: ["name", "scalerank"])
 ```
 
+## Click popups and several layers
+
+`popup:` opens a closable card with the chosen attributes where you click a feature, like
+`explore(popup=True)` in GeoPandas; the hover tooltip keeps working next to it. Values are shown
+as plain text, never as HTML. To draw several frames on one map, pass a list: each entry is a
+frame or `{frame, options}` with its own color, size, legend, tooltip and popup, and a layer
+control in the top-left corner toggles each layer (and its legend). Click a country, then a city,
+and untick "Cities" to hide them. `:max_features` and `:max_vertices` are totals over the layers.
+
+```elixir
+GeoFrame.Kino.deck(
+  [
+    {countries,
+     name: "Countries",
+     color: {"LOG_POP", :viridis},
+     opacity: 0.6,
+     popup: ["NAME", "CONTINENT", "POP_EST"]},
+    {big_cities,
+     name: "Cities",
+     color: {200, 30, 30},
+     radius: 4,
+     tooltip: ["name"],
+     popup: ["name", "adm0name", "pop_max"]}
+  ],
+  height: 520
+)
+```
+
 ## Cities per country
 
 A spatial join answers "which country is each city in?". Keep the country name and code, join
