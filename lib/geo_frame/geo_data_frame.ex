@@ -253,8 +253,9 @@ defmodule GeoFrame.GeoDataFrame do
   PROJJSON (and a GeoParquet-style `geo` entry in the schema metadata). GeoPandas reads it
   with `GeoDataFrame.from_arrow(pyarrow.ipc.open_stream(bytes).read_all())`.
 
-  Option `:geometry_encoding` - `:wkb` (default) or `:geoarrow`; see
-  `GeoFrame.GeoSeries.to_arrow/2`. Failures raise `ArgumentError`.
+  Options: `:geometry_encoding` - `:wkb` (default) or `:geoarrow`; see
+  `GeoFrame.GeoSeries.to_arrow/2`; `:record_batch_size` - rows per record batch (positive
+  integer, default 65 536). Failures raise `ArgumentError`.
   """
   @spec to_arrow(t(), keyword()) :: binary()
   def to_arrow(%__MODULE__{} = gdf, opts \\ []), do: GeoFrame.Formats.to_arrow(gdf, opts)

@@ -325,6 +325,35 @@ pub(crate) fn bbox_keep(geometry: &GeoColumn, query: [f64; 4]) -> Vec<bool> {
         .collect()
 }
 
+/// Whether `geometry` itself (not just its envelope) intersects `query`, which is what GDAL's
+/// spatial filter, and so GeoPandas `read_file(bbox=...)`, keeps. The box edge counts.
+pub(crate) fn geometry_meets_bbox(geometry: &geo::Geometry<f64>, query: [f64; 4]) -> bool {
+    use geo::Intersects;
+    let rect = geo::Rect::new(
+        geo::coord! { x: query[0], y: query[1] },
+        geo::coord! { x: query[2], y: query[3] },
+    );
+    rect.intersects(geometry)
+}
+
+/// Which rows of `geometry` intersect `query` as geometries ([`geometry_meets_bbox`]); the
+/// envelope test runs first. A row `geo` cannot represent keeps its envelope answer.
+pub(crate) fn bbox_keep_exact(geometry: &GeoColumn, query: [f64; 4]) -> Vec<bool> {
+    let envelope = bbox_keep(geometry, query);
+    if !envelope.contains(&true) {
+        return envelope;
+    }
+    geometry
+        .geo_rows()
+        .iter()
+        .zip(envelope)
+        .map(|(row, inside)| match row {
+            Some(g) if inside => geometry_meets_bbox(g, query),
+            _ => inside,
+        })
+        .collect()
+}
+
 /// Secondary geometry columns and attributes of `batches`, with the already decoded primary
 /// `geometry`.
 fn assemble(

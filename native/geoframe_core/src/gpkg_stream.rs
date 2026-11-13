@@ -24,7 +24,7 @@ use crate::gpkg_io::{
     build_column_as, crs_for_srs, decode_geometry_blob, geometry_column, is_fid, layer_rows,
     open_read, quote, select_layer, sql_error, table_columns, Declared, KindScan,
 };
-use crate::parquet_io::bbox_keep;
+use crate::parquet_io::bbox_keep_exact;
 use crate::{attributes::ipc_from_columns, VectorRead};
 use arrow_schema::Field;
 
@@ -250,7 +250,10 @@ impl GpkgStream {
                 let refs: Vec<Option<&[u8]>> = wkb.iter().map(|w| w.as_deref()).collect();
                 let column = GeoColumn::from_wkb(&refs, None)
                     .map_err(|e| format!("layer {:?}: {e}", self.table))?;
-                bbox_keep(&column, query).into_iter().map(Some).collect()
+                bbox_keep_exact(&column, query)
+                    .into_iter()
+                    .map(Some)
+                    .collect()
             }
         };
         Ok(wkb.into_iter().zip(keep).collect())

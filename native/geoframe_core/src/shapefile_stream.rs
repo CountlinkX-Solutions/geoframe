@@ -32,7 +32,7 @@ use crate::attributes::ipc_from_columns;
 use crate::column::ColumnBuilder;
 use crate::crs_wkt::prj_wkt_to_crs;
 use crate::dbf::{DbfCursor, Encoding, MAX_CELLS};
-use crate::parquet_io::bbox_keep;
+use crate::parquet_io::bbox_keep_exact;
 use crate::shapefile_io::{
     is_zip, resolve_encoding, shape_to_wkb, sibling, zip_member, zip_stem, MAX_ZIP_MEMBER_BYTES,
 };
@@ -296,7 +296,7 @@ impl ShapefileStream {
         let geometry = builder.finish();
         let mut keep: Vec<bool> = deleted.iter().map(|d| !d).collect();
         if let Some(query) = self.bbox {
-            for (keep, inside) in keep.iter_mut().zip(bbox_keep(&geometry, query)) {
+            for (keep, inside) in keep.iter_mut().zip(bbox_keep_exact(&geometry, query)) {
                 *keep &= inside;
             }
         }

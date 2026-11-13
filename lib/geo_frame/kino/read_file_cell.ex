@@ -14,8 +14,8 @@ if Code.ensure_loaded?(Kino.SmartCell) do
       * **Driver** - `auto` picks the format from the extension; otherwise one of `parquet`,
         `geojson`, `flatgeobuf`, `feather`, `shapefile`, `gpkg`. See `GeoFrame.read_file/2`.
       * **Layer** - for a GeoPackage, chosen from `GeoFrame.list_layers/2` once the file exists.
-      * **Bounding box** - optional `minx, miny, maxx, maxy`, passed as `bbox:` (GeoParquet and
-        FlatGeobuf only; other formats raise on it).
+      * **Bounding box** - optional `minx, miny, maxx, maxy`, passed as `bbox:` (every format
+        but Feather, which raises on it).
       * **Reproject to** - optional target CRS, such as `EPSG:3857` or `3857`.
       * **Show map** - ends the cell with `GeoFrame.Kino.deck/2`.
 
