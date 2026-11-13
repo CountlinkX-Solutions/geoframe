@@ -67,18 +67,44 @@ defmodule GeoFrame.CrsEsriDatumTest do
                   |> File.read!()
                   |> Jason.decode!()
 
-  for code <- ["4805", "4806", "4807", "4901"] do
-    test "EPSG:#{code} as ESRI text with another prime meridian keeps its previous result" do
+  # The datum name and the prime meridian find the geographic CRS (C2): NTF (Paris) answers like
+  # pyproj; MGI (Ferro) (305 m off by code) and Monte Mario (Rome) (72 m off as text) are refused.
+  for code <- ["4807"] do
+    test "EPSG:#{code} as ESRI text with another prime meridian answers like pyproj" do
       e = get_in(@prime_meridian, ["crs", unquote(code)])
-      [bx, by] = e["before"]
+      [px, py] = e["pyproj"]
 
       {gx, gy} =
         GeoSeries.from_wkt!(["POINT (#{e["x"]} #{e["y"]})"], crs: e["wkt"])
         |> GeoSeries.to_crs("EPSG:4326")
         |> xy()
 
-      assert_in_delta gx, bx, 1.0e-9
-      assert_in_delta gy, by, 1.0e-9
+      assert_in_delta gx, px, 1.0e-6
+      assert_in_delta gy, py, 1.0e-6
     end
+  end
+
+  for code <- ["4805", "4806"] do
+    test "EPSG:#{code} as geographic ESRI text is refused" do
+      e = get_in(@prime_meridian, ["crs", unquote(code)])
+
+      assert_raise ArgumentError, ~r/unsupported WKT CRS: .*prime meridian/, fn ->
+        GeoSeries.from_wkt!(["POINT (#{e["x"]} #{e["y"]})"], crs: e["wkt"])
+        |> GeoSeries.to_crs("EPSG:4326")
+      end
+    end
+  end
+
+  test "ESRI text with another prime meridian whose datum PROJ does not shift keeps its result" do
+    e = get_in(@prime_meridian, ["crs", "4901"])
+    [bx, by] = e["before"]
+
+    {gx, gy} =
+      GeoSeries.from_wkt!(["POINT (#{e["x"]} #{e["y"]})"], crs: e["wkt"])
+      |> GeoSeries.to_crs("EPSG:4326")
+      |> xy()
+
+    assert_in_delta gx, bx, 1.0e-9
+    assert_in_delta gy, by, 1.0e-9
   end
 end
