@@ -519,7 +519,7 @@ fn inside(shell: &[C], point: C) -> bool {
 }
 
 /// Polygons from shells and the holes assigned to the smallest shell containing them.
-pub(crate) fn assemble(shells: &[Vec<C>], holes: &[Vec<C>]) -> Vec<Polygon<f64>> {
+fn assemble(shells: &[Vec<C>], holes: &[Vec<C>]) -> Vec<Polygon<f64>> {
     let envelopes: Vec<AABB<[f64; 2]>> = shells.iter().map(|s| ring_envelope(s)).collect();
     let tree = RTree::bulk_load(
         envelopes

@@ -757,19 +757,5 @@ zm_deviations ++
         "invalid_coverage_edges(null_point_empty, gap_width=0.2)",
         "invalid_coverage_edges(null_point_empty, gap_width=1.0)"
       ]
-    },
-    %{
-      reason:
-        "simplify with preserve_topology=false when the Douglas-Peucker result (or the input) is invalid, a self-crossing ring or parts that overlap or touch along an edge: GEOS repairs it with buffer(0), splitting a bowtie into its lobes and dissolving touching parts. GeoFrame returns the Douglas-Peucker rings as they are (it has no GEOS buffer(0)); a valid result, including the removal of collapsed rings, agrees vertex for vertex.",
-      doc: "docs/parity.md#reference-testing",
-      op: "simplify",
-      cases: [
-        "simplify(0.0, preserve_topology=false, collapse):s_cross",
-        "simplify(0.0, preserve_topology=false, collapse):s_touching",
-        "simplify(0.05, preserve_topology=false, collapse):s_cross",
-        "simplify(0.05, preserve_topology=false, collapse):s_touching",
-        "simplify(1.0, preserve_topology=false, collapse):s_cross",
-        "simplify(1.0, preserve_topology=false, collapse):s_touching"
-      ]
     }
   ]

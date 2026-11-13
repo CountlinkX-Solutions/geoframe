@@ -61,7 +61,14 @@ def rough_polygon(rng):
 
 def rough_multipolygon(rng):
     parts = []
-    for _ in range(rng.randint(2, 4)):
+    # Now and then many lattice squares: touching and overlapping parts, many subgraphs.
+    many = rng.random() < 0.2
+    for _ in range(rng.randint(18, 30) if many else rng.randint(2, 4)):
+        if many:
+            x, y = float(rng.randint(0, 12)), float(rng.randint(0, 12))
+            side = float(rng.randint(1, 3))
+            parts.append(ring([(x, y), (x + side, y), (x + side, y + side), (x, y + side)]))
+            continue
         if rng.random() < 0.5:
             parts.append(star(rng, rng.uniform(-4, 4), rng.uniform(-4, 4), rng.randint(6, 30), 2, 7))
         else:
