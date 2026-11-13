@@ -1127,25 +1127,35 @@ defmodule GeoFrame.GeoDataFrame do
   are `nil`. Secondary geometry columns are properties holding GeoJSON geometry maps (GeoPandas
   keeps the shapely objects there, which Elixir has no equivalent of).
 
-  With `opts` it is GeoPandas `to_geo_dict`, whose defaults differ from `__geo_interface__`'s:
-  `show_bbox` is `false` unless given. Options: `:na` - `:null` (default) keeps missing
-  properties as `nil`, `:drop` omits them, `:keep` leaves values as Explorer yields them (`nil`,
-  `:nan`); `:show_bbox` (default `false`); `:drop_id` (default `false`).
+  See `to_geo_dict/2` for the variant with options.
   """
-  @spec to_geo_interface(t(), keyword()) :: map()
-  def to_geo_interface(%__MODULE__{data: data, geometry: geometry} = gdf, opts \\ nil) do
+  @spec to_geo_interface(t()) :: map()
+  def to_geo_interface(%__MODULE__{} = gdf) do
+    GeoFrame.Features.build(
+      gdf.geometry,
+      gdf.data,
+      GeoFrame.Features.options!([], true, :map),
+      :map,
+      gdf.secondary_geometries
+    )
+  end
+
+  @doc """
+  The frame as a GeoJSON-like map, like GeoPandas `GeoDataFrame.to_geo_dict`. It is
+  `to_geo_interface/1` with options, and its defaults differ: no bboxes.
+
+  Options: `:na` - `:null` (default) keeps missing properties as `nil`, `:drop` omits them,
+  `:keep` leaves values as Explorer yields them (`nil`, `:nan`); `:show_bbox` (default `false`);
+  `:drop_id` (default `false`). Unknown options raise `ArgumentError`.
+  """
+  @spec to_geo_dict(t(), keyword()) :: map()
+  def to_geo_dict(%__MODULE__{} = gdf, opts \\ []) do
     opts =
-      case opts do
-        nil ->
-          GeoFrame.Features.options!([], true, :map)
+      opts
+      |> Keyword.validate!(na: :null, show_bbox: false, drop_id: false)
+      |> GeoFrame.Features.options!(false, :map)
 
-        opts ->
-          opts
-          |> Keyword.validate!(na: :null, show_bbox: false, drop_id: false)
-          |> GeoFrame.Features.options!(false, :map)
-      end
-
-    GeoFrame.Features.build(geometry, data, opts, :map, gdf.secondary_geometries)
+    GeoFrame.Features.build(gdf.geometry, gdf.data, opts, :map, gdf.secondary_geometries)
   end
 
   # -- helpers --------------------------------------------------------------------------
