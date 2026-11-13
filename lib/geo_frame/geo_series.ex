@@ -2883,6 +2883,51 @@ defmodule GeoFrame.GeoSeries do
     ref |> Native.union_groups(group_ids, n_groups) |> wrap() |> unwrap!()
   end
 
+  @group_aggs [
+    :union_all,
+    :intersection_all,
+    :collect,
+    :envelope,
+    :convex_hull,
+    :centroid,
+    :first,
+    :last
+  ]
+
+  @doc """
+  Grouped geometry aggregation: `group_ids` assigns each row to a group in `0..n_groups-1`
+  and the result has one row per group (same CRS), computed in one NIF call.
+
+  `aggregation` is one of `#{inspect(@group_aggs)}`. Each group gets what the whole-series
+  method gives for its rows alone: `union_all/1`, `intersection_all/1`, `collect/2` (without
+  `multi`), the `envelope/1` of the group's collection (its total bounds box), the
+  `convex_hull/1` of all its geometries, the `centroid/1` of its `union_all/1`, or its first /
+  last non-null geometry (`nil` for a group without any). Raises `ArgumentError` for an unknown
+  aggregation, a `group_ids` of the wrong length or an out-of-range id.
+  """
+  @spec aggregate_groups(t(), [non_neg_integer()], non_neg_integer(), atom()) :: t()
+  def aggregate_groups(%__MODULE__{ref: ref}, group_ids, n_groups, aggregation)
+      when is_list(group_ids) and is_integer(n_groups) and n_groups >= 0 do
+    unless aggregation in @group_aggs do
+      raise ArgumentError,
+            "unknown geometry aggregation #{inspect(aggregation)}; use one of #{inspect(@group_aggs)}"
+    end
+
+    if n_groups > Kernel.length(group_ids) do
+      raise ArgumentError,
+            "n_groups (#{n_groups}) cannot exceed the number of group ids (#{Kernel.length(group_ids)})"
+    end
+
+    if Enum.any?(group_ids, &(is_integer(&1) and &1 >= n_groups)) do
+      raise ArgumentError, "group id out of range for #{n_groups} groups"
+    end
+
+    ref
+    |> Native.aggregate_groups(group_ids, n_groups, Atom.to_string(aggregation))
+    |> wrap()
+    |> unwrap!()
+  end
+
   @doc """
   The intersection of all non-null geometries as a **one-row** GeoSeries (GeoPandas
   `intersection_all`, which returns a scalar).

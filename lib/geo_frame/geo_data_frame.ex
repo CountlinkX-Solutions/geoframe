@@ -447,7 +447,7 @@ defmodule GeoFrame.GeoDataFrame do
   @doc "Selects rows by zero-based position; repeats and reordering are allowed."
   @spec take(t(), [non_neg_integer()]) :: t()
   def take(%__MODULE__{data: data, geometry: geometry} = gdf, indices) when is_list(indices) do
-    data = if has_columns?(data), do: DataFrame.slice(data, indices), else: data
+    data = if has_columns?(data), do: slice_rows(data, indices), else: data
 
     %{
       gdf
@@ -455,6 +455,18 @@ defmodule GeoFrame.GeoDataFrame do
         geometry: GeoSeries.take(geometry, indices),
         secondary_geometries: take_secondary(gdf, &GeoSeries.take(&1, indices))
     }
+  end
+
+  # Explorer slices grouped frames per group; positions here are global, so slice ungrouped
+  # and restore the groups.
+  defp slice_rows(data, indices) do
+    case DataFrame.groups(data) do
+      [] ->
+        DataFrame.slice(data, indices)
+
+      groups ->
+        data |> DataFrame.ungroup() |> DataFrame.slice(indices) |> DataFrame.group_by(groups)
+    end
   end
 
   defp take_secondary(%__MODULE__{secondary_geometries: secondary}, fun),
@@ -796,6 +808,22 @@ defmodule GeoFrame.GeoDataFrame do
   @doc "Group-wise union with attribute aggregation; see `GeoFrame.Dissolve.dissolve/2`."
   @spec dissolve(t(), keyword()) :: t()
   defdelegate dissolve(gdf, opts \\ []), to: GeoFrame.Dissolve
+
+  @doc "Marks the groups of a frame; see `GeoFrame.GroupBy`."
+  @spec group_by(t(), term()) :: t()
+  defdelegate group_by(gdf, columns), to: GeoFrame.GroupBy
+
+  @doc "Removes the groups (all, or the named ones); see `GeoFrame.GroupBy`."
+  @spec ungroup(t(), term()) :: t()
+  defdelegate ungroup(gdf, columns \\ ..), to: GeoFrame.GroupBy
+
+  @doc "The names of the grouping columns; see `GeoFrame.GroupBy`."
+  @spec groups(t()) :: [String.t()]
+  defdelegate groups(gdf), to: GeoFrame.GroupBy
+
+  @doc "Aggregates every group into one row, attributes and geometry; see `GeoFrame.GroupBy`."
+  @spec summarise(t(), keyword() | map(), keyword()) :: t()
+  defdelegate summarise(gdf, aggregations \\ [], opts \\ []), to: GeoFrame.GroupBy
 
   # -- attribute operations -------------------------------------------------------------
 

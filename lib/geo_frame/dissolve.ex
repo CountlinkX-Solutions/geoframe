@@ -87,7 +87,10 @@ defmodule GeoFrame.Dissolve do
       {gids, groups} = group_ids(gdf, by, sort?)
       n_groups = length(groups)
       geometry = GeoSeries.union_groups(gdf.geometry, gids, n_groups)
-      data = aggregate(gdf.data, by, aggs, gids)
+
+      data =
+        aggregate(gdf.data, by, Enum.map(aggs, fn {name, func} -> {name, func, name} end), gids)
+
       {data, secondary} = aggregate_geometries(gdf, geo_aggs, data, gids, n_groups)
       out = %{gdf | data: data, geometry: geometry, secondary_geometries: secondary}
 
@@ -329,9 +332,10 @@ defmodule GeoFrame.Dissolve do
     by |> Enum.map(&(gdf.data |> DataFrame.pull(&1) |> Series.to_list())) |> Enum.zip_with(& &1)
   end
 
-  defp drop_null_keys(gdf, []), do: gdf
+  @doc false
+  def drop_null_keys(gdf, []), do: gdf
 
-  defp drop_null_keys(gdf, by) do
+  def drop_null_keys(gdf, by) do
     kept =
       gdf
       |> key_rows(by)
@@ -343,7 +347,8 @@ defmodule GeoFrame.Dissolve do
   end
 
   # Dense id per row, numbered in result order, and the groups (keys) in that order.
-  defp group_ids(gdf, by, sort?) do
+  @doc false
+  def group_ids(gdf, by, sort?) do
     keys = key_rows(gdf, by)
     groups = Enum.uniq(keys)
     groups = if sort?, do: Enum.sort(groups, &(compare_keys(&1, &2) != :gt)), else: groups
@@ -373,8 +378,11 @@ defmodule GeoFrame.Dissolve do
 
   defp term_order(a, b), do: if(a < b, do: :lt, else: :gt)
 
-  defp aggregate(data, by, aggs, gids) do
-    columns = Enum.map(by, &{&1, :first}) ++ aggs
+  # `aggs` are `{output name, function, source column}`; the result has the key columns
+  # followed by the outputs, one row per group id.
+  @doc false
+  def aggregate(data, by, aggs, gids) do
+    columns = Enum.map(by, &{&1, :first, &1}) ++ aggs
     gid_col = free_name(DataFrame.names(data))
 
     if columns == [] do
@@ -385,8 +393,8 @@ defmodule GeoFrame.Dissolve do
       # pandas `first`/`last` return the first/last non-null value of each group, which the
       # lazy group expressions cannot filter for; those columns are aggregated separately
       # over their non-null rows and joined back (a group with only nulls stays null).
-      {skipping, plain} = Enum.split_with(aggs, fn {_, func} -> func in [:first, :last] end)
-      base_columns = Enum.map(by, &{&1, :first}) ++ plain
+      {skipping, plain} = Enum.split_with(aggs, fn {_, func, _} -> func in [:first, :last] end)
+      base_columns = Enum.map(by, &{&1, :first, &1}) ++ plain
 
       base =
         if base_columns == [] do
@@ -396,11 +404,11 @@ defmodule GeoFrame.Dissolve do
         end
 
       skipping
-      |> Enum.reduce(base, fn {name, func}, acc ->
+      |> Enum.reduce(base, fn {out, func, source}, acc ->
         part =
           keyed
-          |> DataFrame.drop_nil([name])
-          |> grouped_summary(gid_col, [{name, func}])
+          |> DataFrame.drop_nil([source])
+          |> grouped_summary(gid_col, [{out, func, source}])
 
         DataFrame.join(acc, part, on: gid_col, how: :left)
       end)
@@ -416,7 +424,7 @@ defmodule GeoFrame.Dissolve do
   end
 
   defp summaries(df, columns) do
-    for {name, func} <- columns, do: {name, apply_func(func, df[name])}
+    for {out, func, source} <- columns, do: {out, apply_func(func, df[source])}
   end
 
   defp free_name(names) do
@@ -433,4 +441,6 @@ defmodule GeoFrame.Dissolve do
   defp apply_func(:min, s), do: Series.min(s)
   defp apply_func(:max, s), do: Series.max(s)
   defp apply_func(:count, s), do: Series.count(s)
+  defp apply_func(:median, s), do: Series.median(s)
+  defp apply_func(:n_distinct, s), do: Series.n_distinct(s)
 end
