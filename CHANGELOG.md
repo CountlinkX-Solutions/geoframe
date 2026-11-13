@@ -138,7 +138,8 @@ Breaking changes.
 ### Documentation
 
 - `docs/parity.md` and the README follow every change above. The reference suite is
-  now 19 118 cases: 18 379 agree with GeoPandas / Shapely and 739 are documented deviations, none unexplained (was 18 134 agree and 730 documented of 18 864 in 0.1.1)..
+  now 19 118 cases: 18 379 agree with GeoPandas / Shapely and 739 are documented deviations,
+  none unexplained (0.1.1: 18 134 agree and 730 documented of 18 864).
 
 ### Internal
 
