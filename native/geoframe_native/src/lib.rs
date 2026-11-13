@@ -537,30 +537,29 @@ fn from_xy(
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn get_coordinates(column: Handle) -> (Vec<u32>, Vec<f64>, Vec<f64>) {
-    column.0.get_coordinates()
+fn get_coordinates(column: Handle) -> (Vec<u32>, Vec<Real>, Vec<Real>) {
+    let (rows, xs, ys) = column.0.get_coordinates();
+    (rows, real_values(xs), real_values(ys))
 }
 
-/// `(row, x, y, z, m)`; an absent ordinate is `None`.
-type CoordinateTable = (
-    Vec<u32>,
-    Vec<f64>,
-    Vec<f64>,
-    Vec<Option<f64>>,
-    Vec<Option<f64>>,
-);
+/// `(row, x, y, z, m)`; an absent ordinate is NaN, and every value crosses as a [`Real`]
+/// (a stored X or Y may be NaN or infinite too).
+type CoordinateTable = (Vec<u32>, Vec<Real>, Vec<Real>, Vec<Real>, Vec<Real>);
+
+fn real_values(values: Vec<f64>) -> Vec<Real> {
+    values.into_iter().map(Real).collect()
+}
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn get_coordinates_zm(column: Handle) -> CoordinateTable {
-    // NaN cannot cross the NIF boundary as a float: an absent ordinate is `nil`.
     let (rows, xs, ys, zs, ms) = column.0.get_coordinates_zm();
-    let present = |values: Vec<f64>| -> Vec<Option<f64>> {
-        values
-            .into_iter()
-            .map(|v| (!v.is_nan()).then_some(v))
-            .collect()
-    };
-    (rows, xs, ys, present(zs), present(ms))
+    (
+        rows,
+        real_values(xs),
+        real_values(ys),
+        real_values(zs),
+        real_values(ms),
+    )
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]

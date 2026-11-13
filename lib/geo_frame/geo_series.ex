@@ -2146,8 +2146,8 @@ defmodule GeoFrame.GeoSeries do
 
     columns =
       [{"x", xs}, {"y", ys}] ++
-        if(opts[:include_z], do: [{"z", nan_for_nil(zs)}], else: []) ++
-        if(opts[:include_m], do: [{"m", nan_for_nil(ms)}], else: [])
+        if(opts[:include_z], do: [{"z", zs}], else: []) ++
+        if(opts[:include_m], do: [{"m", ms}], else: [])
 
     dtypes = Enum.map(columns, fn {name, _values} -> {name, {:f, 64}} end)
 
@@ -2157,8 +2157,6 @@ defmodule GeoFrame.GeoSeries do
       DataFrame.new(columns, dtypes: dtypes)
     end
   end
-
-  defp nan_for_nil(values), do: Enum.map(values, &(&1 || :nan))
 
   @doc """
   Number of parts in each geometry as an s64 series: the members of a multi-part geometry or

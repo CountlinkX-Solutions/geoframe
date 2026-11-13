@@ -8,6 +8,13 @@ change before 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `get_coordinates` returns NaN and infinite ordinates (`:nan`, `:infinity`, `:neg_infinity`)
+  as Shapely does instead of raising `ArgumentError`: an infinite X, Y, Z or M, or a NaN X or Y,
+  could not cross from the NIF
+  ([#161](https://github.com/CountlinkX-Solutions/geoframe/pull/161)).
+
 ## [0.3.1] - 2026-11-13
 
 Like earlier releases, it is distributed through the `v0.3.1` git tag and GitHub release, not
