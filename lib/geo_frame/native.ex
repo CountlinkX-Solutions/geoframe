@@ -10,8 +10,6 @@ defmodule GeoFrame.Native do
   mix_config = Mix.Project.config()
   version = mix_config[:version]
   github_url = mix_config[:package][:links]["GitHub"]
-  # Rustler >= 0.27 needs the mode set per env: debug builds faster in dev and test.
-  mode = if Mix.env() in [:dev, :test], do: :debug, else: :release
 
   use RustlerPrecompiled,
     otp_app: :geoframe,
@@ -31,7 +29,10 @@ defmodule GeoFrame.Native do
     ),
     # No newer NIF API is used, so 2.15 (the Rustler default) is enough.
     nif_versions: ["2.15"],
-    mode: mode,
+    # Always release, as plain `use Rustler` built it before: a debug build of the geometry
+    # code overflows the stack of a dirty scheduler thread on deep recursion (segfault in the
+    # test suite, seed 728805).
+    mode: :release,
     force_build: System.get_env("GEOFRAME_BUILD") in ["1", "true"] or Mix.env() in [:dev, :test]
 
   def from_wkt(_rows, _crs), do: err()
