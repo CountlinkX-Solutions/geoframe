@@ -8,6 +8,15 @@ change before 1.0.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-13
+
+Like earlier releases, it is distributed through the `v0.3.2` git tag and GitHub release, not
+through Hex yet; the release attaches precompiled NIFs for nine targets. A git dependency builds
+the NIF from source (a stable Rust toolchain is required).
+
+A patch release that fixes the two known issues listed with 0.3.1: rows holding an empty member
+point, and `get_coordinates` on non-finite values. No public function changes its signature.
+
 ### Fixed
 
 - `get_coordinates` returns NaN and infinite ordinates (`:nan`, `:infinity`, `:neg_infinity`)
@@ -435,7 +444,8 @@ through Hex. The NIF is compiled on your machine, so you need a stable Rust tool
   `GeoDataFrame.set_crs(frame, "EPSG:2223")`, the same projection in international feet (about
   2 ppm off, fine for maps).
 
-[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.2
 [0.3.1]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.1
 [0.3.0]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.0
 [0.2.0]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.2.0
