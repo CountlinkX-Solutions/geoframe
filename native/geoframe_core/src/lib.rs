@@ -62,6 +62,7 @@ mod validity;
 mod validity_reason;
 mod wkt1_projjson;
 mod wkt2_projjson;
+mod wkt_read;
 mod zm;
 mod zm_bridge;
 mod zm_io;
@@ -194,6 +195,8 @@ mod tests;
 mod unary_tests;
 #[cfg(test)]
 mod validity_tests;
+#[cfg(test)]
+mod wkt_read_tests;
 #[cfg(test)]
 mod zm_io_tests;
 #[cfg(test)]

@@ -113,6 +113,40 @@ defmodule GeoFrame.ZmTest do
     end
   end
 
+  describe "WKT without a Z, M or ZM tag" do
+    # Shapely 2.2 / GEOS 3.14 take the dimension of an untagged geometry from its first
+    # coordinate: POINT (1 2 3) is POINT Z (1 2 3), four ordinates are ZM, never M.
+    test "takes Z or ZM from the first coordinate, as GEOS" do
+      series =
+        s([
+          "POINT (1 2 3)",
+          "LINESTRING (0 0 1, 1 1 2)",
+          "MULTIPOINT ((1 2 3 4), (5 6 7 8))",
+          "POLYGON ((0 0, 1 0, 1 1, 0 0))"
+        ])
+
+      assert list(GeoSeries.has_z(series)) == [true, true, true, false]
+      assert list(GeoSeries.has_m(series)) == [false, false, true, false]
+      assert list(GeoSeries.z(s(["POINT (1 2 3)"]))) == [3.0]
+      assert GeoSeries.to_wkt(s(["POINT (1 2 3 4)"])) == ["POINT ZM(1 2 3 4)"]
+    end
+
+    test "a collection member infers its own dimension" do
+      assert GeoSeries.to_wkt(s(["GEOMETRYCOLLECTION Z (POINT (1 2 3), POINT (4 5 6))"])) ==
+               ["GEOMETRYCOLLECTION Z(POINT Z(1 2 3),POINT Z(4 5 6))"]
+
+      assert_raise ArgumentError, ~r/cannot mix dimensionality/, fn ->
+        s(["GEOMETRYCOLLECTION M (POINT (1 2 3))"])
+      end
+    end
+
+    test "a coordinate count that disagrees with the first one is an error, as in GEOS" do
+      for text <- ["LINESTRING (1 2 3, 4 5)", "LINESTRING (1 2, 4 5 6)", "POINT (1 2 3 4 5)"] do
+        assert {:error, "invalid WKT at row 0" <> _} = GeoSeries.from_wkt([text])
+      end
+    end
+  end
+
   describe "Z/M through constructive operations" do
     test "translate/4 and scale/4 take :zoff and :zfact" do
       series = s(["LINESTRING Z (0 0 1, 1 1 2)", "POINT M (1 2 3)"])
