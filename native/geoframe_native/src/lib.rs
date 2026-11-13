@@ -1465,6 +1465,17 @@ fn open_gpkg_reader(
     .map(new_reader)
 }
 
+/// Opens a GeoJSON file for batched reading (`bbox` is applied feature by feature).
+#[rustler::nif(schedule = "DirtyIo")]
+fn open_geojson_reader(
+    path: String,
+    bbox: Option<(f64, f64, f64, f64)>,
+    batch_size: usize,
+) -> Result<Reader, String> {
+    let bbox = bbox.map(|(a, b, c, d)| [a, b, c, d]);
+    BatchReader::open_geojson(&path, bbox, batch_size).map(new_reader)
+}
+
 type NextBatch<'a> = Option<(Handle, Option<String>, Binary<'a>, Secondary)>;
 
 /// The next batch as `{geometry, geometry_column | nil, attributes_ipc, secondary}`, or `nil`
@@ -1493,6 +1504,20 @@ fn next_batch<'a>(env: Env<'a>, reader: Reader) -> Result<NextBatch<'a>, String>
         ipc,
         secondary,
     )))
+}
+
+/// Drops the first `count` rows the reader would yield, so the next batch starts there
+/// (GeoParquet skips row groups without reading them). Call it before the first `next_batch`.
+#[rustler::nif(schedule = "DirtyIo")]
+fn skip_rows(reader: Reader, count: usize) -> Result<rustler::Atom, String> {
+    let mut guard = reader
+        .0
+        .lock()
+        .map_err(|_| "the reader is poisoned".to_string())?;
+    if let Some(open) = guard.as_mut() {
+        open.skip_rows(count)?;
+    }
+    Ok(ok())
 }
 
 /// Releases the file now; later `next_batch` calls return `nil`. Idempotent.

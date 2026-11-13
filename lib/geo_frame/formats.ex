@@ -222,6 +222,13 @@ defmodule GeoFrame.Formats do
   def read_file(path, opts) do
     {driver, opts} = driver_for(path, opts)
 
+    case Keyword.pop(opts, :rows) do
+      {nil, opts} -> read_whole(driver, path, opts)
+      {rows, opts} -> read_rows(driver, path, rows_window!(rows), opts)
+    end
+  end
+
+  defp read_whole(driver, path, opts) do
     case driver do
       :parquet -> GeoFrame.read_parquet(path, opts)
       :geojson -> read_geojson(path, opts)
@@ -231,6 +238,91 @@ defmodule GeoFrame.Formats do
       :gpkg -> GeoFrame.VectorFiles.read_gpkg(path, opts)
     end
   end
+
+  # -- rows: (a slice of the file) -------------------------------------------------------
+
+  # The most rows one batch holds when reading a window of rows.
+  @rows_batch_cap 65_536
+
+  # `rows:` as `{offset, length}`: a count (the first n rows) or a range of row positions
+  # (`5..14` is rows 5 to 14), like GeoPandas' `rows=int|slice` (stop exclusive there).
+  defp rows_window!(rows) when is_integer(rows) and rows >= 0, do: {0, rows}
+
+  defp rows_window!(%Range{first: first, last: last, step: 1}) when first >= 0,
+    do: {first, max(last - first + 1, 0)}
+
+  defp rows_window!(other) do
+    raise ArgumentError,
+          "rows must be a non-negative integer (the first n rows) or a range first..last of " <>
+            "non-negative row positions with step 1, got: #{inspect(other)}"
+  end
+
+  defp read_rows(driver, path, {offset, length}, opts) do
+    path = to_string(path)
+    batch_size = length |> min(@rows_batch_cap) |> max(1)
+    open = stream_opener(driver, path, opts, batch_size)
+
+    try do
+      frames = collect_rows(open, driver, opts, offset, length)
+      {:ok, rows_frame(frames, driver, path, opts)}
+    rescue
+      error in ArgumentError -> {:error, Exception.message(error)}
+    end
+  end
+
+  # The batches that make up the window; the reader is closed on the way out.
+  defp collect_rows(_open, _driver, _opts, _offset, 0), do: []
+
+  defp collect_rows(open, driver, opts, offset, length) do
+    reader = unwrap_open!(open.())
+
+    try do
+      case Native.skip_rows(reader, offset) do
+        {:ok, _} -> :ok
+        {:error, message} -> raise ArgumentError, message
+      end
+
+      take_rows(reader, driver, opts, length, [])
+    after
+      Native.close_reader(reader)
+    end
+  end
+
+  defp take_rows(_reader, _driver, _opts, 0, frames), do: Enum.reverse(frames)
+
+  defp take_rows(reader, driver, opts, left, frames) do
+    case Native.next_batch(reader) do
+      {:ok, nil} ->
+        Enum.reverse(frames)
+
+      {:ok, batch} ->
+        gdf = unwrap_batch!(batch, driver, opts)
+        gdf = if GeoDataFrame.n_rows(gdf) > left, do: GeoDataFrame.head(gdf, left), else: gdf
+        take_rows(reader, driver, opts, left - GeoDataFrame.n_rows(gdf), [gdf | frames])
+
+      {:error, message} ->
+        raise ArgumentError, message
+    end
+  end
+
+  defp rows_frame([], driver, path, opts), do: empty_rows_frame(driver, path, opts)
+  defp rows_frame([only], _driver, _path, _opts), do: only
+  defp rows_frame(frames, _driver, _path, _opts), do: GeoDataFrame.concat_rows(frames)
+
+  # No row in the window (a count of 0, a window past the end, a bbox that matches nothing):
+  # the file's first row, if any, gives the schema and CRS of an empty frame.
+  defp empty_rows_frame(driver, path, opts) do
+    schema_opts = Keyword.delete(opts, :bbox)
+    open = stream_opener(driver, path, schema_opts, 1)
+
+    case collect_rows(open, driver, schema_opts, 0, 1) do
+      [first] -> GeoDataFrame.head(first, 0)
+      [] -> unwrap_whole!(read_whole(driver, path, schema_opts))
+    end
+  end
+
+  defp unwrap_whole!({:ok, gdf}), do: gdf
+  defp unwrap_whole!({:error, message}), do: raise(ArgumentError, message)
 
   def write_file(%GeoDataFrame{} = gdf, path, opts) do
     {driver, opts} = driver_for(path, opts)
@@ -280,17 +372,9 @@ defmodule GeoFrame.Formats do
   # -- streaming ------------------------------------------------------------------------
 
   @default_batch_size 65_536
-  @streamable [:parquet, :flatgeobuf, :feather, :shapefile, :gpkg]
 
   def stream_file(path, opts) do
     {driver, opts} = driver_for(path, opts)
-
-    unless driver in @streamable do
-      raise ArgumentError,
-            "stream_file/2 does not support the #{inspect(driver)} format yet " <>
-              "(it streams #{Enum.map_join(@streamable, ", ", &inspect/1)}); " <>
-              "use read_file/2 to read the file whole"
-    end
 
     {batch_size, opts} = Keyword.pop(opts, :batch_size, @default_batch_size)
 
@@ -349,11 +433,17 @@ defmodule GeoFrame.Formats do
     fn -> Native.open_gpkg_reader(path, layer, columns, bbox, batch_size) end
   end
 
+  defp stream_opener(:geojson, path, opts, batch_size) do
+    validate_options!(opts, [:geometry_column, :bbox])
+    bbox = opts |> Keyword.get(:bbox) |> normalize_bbox!() |> check_bbox_order!()
+    fn -> Native.open_geojson_reader(path, bbox, batch_size) end
+  end
+
   defp unwrap_open!({:ok, reader}), do: reader
   defp unwrap_open!({:error, message}), do: raise(ArgumentError, message)
 
   defp unwrap_batch!({ref, nil, ipc, _secondary}, driver, opts)
-       when driver in [:flatgeobuf, :shapefile, :gpkg] do
+       when driver in [:flatgeobuf, :shapefile, :gpkg, :geojson] do
     case assemble(ref, ipc, opts) do
       {:ok, gdf} -> gdf
       {:error, message} -> raise ArgumentError, message

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::feather_stream::FeatherStream;
 use crate::flatgeobuf_io::FgbStream;
+use crate::geojson_stream::GeojsonStream;
 use crate::gpkg_stream::GpkgStream;
 use crate::parquet_io::ParquetStream;
 use crate::shapefile_stream::ShapefileStream;
@@ -23,6 +24,32 @@ static OPEN_READERS: AtomicUsize = AtomicUsize::new(0);
 /// How many [`BatchReader`]s are alive in this process.
 pub fn open_batch_readers() -> usize {
     OPEN_READERS.load(Ordering::SeqCst)
+}
+
+/// The most rows read at once when rows are dropped by reading them.
+const SKIP_CHUNK: usize = 65_536;
+
+/// Reads and drops `count` rows from `stream` in chunks (batch sizes changed to match, so no
+/// row past `count` is consumed), then restores its batch size.
+macro_rules! discard_batches {
+    ($stream:expr, $count:expr) => {{
+        let original = $stream.batch_size();
+        let mut left: usize = $count;
+        let mut outcome: Result<(), String> = Ok(());
+        while left > 0 {
+            $stream.set_batch_size(left.min(SKIP_CHUNK));
+            match $stream.next_batch() {
+                Ok(Some(read)) => left -= read.geometry.len(),
+                Ok(None) => break,
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
+            }
+        }
+        $stream.set_batch_size(original);
+        outcome
+    }};
 }
 
 /// One batch of a stream.
@@ -44,6 +71,7 @@ enum Source {
     Feather(Box<FeatherStream>),
     Shapefile(Box<ShapefileStream>),
     GeoPackage(Box<GpkgStream>),
+    GeoJson(Box<GeojsonStream>),
 }
 
 /// An open file read batch by batch.
@@ -118,6 +146,49 @@ impl BatchReader {
         Ok(Self::counted(Source::GeoPackage(Box::new(stream))))
     }
 
+    /// Opens a GeoJSON file (a `FeatureCollection` read feature by feature; a lone `Feature` or
+    /// geometry is a one-row file). `bbox` keeps the features whose geometry bounding box
+    /// intersects it.
+    pub fn open_geojson(
+        path: &str,
+        bbox: Option<[f64; 4]>,
+        batch_size: usize,
+    ) -> Result<Self, String> {
+        let stream = GeojsonStream::open(path, bbox, batch_size)?;
+        Ok(Self::counted(Source::GeoJson(Box::new(stream))))
+    }
+
+    /// Drops the first `count` rows of what the reader yields (after any `bbox`), so the next
+    /// batch starts at row `count`. GeoParquet skips whole row groups and pages without
+    /// reading them (Feather whole record batches, FlatGeobuf unfiltered features, GeoJSON
+    /// features, undecoded); a bbox the format cannot filter itself, Shapefile and GeoPackage
+    /// read past the rows in chunks of at most [`SKIP_CHUNK`]. Past the end of the file the
+    /// reader is simply exhausted. Call it before the first `next_batch`.
+    pub fn skip_rows(&mut self, count: usize) -> Result<(), String> {
+        if count == 0 {
+            return Ok(());
+        }
+        match &mut self.source {
+            Source::GeoParquet(stream) => {
+                if !stream.skip(count)? {
+                    discard_batches!(stream, count)?;
+                }
+            }
+            Source::FlatGeobuf(stream) => {
+                if !stream.skip(count)? {
+                    discard_batches!(stream, count)?;
+                }
+            }
+            Source::Feather(stream) => stream.skip(count)?,
+            Source::GeoJson(stream) => {
+                stream.skip(count)?;
+            }
+            Source::Shapefile(stream) => discard_batches!(stream, count)?,
+            Source::GeoPackage(stream) => discard_batches!(stream, count)?,
+        }
+        Ok(())
+    }
+
     /// The next batch, `None` once the file is exhausted. A batch has `batch_size` rows except
     /// the last one.
     pub fn next_batch(&mut self) -> Result<Option<StreamBatch>, String> {
@@ -141,6 +212,12 @@ impl BatchReader {
                 attributes_ipc: read.attributes_ipc,
             })),
             Source::GeoPackage(stream) => Ok(stream.next_batch()?.map(|read| StreamBatch {
+                geometry: read.geometry,
+                geometry_column: None,
+                secondary_geometries: Vec::new(),
+                attributes_ipc: read.attributes_ipc,
+            })),
+            Source::GeoJson(stream) => Ok(stream.next_batch()?.map(|read| StreamBatch {
                 geometry: read.geometry,
                 geometry_column: None,
                 secondary_geometries: Vec::new(),

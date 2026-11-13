@@ -25,6 +25,7 @@ mod feather_stream;
 mod flatgeobuf_io;
 mod flatgeobuf_nulls;
 mod geojson_io;
+mod geojson_stream;
 mod gpkg_io;
 mod gpkg_stream;
 mod line_merge;
@@ -123,6 +124,8 @@ mod deck_tests;
 mod ewkb_tests;
 #[cfg(test)]
 mod flatgeobuf_tests;
+#[cfg(test)]
+mod geojson_stream_tests;
 #[cfg(test)]
 mod geojson_tests;
 #[cfg(test)]

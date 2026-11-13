@@ -602,6 +602,23 @@ defmodule GeoFrame do
   selects a GeoPackage layer); unknown options raise `ArgumentError`.
   An unrecognised extension or driver raises `ArgumentError`; read failures are
   `{:error, message}`.
+
+  `rows:` reads only some rows, as GeoPandas' `read_file(rows=...)` does: an integer `n` is
+  the first `n` rows, a range `first..last` is the rows at positions `first` to `last`
+  (inclusive: `5..14` is ten rows, GeoPandas' `slice(5, 15)`). The result equals
+  `read_file(path)` followed by `GeoDataFrame.slice/3` (a window past the end is cut short, an
+  empty window gives an empty frame with the file's columns and CRS), but the file is read
+  through the same incremental readers as `stream_file/2`, so the first rows of a huge file
+  are cheap and memory is bounded by the window: GeoParquet skips whole row groups (and
+  pages) before the window and stops after it, FlatGeobuf skips features without decoding
+  them, Feather skips whole Arrow record batches, and the other formats read past the rows
+  in bounded chunks. With `bbox:` (where the format accepts it) the window counts the rows
+  that pass the filter. A GeoJSON file is still scanned once whole to infer the column
+  types, so `rows:` saves its decoding and memory, not that pass. Unlike pyogrio, `rows: 0`
+  is an empty frame (pyogrio treats a zero limit as no limit); negative values, a range with
+  a step other than 1 or a decreasing range raise `ArgumentError` (GeoPandas raises
+  `ValueError` for a negative start or a step). `rows:` accepts the options `stream_file/2`
+  accepts for the format.
   """
   @spec read_file(Path.t(), keyword()) :: {:ok, GeoDataFrame.t()} | {:error, String.t()}
   def read_file(path, opts \\ []), do: Formats.read_file(path, opts)
@@ -617,8 +634,8 @@ defmodule GeoFrame do
 
   The format comes from the extension or `driver:`, as in `read_file/2`. Streaming is
   available for GeoParquet (`.parquet`, `.geoparquet`), FlatGeobuf (`.fgb`), Arrow IPC /
-  Feather (`.feather`, `.arrow`), Shapefile (`.shp`, `.zip`) and GeoPackage (`.gpkg`); GeoJSON
-  raises `ArgumentError` (use `read_file/2`).
+  Feather (`.feather`, `.arrow`), Shapefile (`.shp`, `.zip`), GeoPackage (`.gpkg`) and
+  GeoJSON (`.geojson`, `.json`).
 
   Every batch holds `:batch_size` rows (the last one fewer), whatever the row group or record
   batch size of the file, and has the CRS, the attribute dtypes and the geometry column name
@@ -633,17 +650,17 @@ defmodule GeoFrame do
       decodes the other columns; Feather decodes only these from each record batch; a
       GeoPackage selects only these columns.
     * `:bbox` - `{minx, miny, maxx, maxy}` in the file's CRS: only rows whose geometry
-      bounding box intersects it (GeoParquet, FlatGeobuf, Shapefile, GeoPackage). GeoParquet
+      bounding box intersects it (GeoParquet, FlatGeobuf, Shapefile, GeoPackage, GeoJSON). GeoParquet
       has the semantics of `read_parquet/2` (row groups are skipped from a covering `bbox`
       column or native encoding), FlatGeobuf those of `read_flatgeobuf/2` (the packed R-tree
       index, an error without one). A GeoPackage layer uses its R-tree when it has one and
       checks every row's exact bounds either way. A Shapefile has no index, so each record is
-      filtered after it is decoded. Rows without a geometry never match.
+      filtered after it is decoded, and so is each GeoJSON feature. Rows without a geometry never match.
     * `:layer` - GeoPackage: the layer, as in `read_gpkg/2`.
     * `:encoding` - Shapefile: the `.dbf` encoding, as in `read_shapefile/2`.
     * `:geometry` - Feather: the geometry column, as in `read_feather/2`.
     * `:driver` and `:geometry_column` - as in `read_file/2` (`:geometry_column` is a
-      FlatGeobuf option).
+      FlatGeobuf and GeoJSON option).
 
   Memory is bounded by the batch for GeoParquet (one row group at a time), FlatGeobuf, Shapefile
   (the `.shp` record by record and the `.dbf` in matching chunks) and GeoPackage (pages of
@@ -653,6 +670,17 @@ defmodule GeoFrame do
   shapefile is extracted to a scratch directory in the system temp dir (the `.shp` and `.dbf`
   members, each capped as in `read_file/2`), which is removed when the stream ends, halts or
   fails.
+
+  A GeoJSON `FeatureCollection` is parsed feature by feature, so memory is one batch of
+  features. `read_file/2` infers each property's type over every feature, which a stream
+  cannot see ahead, so the file is read **twice**: a first pass (O(n) time, O(1) memory)
+  collects the property names, their types and whether every feature has an `id`, and the
+  second pass produces the batches. Every batch then has the columns and dtypes `read_file/2`
+  gives, even when a late feature decides a type or is the first to have a property (earlier
+  batches hold nulls); a malformed file raises when the stream is enumerated, before the
+  first batch. `:bbox` does not narrow the first pass. A lone `Feature` or bare geometry
+  file is one row and is read whole. Newline-delimited GeoJSON (GeoJSONSeq) is not
+  supported by `read_file/2` either.
 
   The file is opened when the stream is first enumerated (each enumeration reads it again)
   and closed when the stream finishes, halts early (`Enum.take/2`) or its consumer raises;

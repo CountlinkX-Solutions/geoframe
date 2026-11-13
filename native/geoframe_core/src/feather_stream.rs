@@ -65,6 +65,32 @@ impl FeatherStream {
         })
     }
 
+    /// Drops the next `count` rows, whole record batches without decoding them.
+    pub(crate) fn skip(&mut self, count: usize) -> Result<(), String> {
+        let mut left = count;
+        while left > 0 {
+            let batch = match self.pending.pop_front() {
+                Some(batch) => {
+                    self.pending_rows -= batch.num_rows();
+                    batch
+                }
+                None => match self.reader.next() {
+                    None => break,
+                    Some(batch) => batch.map_err(|e| format!("cannot read {}: {e}", self.path))?,
+                },
+            };
+            if batch.num_rows() <= left {
+                left -= batch.num_rows();
+            } else {
+                let rest = batch.slice(left, batch.num_rows() - left);
+                self.pending_rows += rest.num_rows();
+                self.pending.push_front(rest);
+                left = 0;
+            }
+        }
+        Ok(())
+    }
+
     /// The next `batch_size` rows (fewer at the end), `None` when none are left.
     pub(crate) fn next_batch(&mut self) -> Result<Option<TableRead>, String> {
         while self.pending_rows < self.batch_size {

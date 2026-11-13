@@ -396,6 +396,37 @@ impl FgbStream {
         })
     }
 
+    /// Drops the next `count` features without decoding them. Returns `false` (and drops
+    /// nothing) when a bbox query has to decode each feature to know whether it counts.
+    pub(crate) fn skip(&mut self, count: usize) -> Result<bool, String> {
+        if self.source.filtered {
+            return Ok(false);
+        }
+        let Some(features) = self.features.as_mut() else {
+            return Ok(true);
+        };
+        let path = &self.source.path;
+        for _ in 0..count {
+            let more = features
+                .next()
+                .map_err(|e| format!("cannot read {path}: {e}"))?
+                .is_some();
+            if !more {
+                break;
+            }
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    /// Changes the rows per batch (used to read past rows in exact amounts).
+    pub(crate) fn set_batch_size(&mut self, batch_size: usize) {
+        self.batch_size = batch_size;
+    }
+
     /// The next `batch_size` features (fewer at the end), `None` when none are left.
     pub(crate) fn next_batch(&mut self) -> Result<Option<VectorRead>, String> {
         catch_unwind(AssertUnwindSafe(|| self.next()))

@@ -772,3 +772,127 @@ fn gpkg_empty_layer_errors_and_counting() {
     assert!(BatchReader::open_gpkg(&junk, None, None, None, 2).is_err());
     assert_eq!(open_batch_readers(), before);
 }
+
+// -- skip_rows ----------------------------------------------------------------------------
+
+/// Skipping `k` rows then draining gives the rows of a plain drain from `k` on, in batches of
+/// `batch` rows (the last one shorter), for every `k` up to past the end.
+fn check_skip(open: impl Fn() -> BatchReader, batch: usize) {
+    let whole = all_wkt(&drain(open()));
+    let total = whole.len();
+    for k in [0, 1, 3, 5, 7, total.saturating_sub(1), total, total + 5] {
+        let mut reader = open();
+        reader.skip_rows(k).unwrap();
+        let batches = drain(reader);
+        assert_eq!(
+            all_wkt(&batches),
+            whole[k.min(total)..].to_vec(),
+            "rows after skipping {k}"
+        );
+        let sizes = sizes(&batches);
+        if let Some((last, full)) = sizes.split_last() {
+            assert!(full.iter().all(|s| *s == batch), "batch sizes {sizes:?}");
+            assert!(*last >= 1 && *last <= batch, "batch sizes {sizes:?}");
+        }
+    }
+}
+
+#[test]
+fn parquet_skip_rows_skips_row_groups() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    for covering in [false, true] {
+        let file = parquet_file(&dir, 23, 4, covering);
+        check_skip(
+            || BatchReader::open_geoparquet(&file, None, None, 3).unwrap(),
+            3,
+        );
+        // With a bbox (pushed down with a covering column, else filtered after decoding),
+        // the rows are counted after the filter.
+        check_skip(
+            || BatchReader::open_geoparquet(&file, None, Some([2.0, 0.0, 17.0, 100.0]), 3).unwrap(),
+            3,
+        );
+    }
+}
+
+#[test]
+fn flatgeobuf_skip_rows() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = fgb_file(&dir, 23, true);
+    check_skip(|| BatchReader::open_flatgeobuf(&file, None, 4).unwrap(), 4);
+    check_skip(
+        || BatchReader::open_flatgeobuf(&file, Some([2.0, 0.0, 17.0, 100.0]), 4).unwrap(),
+        4,
+    );
+}
+
+#[test]
+fn feather_skip_rows_across_record_batches() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = feather_file(&dir, 23, Some(5));
+    check_skip(
+        || BatchReader::open_feather(&file, None, None, 4).unwrap(),
+        4,
+    );
+}
+
+#[test]
+fn shapefile_skip_rows() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = shp_file(&dir, "s.shp", 23);
+    check_skip(
+        || BatchReader::open_shapefile(&file, None, None, 4).unwrap(),
+        4,
+    );
+    check_skip(
+        || BatchReader::open_shapefile(&file, None, Some([2.0, 0.0, 17.0, 100.0]), 4).unwrap(),
+        4,
+    );
+}
+
+#[test]
+fn gpkg_skip_rows() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = gpkg_file(&dir, 23, "pts", true);
+    check_skip(
+        || BatchReader::open_gpkg(&file, None, None, None, 4).unwrap(),
+        4,
+    );
+    check_skip(
+        || BatchReader::open_gpkg(&file, None, None, Some([2.0, 0.0, 17.0, 100.0]), 4).unwrap(),
+        4,
+    );
+}
+
+#[test]
+fn geojson_skip_rows() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let features: Vec<String> = (0..23)
+        .map(|i| {
+            format!(
+                r#"{{"type":"Feature","properties":{{"n":{i}}},"geometry":{{"type":"Point","coordinates":[{i},{}]}}}}"#,
+                i * 2
+            )
+        })
+        .collect();
+    let file = path(&dir, "s.geojson");
+    std::fs::write(
+        &file,
+        format!(
+            r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+            features.join(",")
+        ),
+    )
+    .unwrap();
+    check_skip(|| BatchReader::open_geojson(&file, None, 4).unwrap(), 4);
+    check_skip(
+        || BatchReader::open_geojson(&file, Some([2.0, 0.0, 17.0, 100.0]), 4).unwrap(),
+        4,
+    );
+}
