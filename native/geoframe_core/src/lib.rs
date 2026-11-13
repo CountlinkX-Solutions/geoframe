@@ -26,6 +26,7 @@ mod ewkb;
 mod feather_stream;
 mod flatgeobuf_io;
 mod flatgeobuf_nulls;
+mod geo_convert;
 mod geojson_io;
 mod geojson_stream;
 mod gpkg_io;

@@ -37,13 +37,13 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use crate::geo_convert::to_geo as geometry_to_geo;
 use geo::algorithm::kernels::{Kernel, Orientation, RobustKernel};
 use geo::line_intersection::{line_intersection, LineIntersection};
 use geo::{
     BooleanOps, Coord, CoordsIter, Geometry, GeometryCollection, Line, LineString, MakeValid,
     MapCoords, MultiLineString, MultiPoint, MultiPolygon, Point, Polygon, Validation,
 };
-use geoarrow_expr_geo::util::to_geo::geometry_to_geo;
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{RTree, AABB};
 

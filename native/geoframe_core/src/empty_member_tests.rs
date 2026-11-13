@@ -156,3 +156,128 @@ fn an_empty_member_line_or_ring_is_written_as_empty_as_geos_does() {
         Ok("MULTILINESTRING Z((0 0 1,1 1 2),EMPTY)")
     );
 }
+
+// -- computations and structure (Shapely 2.2 values) --------------------------------------
+
+fn column(rows: &[&str]) -> GeoColumn {
+    let rows: Vec<Option<&str>> = rows.iter().map(|r| Some(*r)).collect();
+    GeoColumn::from_wkt(&rows, None).unwrap()
+}
+
+const ROWS: [&str; 6] = [
+    "MULTIPOINT (EMPTY, (1 1))",
+    "MULTIPOINT (EMPTY)",
+    "MULTIPOINT ((1 1), EMPTY, (2 2))",
+    "GEOMETRYCOLLECTION (POINT EMPTY, POINT (1 2))",
+    // A one-member collection is stored as its member (documented deviation 2), so the
+    // all-empty collection has two members here.
+    "GEOMETRYCOLLECTION (POINT EMPTY, POINT EMPTY)",
+    "GEOMETRYCOLLECTION (POINT EMPTY, LINESTRING (0 0, 1 1))",
+];
+
+#[test]
+fn an_empty_member_point_takes_no_part_in_computations() {
+    let c = column(&ROWS);
+    let some = |v: Vec<bool>| v.into_iter().map(Some).collect::<Vec<_>>();
+    assert_eq!(
+        c.is_empty_rows(),
+        some(vec![false, true, false, false, true, false])
+    );
+    assert_eq!(c.count_coordinates(), [1, 0, 2, 1, 0, 2].map(Some).to_vec());
+    assert_eq!(
+        c.bounds(),
+        vec![
+            Some([1.0, 1.0, 1.0, 1.0]),
+            None,
+            Some([1.0, 1.0, 2.0, 2.0]),
+            Some([1.0, 2.0, 1.0, 2.0]),
+            None,
+            Some([0.0, 0.0, 1.0, 1.0]),
+        ]
+    );
+    assert_eq!(c.area(), [0.0; 6].map(Some).to_vec());
+    let length = c.length();
+    assert_eq!(length[..5], [0.0; 5].map(Some));
+    assert!((length[5].unwrap() - 2f64.sqrt()).abs() < 1e-12);
+    assert_eq!(c.is_valid(), [true; 6].map(Some).to_vec());
+    // GEOS calls no collection simple.
+    assert_eq!(
+        c.is_simple(),
+        some(vec![true, true, true, false, false, false])
+    );
+    // The centroid of an empty geometry is null here (documented null/empty class), where
+    // GEOS gives POINT EMPTY.
+    assert_eq!(
+        c.centroid().unwrap().to_wkt().unwrap(),
+        vec![
+            Some("POINT(1 1)".to_string()),
+            None,
+            Some("POINT(1.5 1.5)".to_string()),
+            Some("POINT(1 2)".to_string()),
+            None,
+            Some("POINT(0.5 0.5)".to_string()),
+        ]
+    );
+    let origin = column(&["POINT (0 0)"; 6]);
+    let d = c.distance(&origin).unwrap();
+    assert!((d[0].unwrap() - 2f64.sqrt()).abs() < 1e-12);
+    assert!((d[3].unwrap() - 5f64.sqrt()).abs() < 1e-12);
+    assert_eq!(d[5], Some(0.0));
+}
+
+#[test]
+fn an_empty_member_point_is_still_a_member() {
+    let c = column(&ROWS);
+    assert_eq!(c.count_geometries(), [2, 1, 3, 2, 2, 2].map(Some).to_vec());
+    let first = c.get_geometry(0).unwrap().to_wkt().unwrap();
+    assert_eq!(
+        first,
+        [
+            "POINT EMPTY",
+            "POINT EMPTY",
+            "POINT(1 1)",
+            "POINT EMPTY",
+            "POINT EMPTY",
+            "POINT EMPTY"
+        ]
+        .map(|s| Some(s.to_string()))
+        .to_vec()
+    );
+    let last = c.get_geometry(-1).unwrap().to_wkt().unwrap();
+    assert_eq!(
+        last,
+        [
+            "POINT(1 1)",
+            "POINT EMPTY",
+            "POINT(2 2)",
+            "POINT(1 2)",
+            "POINT EMPTY",
+            "LINESTRING(0 0,1 1)"
+        ]
+        .map(|s| Some(s.to_string()))
+        .to_vec()
+    );
+    let (parts, source) = column(&[ROWS[0], ROWS[2]]).explode().unwrap();
+    assert_eq!(
+        parts.to_wkt().unwrap(),
+        [
+            "POINT EMPTY",
+            "POINT(1 1)",
+            "POINT(1 1)",
+            "POINT EMPTY",
+            "POINT(2 2)"
+        ]
+        .map(|s| Some(s.to_string()))
+        .to_vec()
+    );
+    assert_eq!(source, vec![0, 0, 1, 1, 1]);
+    let z = column(&["MULTIPOINT Z (EMPTY, (1 1 1))"]);
+    assert_eq!(
+        z.get_geometry(0).unwrap().to_wkt().unwrap(),
+        vec![Some("POINT Z EMPTY".to_string())]
+    );
+    assert_eq!(
+        z.get_geometry(1).unwrap().to_wkt().unwrap(),
+        vec![Some("POINT Z(1 1 1)".to_string())]
+    );
+}

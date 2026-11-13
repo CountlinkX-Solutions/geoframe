@@ -19,6 +19,14 @@ change before 1.0.
   NIF panic, and an empty member line of a `MULTILINESTRING` or an empty ring of a `POLYGON` was
   written as `()`, which no reader accepts. `from_wkt` now also reads `MULTIPOINT (EMPTY, ...)`
   ([#162](https://github.com/CountlinkX-Solutions/geoframe/pull/162)).
+- A `MULTIPOINT` or collection with an empty member point (as Shapely writes
+  `MULTIPOINT (EMPTY, (1 1))` to WKB) is no longer treated as missing. As in GEOS, the member
+  takes no part in computations (`is_empty` is false, and `bounds`, `centroid`, the measures,
+  predicates and constructive functions see the other members) but is still a member
+  (`count_geometries` counts it, `get_geometry` and `explode` return it as `POINT EMPTY`, and the
+  affine functions keep it). Before, `is_empty` was true and every measure null, and a
+  GeoPackage written from such a row read back as null. Checked on 1 200 random rows against
+  Shapely 2.2 ([#163](https://github.com/CountlinkX-Solutions/geoframe/pull/163)).
 
 ## [0.3.1] - 2026-11-13
 
