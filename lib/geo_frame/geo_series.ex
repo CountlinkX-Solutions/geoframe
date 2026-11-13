@@ -1618,11 +1618,13 @@ defmodule GeoFrame.GeoSeries do
   end
 
   @doc """
-  Discrete Fréchet distance between each pair of lines (the shortest leash for two walkers
-  that never turn back), computed over vertices. Only `LineString` rows have one: every other
-  type is `nil`, as are null and empty rows.
+  Discrete Fréchet distance between each pair of geometries (the shortest leash for two
+  walkers that never turn back), as GEOS computes it: over the flat sequence of every vertex of
+  each geometry, all parts and rings in order, whatever its type. Null and empty rows give
+  `nil`.
 
-  Options: `:densify` as for `hausdorff_distance/3`. Pairing and CRS rules are those of
+  Options: `:densify` as for `hausdorff_distance/3`, except that a geometry made of points only
+  is not densified (GEOS). Pairing and CRS rules are those of
   `intersects/2`.
   """
   @spec frechet_distance(t(), other(), keyword()) :: Series.t()
@@ -2313,9 +2315,10 @@ defmodule GeoFrame.GeoSeries do
   A string series saying why each geometry is invalid, or `"Valid Geometry"` (Shapely's text)
   for valid ones; null rows give `nil`.
 
-  Only the first problem is reported, in the wording of the `geo` crate (for example
-  "interior ring at index 0 is not contained within the polygon's exterior"), not GEOS'
-  `"Self-intersection[x y]"`.
+  Only the first problem is reported, in GEOS' words and check order, as `"<reason>[<x> <y>]"`
+  (for example `"Self-intersection[2 2]"`, `"Hole lies outside shell[20 20]"`). When a geometry
+  has several errors of one class, the coordinate may be another one than GEOS reports; a hole
+  that disconnects the interior is not detected (see `docs/parity.md`).
   """
   @spec is_valid_reason(t()) :: Series.t()
   # GeoPandas-compatible name, see is_valid/1.
