@@ -366,6 +366,77 @@ defmodule GeoFrame.ParityITest do
     end
   end
 
+  # GeoPandas 1.2: g = GeoDataFrame({"a": [1, None], "geometry": [Point(0, 0), Point(1, 1)]})
+  #   g.to_geo_dict()  -> ids, no bbox; g.to_geo_dict(na="drop", show_bbox=True, drop_id=True)
+  #   -> no ids, bboxes, the missing "a" dropped; g.to_geo_dict(na="keep") keeps NaN.
+  describe "to_geo_interface/2" do
+    defp options_frame do
+      data = DataFrame.new(a: Series.from_list([1.0, nil]))
+      GeoDataFrame.new(data, s(["POINT (0 0)", "POINT (1 1)"], crs: "EPSG:4326"))
+    end
+
+    test "defaults are those of to_geo_dict: ids, null kept, no bbox" do
+      geo = GeoDataFrame.to_geo_interface(options_frame(), [])
+      refute Map.has_key?(geo, "bbox")
+
+      assert [
+               %{"id" => "0", "properties" => %{"a" => 1.0}} = first,
+               %{"id" => "1", "properties" => %{"a" => nil}}
+             ] = geo["features"]
+
+      refute Map.has_key?(first, "bbox")
+    end
+
+    test "na: :drop, show_bbox and drop_id" do
+      geo =
+        GeoDataFrame.to_geo_interface(options_frame(), na: :drop, show_bbox: true, drop_id: true)
+
+      assert geo["bbox"] == [0.0, 0.0, 1.0, 1.0]
+
+      assert [
+               %{"properties" => %{"a" => 1.0}, "bbox" => [+0.0, +0.0, +0.0, +0.0]} = first,
+               %{"properties" => props, "bbox" => [1.0, 1.0, 1.0, 1.0]}
+             ] = geo["features"]
+
+      refute Map.has_key?(first, "id")
+      assert props == %{}
+    end
+
+    test "na: :keep keeps NaN as it is" do
+      data = DataFrame.new(a: Series.from_list([1.0, :nan]), b: Series.from_list([1, nil]))
+      gdf = GeoDataFrame.new(data, s(["POINT (0 0)", "POINT (1 1)"]))
+      geo = GeoDataFrame.to_geo_interface(gdf, na: :keep)
+      assert [_, %{"properties" => %{"a" => :nan, "b" => nil}}] = geo["features"]
+    end
+
+    test "the one-argument form keeps the __geo_interface__ defaults" do
+      geo = GeoDataFrame.to_geo_interface(options_frame())
+      assert geo["bbox"] == [0.0, 0.0, 1.0, 1.0]
+      assert [%{"id" => "0", "bbox" => [+0.0, +0.0, +0.0, +0.0]} | _] = geo["features"]
+    end
+
+    test "series: GeoSeries.to_geo_dict defaults show_bbox to true" do
+      series = s(["POINT (1 2)"])
+
+      assert [%{"id" => "0", "bbox" => [1.0, 2.0, 1.0, 2.0]}] =
+               GeoSeries.to_geo_interface(series, [])["features"]
+
+      geo = GeoSeries.to_geo_interface(series, show_bbox: false, drop_id: true)
+      refute Map.has_key?(geo, "bbox")
+      assert [feature] = geo["features"]
+      assert Map.keys(feature) |> Enum.sort() == ["geometry", "properties", "type"]
+    end
+
+    test "invalid options raise" do
+      assert_raise ArgumentError, ~r/na/, fn ->
+        GeoDataFrame.to_geo_interface(options_frame(), na: :bogus)
+      end
+
+      assert_raise ArgumentError, fn -> GeoDataFrame.to_geo_interface(options_frame(), foo: 1) end
+      assert_raise ArgumentError, fn -> GeoSeries.to_geo_interface(s(["POINT (0 0)"]), foo: 1) end
+    end
+  end
+
   describe "GeoFrame.geoparquet_metadata/1" do
     test "decodes the geo metadata", %{tmp_dir: dir} do
       path = Path.join(dir, "m.parquet")

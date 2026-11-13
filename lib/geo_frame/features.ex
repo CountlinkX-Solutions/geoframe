@@ -41,8 +41,8 @@ defmodule GeoFrame.Features do
   end
 
   @doc "Validates the options (`na` included) and fills in the defaults."
-  @spec options!(keyword(), boolean()) :: keyword()
-  def options!(opts, show_bbox_default) do
+  @spec options!(keyword(), boolean(), :json | :map) :: keyword()
+  def options!(opts, show_bbox_default, format \\ :json) do
     opts =
       Keyword.validate!(opts,
         na: :null,
@@ -51,20 +51,21 @@ defmodule GeoFrame.Features do
         to_wgs84: false
       )
 
-    check_na!(opts[:na])
+    check_na!(opts[:na], format)
     Enum.each([:drop_id, :to_wgs84, :show_bbox], &check_boolean!(opts, &1))
     opts
   end
 
-  defp check_na!(na) when na in [:null, :drop], do: :ok
+  defp check_na!(na, _format) when na in [:null, :drop], do: :ok
+  defp check_na!(:keep, :map), do: :ok
 
-  defp check_na!(:keep) do
+  defp check_na!(:keep, :json) do
     raise ArgumentError,
           "na: :keep is not supported because JSON has no NaN; use :null or :drop"
   end
 
-  defp check_na!(other) do
-    raise ArgumentError, "na must be :null or :drop, got: #{inspect(other)}"
+  defp check_na!(other, _format) do
+    raise ArgumentError, "na must be :null, :drop or :keep, got: #{inspect(other)}"
   end
 
   defp check_boolean!(opts, key) do
@@ -112,13 +113,13 @@ defmodule GeoFrame.Features do
 
   defp row_properties(row, names, na, format) do
     names
-    |> Enum.map(&{&1, clean(Map.fetch!(row, &1))})
+    |> Enum.map(&{&1, clean(Map.fetch!(row, &1), na)})
     |> Enum.reject(fn {_, value} -> na == :drop and is_nil(value) end)
     |> object(format)
   end
 
-  defp clean(value) when value in @missing_floats, do: nil
-  defp clean(value), do: value
+  defp clean(value, na) when value in @missing_floats and na != :keep, do: nil
+  defp clean(value, _na), do: value
 
   defp feature(index, geometry, properties, box, drop_id, format) do
     [

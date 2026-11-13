@@ -1082,11 +1082,27 @@ defmodule GeoFrame.GeoDataFrame do
   @doc """
   The `__geo_interface__` of the frame: a `FeatureCollection` map (string keys) with `id`,
   `properties`, `geometry` and `bbox` per feature, and the collection `bbox`; missing values
-  are `nil`. Secondary geometry columns are properties holding GeoJSON geometry maps.
+  are `nil`. Secondary geometry columns are properties holding GeoJSON geometry maps (GeoPandas
+  keeps the shapely objects there, which Elixir has no equivalent of).
+
+  With `opts` it is GeoPandas `to_geo_dict`, whose defaults differ from `__geo_interface__`'s:
+  `show_bbox` is `false` unless given. Options: `:na` - `:null` (default) keeps missing
+  properties as `nil`, `:drop` omits them, `:keep` leaves values as Explorer yields them (`nil`,
+  `:nan`); `:show_bbox` (default `false`); `:drop_id` (default `false`).
   """
-  @spec to_geo_interface(t()) :: map()
-  def to_geo_interface(%__MODULE__{data: data, geometry: geometry} = gdf) do
-    opts = GeoFrame.Features.options!([], true)
+  @spec to_geo_interface(t(), keyword()) :: map()
+  def to_geo_interface(%__MODULE__{data: data, geometry: geometry} = gdf, opts \\ nil) do
+    opts =
+      case opts do
+        nil ->
+          GeoFrame.Features.options!([], true, :map)
+
+        opts ->
+          opts
+          |> Keyword.validate!(na: :null, show_bbox: false, drop_id: false)
+          |> GeoFrame.Features.options!(false, :map)
+      end
+
     GeoFrame.Features.build(geometry, data, opts, :map, gdf.secondary_geometries)
   end
 
