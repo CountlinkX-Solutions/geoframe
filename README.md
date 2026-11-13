@@ -3,7 +3,7 @@
 GeoPandas-style geospatial dataframes for Elixir, powered by
 [GeoArrow](https://geoarrow.org) and Rust.
 
-> Status: latest release `0.1.2`, distributed from GitHub (not on Hex yet); see the
+> Status: latest release `0.2.0`, distributed from GitHub (not on Hex yet); see the
 > [changelog](CHANGELOG.md). Behaviour is checked against GeoPandas 1.2 / Shapely 2.2 on
 > 19 118 reference cases, but the API may still change before 1.0.
 
@@ -34,7 +34,7 @@ to both the attributes and the geometry, so they never drift apart.
 ```elixir
 def deps do
   [
-    {:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.1.2"},
+    {:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.2.0"},
     # optional
     {:kino, "~> 0.19"},           # Livebook rendering, deck.gl widget, Smart Cells
     {:kino_maplibre, "~> 0.1"},   # the Map tab (the deck.gl widget needs nothing extra)
@@ -44,15 +44,15 @@ def deps do
 end
 ```
 
-GeoFrame is not on Hex yet, so depend on the `v0.1.2` git tag as above (or use a `path:`
-dependency on a checkout). Up to `0.1.x` the NIF is compiled on your machine by
+GeoFrame is not on Hex yet, so depend on the `v0.2.0` git tag as above (or use a `path:`
+dependency on a checkout). A git or path dependency compiles the NIF on your machine with
 [Rustler](https://hex.pm/packages/rustler) (a dependency of GeoFrame; you do not add it), so
 you need a stable Rust toolchain. Elixir 1.17 or later; development uses Elixir 1.19 / OTP 28.
 
 ### Precompiled NIFs (from 0.2.0)
 
-From `0.2.0`, the NIF is downloaded as a precompiled library instead of being compiled, so
-**no Rust toolchain is needed** when you install from Hex. Each release attaches builds for
+From `0.2.0`, each release attaches precompiled NIF libraries, so once GeoFrame is on Hex
+**no Rust toolchain will be needed** to install it from there. Each release attaches builds for
 `aarch64-apple-darwin`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`,
 `x86_64-apple-darwin`, `x86_64-pc-windows-gnu`, `x86_64-pc-windows-msvc`,
 `x86_64-unknown-freebsd`, `x86_64-unknown-linux-gnu` and `x86_64-unknown-linux-musl` (NIF
