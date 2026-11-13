@@ -1131,6 +1131,52 @@ def build_zm_coords():
          "wkt": [_norm_wkt(g) for g in gpd.points_from_xy(x, y, z)]}
         for x, y, z in cases
     ]
+    # The vertex constructors with Z vertices (Shapely 2.2 linestrings / multipoints / polygons /
+    # multilinestrings / multipolygons). A ring that Shapely cannot build, and a 2D/3D mix inside
+    # one vertex list, are errors there (`vertex_errors`); lists of rings, lines and polygons of
+    # different dimensions are promoted with NaN Z.
+    import numpy as np
+
+    def ring(r):
+        return np.array(r, dtype=float)
+
+    def polygon(rings):
+        return shapely.Polygon(ring(rings[0]), [ring(h) for h in rings[1:]])
+
+    builders = {
+        "line_string": lambda row: shapely.linestrings(ring(row)),
+        "multi_point": lambda row: shapely.multipoints(ring(row)),
+        "polygon": polygon,
+        "multi_line_string": lambda row: shapely.multilinestrings([shapely.linestrings(ring(l)) for l in row]),
+        "multi_polygon": lambda row: shapely.multipolygons([polygon(p) for p in row]),
+    }
+    sq = [(0, 0), (4, 0), (4, 4), (0, 4)]
+    sqz = [(0, 0, 1), (4, 0, 2), (4, 4, 3), (0, 4, 4)]
+    hole = [(1, 1), (2, 1), (2, 2)]
+    holez = [(1, 1, 5), (2, 1, 5), (2, 2, 5)]
+    vertex_cases = [
+        ("line_string", [[(0, 0, 1), (1, 1, 2)], [(0, 0), (1, 1)], [(-80.5, 25.25, -1.5), (2, 2, 1e10), (3, 4, 0)], None]),
+        ("multi_point", [[(0, 0, 1), (1, 2, 2)], [(0, 0), (1, 2)], [(5, 5, -3.5)]]),
+        ("polygon", [[sqz], [sqz, holez], [sq, holez], [sqz, hole], [sq, hole], [sqz + [(0, 0, 1)]], [sqz + [(0, 0, 9)]]]),
+        ("multi_line_string", [[[(0, 0, 1), (1, 1, 2)], [(5, 5, 3), (6, 6, 4)]], [[(0, 0, 1), (1, 1, 2)], [(5, 5), (6, 6)]]]),
+        ("multi_polygon", [[[sqz], [[(x + 10, y, z) for x, y, z in sqz]]], [[sqz], [sq]], [[sq], [sqz, holez]]]),
+    ]
+    out["vertices"] = []
+    for kind, rows in vertex_cases:
+        geoms = [None if r is None else builders[kind](r) for r in rows]
+        out["vertices"].append({"kind": kind, "rows": rows, "wkt": [_norm_wkt(g) for g in geoms]})
+    # Rows Shapely rejects.
+    out["vertex_errors"] = [
+        {"kind": "line_string", "row": [(0, 0, 1), (1, 1)], "why": "mixed 2 and 3 values in one list"},
+        {"kind": "line_string", "row": [(0, 0, 1, 2), (1, 1, 2, 3)], "why": "four values (M)"},
+    ]
+    for case in out["vertex_errors"]:
+        try:
+            builders[case["kind"]](case["row"])
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("Shapely accepted " + repr(case))
     with open(os.path.join(OUT, "zm_coords.json"), "w") as f:
         json.dump(out, f, indent=1)
         f.write("\n")

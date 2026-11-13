@@ -1290,7 +1290,7 @@ fn from_vertices(
     rows: Vec<Option<VertexParts>>,
     crs: Option<String>,
 ) -> Result<Handle, String> {
-    GeoColumn::from_vertices(VertexKind::parse(&kind)?, &rows, crs.as_deref()).map(wrap)
+    GeoColumn::from_vertices_z(VertexKind::parse(&kind)?, &rows, crs.as_deref()).map(wrap)
 }
 
 /// The raw `geo` metadata JSON of a GeoParquet file.

@@ -534,6 +534,32 @@ def generate_zm():
         frame(wkts).to_file(os.path.join(out, name), driver="FlatGeobuf")
         record(name, os.path.join(out, name), kind="flatgeobuf")
 
+    # A 2D row in a Z Shapefile: GDAL writes Z = 0 (FlatGeobuf refuses a mixed layer, so it has
+    # no GDAL-written mixed file).
+    frame(["LINESTRING Z (0 0 5, 1 1 6)", "LINESTRING (2 2, 3 3)", None]).to_file(os.path.join(out, "lines_z_mixed.shp"))
+    record("lines_z_mixed.shp", os.path.join(out, "lines_z_mixed.shp"), kind="shapefile")
+
+    # GeoJSON positions with two values inside a 3D geometry: GDAL reads Z = 0 (also in the
+    # members of a collection).
+    positions = [
+        ("LineString", [[0, 0, 1], [1, 1], [2, 2, 3]]),
+        ("Polygon", [[[0, 0], [4, 0, 2], [4, 4], [0, 0]]]),
+        ("MultiPoint", [[1, 2], [3, 4, 5]]),
+        ("GeometryCollection", None),
+    ]
+    features = []
+    for index, (kind, coordinates) in enumerate(positions):
+        if coordinates is None:
+            geometry = {"type": kind, "geometries": [{"type": "Point", "coordinates": [1, 2, 3]},
+                                                     {"type": "Point", "coordinates": [4, 5]}]}
+        else:
+            geometry = {"type": kind, "coordinates": coordinates}
+        features.append({"type": "Feature", "properties": {"id": index + 1, "name": chr(97 + index)},
+                         "geometry": geometry})
+    with open(os.path.join(out, "z_positions.geojson"), "w") as handle:
+        json.dump({"type": "FeatureCollection", "features": features}, handle)
+    record("z_positions.geojson", os.path.join(out, "z_positions.geojson"), kind="geojson")
+
     gpkg = os.path.join(out, "z.gpkg")
     frame(["POINT Z (1 2 3)", "POINT Z (4 5 6)", None]).to_file(gpkg, layer="pts", driver="GPKG")
     frame(["POINT Z (1 2 3)", "POINT (4 5)"]).to_file(gpkg, layer="mixed", driver="GPKG")

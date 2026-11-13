@@ -39,9 +39,9 @@ mixed =
     "EPSG:4326"
   )
 
-mixed_3857 = GeoDataFrame.set_crs(mixed, "EPSG:3857")
-mixed_nocrs = GeoDataFrame.set_crs(mixed, nil)
-mixed_utm = GeoDataFrame.set_crs(mixed, "EPSG:32617")
+mixed_3857 = GeoDataFrame.set_crs(mixed, "EPSG:3857", allow_override: true)
+mixed_nocrs = GeoDataFrame.set_crs(mixed, nil, allow_override: true)
+mixed_utm = GeoDataFrame.set_crs(mixed, "EPSG:32617", allow_override: true)
 
 points =
   frame.(["POINT (0 0)", "POINT (1 1)", nil, "POINT (3 3)", "POINT (4 4)"], "EPSG:4326")
@@ -171,7 +171,7 @@ files =
       ],
       reduce: files do
     acc ->
-      gdf = GeoDataFrame.set_crs(mixed, "EPSG:#{code}")
+      gdf = GeoDataFrame.set_crs(mixed, "EPSG:#{code}", allow_override: true)
       write.(acc, "wkb_#{name}.parquet", gdf, parquet.([]), kind: "parquet")
   end
 
@@ -257,7 +257,7 @@ files =
   write_vector.(
     files,
     "points_3857.shp",
-    GeoDataFrame.set_crs(points, "EPSG:3857"),
+    GeoDataFrame.set_crs(points, "EPSG:3857", allow_override: true),
     shapefile.([]),
     kind: "shapefile"
   )
@@ -266,7 +266,7 @@ files =
   write_vector.(
     files,
     "points_utm17n.shp",
-    GeoDataFrame.set_crs(points, "EPSG:32617"),
+    GeoDataFrame.set_crs(points, "EPSG:32617", allow_override: true),
     shapefile.([]),
     kind: "shapefile"
   )
@@ -275,15 +275,17 @@ files =
   write_vector.(
     files,
     "points_nad83.shp",
-    GeoDataFrame.set_crs(points, "EPSG:4269"),
+    GeoDataFrame.set_crs(points, "EPSG:4269", allow_override: true),
     shapefile.([]),
     kind: "shapefile"
   )
 
 files =
-  write_vector.(files, "points_nocrs.shp", GeoDataFrame.set_crs(points, nil), shapefile.([]),
-    kind: "shapefile"
-  )
+  write_vector.(
+    files,
+    "points_nocrs.shp",
+    GeoDataFrame.set_crs(points, nil, allow_override: true),
+    shapefile.([]), kind: "shapefile")
 
 files = write_vector.(files, "points_bundle.zip", points, shapefile.([]), kind: "shapefile")
 
@@ -379,7 +381,7 @@ files =
   write_vector.(
     files,
     "points_3857.gpkg",
-    GeoDataFrame.set_crs(points, "EPSG:3857"),
+    GeoDataFrame.set_crs(points, "EPSG:3857", allow_override: true),
     gpkg.(layer: "pts"),
     kind: "gpkg",
     layer: "pts"
@@ -389,7 +391,7 @@ files =
   write_vector.(
     files,
     "points_utm17n.gpkg",
-    GeoDataFrame.set_crs(points, "EPSG:32617"),
+    GeoDataFrame.set_crs(points, "EPSG:32617", allow_override: true),
     gpkg.(layer: "pts"),
     kind: "gpkg",
     layer: "pts"
@@ -399,7 +401,7 @@ files =
   write_vector.(
     files,
     "points_nocrs.gpkg",
-    GeoDataFrame.set_crs(points, nil),
+    GeoDataFrame.set_crs(points, nil, allow_override: true),
     gpkg.(layer: "pts"),
     kind: "gpkg",
     layer: "pts"
@@ -623,6 +625,33 @@ files =
     acc -> zm_vector.(acc, name, gdf, shapefile.([]), "shapefile", [])
   end
 
+# A 2D row in a Z file is promoted with Z = 0, as GDAL writes it (a GDAL FlatGeobuf layer cannot
+# mix dimensions at all, so GDAL only has to read the promoted file).
+zmixed_promoted_wkt = [
+  "POINT Z (1 2 3)",
+  "POINT Z (4 5 0)",
+  nil,
+  "POINT Z (6 7 8)",
+  "POINT Z (9 10 0)"
+]
+
+promoted_flags = %{
+  "has_z" => Enum.map(zmixed_promoted_wkt, &(&1 != nil)),
+  "has_m" => List.duplicate(false, 5)
+}
+
+files =
+  zm_vector.(files, "z_mixed.shp", zmixed, shapefile.([]), "shapefile",
+    wkt: zmixed_promoted_wkt,
+    zm: promoted_flags
+  )
+
+files =
+  zm_vector.(files, "z_mixed.fgb", zmixed, flatgeobuf.(index: false), "flatgeobuf",
+    wkt: zmixed_promoted_wkt,
+    zm: promoted_flags
+  )
+
 files = zm_vector.(files, "z_points_bundle.zip", zpoints, shapefile.([]), "shapefile", [])
 
 files =
@@ -782,7 +811,11 @@ footprint =
   )
 
 tags = GeoSeries.from_wkt!(for(i <- 1..5, do: "POINT (#{i} #{i})"), crs: nil)
-multi = points |> GeoDataFrame.put_geometry("footprint", footprint) |> GeoDataFrame.put_geometry("tag", tags)
+
+multi =
+  points
+  |> GeoDataFrame.put_geometry("footprint", footprint)
+  |> GeoDataFrame.put_geometry("tag", tags)
 
 secondary = fn gdf ->
   for {name, series} <- gdf.secondary_geometries, into: %{} do
@@ -807,7 +840,8 @@ files =
   for {name, kind, writer, extra} <- [
         {"multi_wkb.feather", "feather", feather.([]), []},
         {"multi_zstd.feather", "feather", feather.(compression: :zstd), []},
-        {"multi_native.feather", "feather", feather.(geometry_encoding: :geoarrow), [native: true]},
+        {"multi_native.feather", "feather", feather.(geometry_encoding: :geoarrow),
+         [native: true]},
         {"multi_wkb.arrows", "arrows", stream.([]), []},
         {"multi_native.arrows", "arrows", stream.(geometry_encoding: :geoarrow), [native: true]}
       ],

@@ -58,7 +58,7 @@ use crate::column::ColumnBuilder;
 use crate::crs_wkt::{crs_to_prj_wkt, prj_wkt_to_crs};
 use crate::dbf::{self, Encoding};
 use crate::gpkg_io::LayerInfo;
-use crate::zm_io::{vertex, Vertex, WkbOut};
+use crate::zm_io::{vertex_z0, Vertex, WkbOut};
 use crate::{GeoColumn, VectorRead};
 
 // -- reading ------------------------------------------------------------------------------
@@ -806,7 +806,7 @@ fn oriented(mut points: Vec<Vertex>, clockwise: bool) -> Vec<Vertex> {
 }
 
 fn line_vertices<L: LineStringTrait<T = f64>>(line: &L) -> Vec<Vertex> {
-    line.coords().map(|c| vertex(&c)).collect()
+    line.coords().map(|c| vertex_z0(&c)).collect()
 }
 
 fn polygon_parts<P: PolygonTrait<T = f64>>(polygon: &P, parts: &mut Vec<Vec<Vertex>>) {
@@ -825,12 +825,12 @@ fn polygon_parts<P: PolygonTrait<T = f64>>(polygon: &P, parts: &mut Vec<Vec<Vert
 fn shape_parts(geometry: &Scalar<'_>, kind: Kind) -> Option<Shape> {
     let mut parts: Vec<Vec<Vertex>> = Vec::new();
     match (kind, geometry.as_type()) {
-        (Kind::Point, GeometryType::Point(p)) => parts.push(vec![vertex(&p.coord()?)]),
+        (Kind::Point, GeometryType::Point(p)) => parts.push(vec![vertex_z0(&p.coord()?)]),
         (Kind::MultiPoint, GeometryType::MultiPoint(m)) => {
             parts.push(
                 m.points()
                     .filter_map(|p| p.coord())
-                    .map(|c| vertex(&c))
+                    .map(|c| vertex_z0(&c))
                     .collect(),
             );
         }
