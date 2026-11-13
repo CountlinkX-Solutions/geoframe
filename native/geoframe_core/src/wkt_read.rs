@@ -102,11 +102,13 @@ fn is_bare_non_finite(word: &str) -> bool {
 }
 
 /// `text` as GEOS reads it: ` Z` or ` ZM` after every untagged geometry keyword whose first
-/// coordinate has three or four ordinates, and `+` before every bare `NaN`, `inf` or
-/// `Infinity`; `None` when nothing needs rewriting.
+/// coordinate has three or four ordinates, `+` before every bare `NaN`, `inf` or `Infinity`,
+/// and a NaN point for every `EMPTY` member of a parenthesized `MULTIPOINT` (which the crate
+/// cannot read, and which GeoArrow stores as a NaN point); `None` when nothing needs rewriting.
 fn as_geos_reads_it(text: &str) -> Option<String> {
     let tokens = tokens(text);
-    let mut insertions: Vec<(usize, &str)> = Vec::new();
+    // `(start, end, replacement)`; an insertion has `start == end`.
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
     for (i, token) in tokens.iter().enumerate() {
         let Token::Atom {
             text: word,
@@ -117,32 +119,74 @@ fn as_geos_reads_it(text: &str) -> Option<String> {
             continue;
         };
         if is_bare_non_finite(word) {
-            insertions.push((start, "+"));
+            edits.push((start, start, "+".to_string()));
             continue;
         }
         if !infers_dimension(word) {
             continue;
         }
-        if matches!(tokens.get(i + 1), Some(Token::Atom { text: next, .. }) if is_dimension_tag(next))
-        {
-            continue;
+        let tagged = match tokens.get(i + 1) {
+            Some(Token::Atom { text: next, .. }) if is_dimension_tag(next) => Some(*next),
+            _ => None,
+        };
+        let inferred = match tagged {
+            Some(_) => None,
+            None => first_coordinate_tag(&tokens[i + 1..]),
+        };
+        if let Some(tag) = inferred {
+            edits.push((end, end, tag.to_string()));
         }
-        if let Some(tag) = first_coordinate_tag(&tokens[i + 1..]) {
-            insertions.push((end, tag));
+        if word.eq_ignore_ascii_case("MULTIPOINT") {
+            let ordinates = match (tagged, inferred) {
+                (Some(t), _) if t.eq_ignore_ascii_case("ZM") => 4,
+                (Some(_), _) => 3,
+                (None, Some(" ZM")) => 4,
+                (None, Some(_)) => 3,
+                (None, None) => 2,
+            };
+            let body = i + 1 + usize::from(tagged.is_some());
+            edits.extend(empty_member_points(&tokens[body..], ordinates));
         }
     }
-    if insertions.is_empty() {
+    if edits.is_empty() {
         return None;
     }
-    let mut out = String::with_capacity(text.len() + 3 * insertions.len());
+    edits.sort_by_key(|e| e.0);
+    let mut out = String::with_capacity(text.len() + 16 * edits.len());
     let mut from = 0;
-    for (at, tag) in insertions {
-        out.push_str(&text[from..at]);
-        out.push_str(tag);
-        from = at;
+    for (start, end, replacement) in edits {
+        out.push_str(&text[from..start]);
+        out.push_str(&replacement);
+        from = end;
     }
     out.push_str(&text[from..]);
     Some(out)
+}
+
+/// A NaN point in place of each `EMPTY` member of the `MULTIPOINT` body starting at `rest`,
+/// when every member is parenthesized or `EMPTY` (GEOS rejects a mix with the bare form).
+fn empty_member_points(rest: &[Token<'_>], ordinates: usize) -> Vec<(usize, usize, String)> {
+    let point = format!("({})", vec!["+NaN"; ordinates].join(" "));
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    for token in rest {
+        match *token {
+            Token::Open => depth += 1,
+            Token::Close if depth <= 1 => break,
+            Token::Close => depth -= 1,
+            Token::Comma => {}
+            Token::Atom { text, start, end } if depth == 1 => {
+                if !text.eq_ignore_ascii_case("EMPTY") {
+                    return Vec::new();
+                }
+                out.push((start, end, point.clone()));
+            }
+            // `MULTIPOINT EMPTY`, or an atom inside a member.
+            Token::Atom { .. } if depth == 0 => return Vec::new(),
+            Token::Atom { .. } => {}
+        }
+    }
+    out
 }
 
 /// The tag the first coordinate of the geometry starting at `rest` (the tokens after its
@@ -200,7 +244,7 @@ mod tests {
         );
         assert_eq!(
             as_geos_reads_it("MULTIPOINT (EMPTY, (1 2 3)), POINT Z (1 2 3)").as_deref(),
-            Some("MULTIPOINT Z (EMPTY, (1 2 3)), POINT Z (1 2 3)")
+            Some("MULTIPOINT Z ((+NaN +NaN +NaN), (1 2 3)), POINT Z (1 2 3)")
         );
         assert_eq!(
             as_geos_reads_it("POINT (1 2 NaN)").as_deref(),

@@ -14,6 +14,11 @@ change before 1.0.
   as Shapely does instead of raising `ArgumentError`: an infinite X, Y, Z or M, or a NaN X or Y,
   could not cross from the NIF
   ([#161](https://github.com/CountlinkX-Solutions/geoframe/pull/161)).
+- `to_wkt` writes an empty member as `EMPTY`, as GEOS does. A `MULTIPOINT` with an empty member
+  point (Shapely writes `MULTIPOINT (EMPTY, (1 1))` to WKB as a NaN point) made `to_wkt` raise a
+  NIF panic, and an empty member line of a `MULTILINESTRING` or an empty ring of a `POLYGON` was
+  written as `()`, which no reader accepts. `from_wkt` now also reads `MULTIPOINT (EMPTY, ...)`
+  ([#162](https://github.com/CountlinkX-Solutions/geoframe/pull/162)).
 
 ## [0.3.1] - 2026-11-13
 

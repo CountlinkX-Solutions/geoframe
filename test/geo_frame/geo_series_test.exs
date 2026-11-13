@@ -24,6 +24,27 @@ defmodule GeoFrame.GeoSeriesTest do
       assert_raise ArgumentError, ~r/row 0/, fn -> GeoSeries.from_wkt!(["nope"]) end
     end
 
+    # GEOS 3.14 (Shapely 2.2) reads and writes an empty member as EMPTY.
+    test "an empty member point, line or ring reads and writes as EMPTY, as GEOS" do
+      rows = [
+        "MULTIPOINT (EMPTY, (1 1))",
+        "MULTILINESTRING ((0 0, 1 1), EMPTY)",
+        "POLYGON ((0 0, 9 0, 9 9, 0 0), EMPTY)",
+        "GEOMETRYCOLLECTION (MULTIPOINT ((1 2), EMPTY), POINT (3 3))"
+      ]
+
+      wkt = GeoSeries.to_wkt(GeoSeries.from_wkt!(rows))
+
+      assert wkt == [
+               "MULTIPOINT(EMPTY,(1 1))",
+               "MULTILINESTRING((0 0,1 1),EMPTY)",
+               "POLYGON((0 0,9 0,9 9,0 0),EMPTY)",
+               "GEOMETRYCOLLECTION(MULTIPOINT((1 2),EMPTY),POINT(3 3))"
+             ]
+
+      assert GeoSeries.to_wkt(GeoSeries.from_wkt!(wkt)) == wkt
+    end
+
     test "stores the crs option" do
       s = GeoSeries.from_wkt!(["POINT (1 2)"], crs: "EPSG:4326")
       assert GeoSeries.crs(s) == "EPSG:4326"

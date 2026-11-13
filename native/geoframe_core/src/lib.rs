@@ -63,6 +63,7 @@ mod validity_reason;
 mod wkt1_projjson;
 mod wkt2_projjson;
 mod wkt_read;
+mod wkt_write;
 mod zm;
 mod zm_bridge;
 mod zm_io;
@@ -131,6 +132,8 @@ mod curves_tests;
 mod datum_tests;
 #[cfg(test)]
 mod deck_tests;
+#[cfg(test)]
+mod empty_member_tests;
 #[cfg(test)]
 mod ewkb_tests;
 #[cfg(test)]
