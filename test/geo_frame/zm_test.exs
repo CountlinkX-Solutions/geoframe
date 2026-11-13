@@ -106,6 +106,20 @@ defmodule GeoFrame.ZmTest do
       assert GeoSeries.to_wkt(GeoSeries.from_wkb!([wkb])) == GeoSeries.to_wkt(s([@mixed]))
     end
 
+    test "its WKT, with the NaN ordinates, reads back" do
+      wkt = GeoSeries.to_wkt(s([@mixed]))
+      assert GeoSeries.to_wkt(s(wkt)) == wkt
+    end
+
+    test "NaN and Infinity ordinates are read as GEOS reads them" do
+      series = s(["POINT (1 2 NaN)", "POINT Z (1 2 nan)"])
+      assert list(GeoSeries.has_z(series)) == [true, true]
+      assert list(GeoSeries.get_coordinates(series, include_z: true)["z"]) == [:nan, :nan]
+
+      assert GeoSeries.to_wkt(s(["POINT Z (1 2 Infinity)", "POINT (1 2 -inf)"])) ==
+               ["POINT Z(1 2 inf)", "POINT Z(1 2 -inf)"]
+    end
+
     test "a member of another dimension in a tagged WKT collection is an error, as in GEOS" do
       assert_raise ArgumentError, ~r/cannot mix dimensionality/, fn ->
         s(["GEOMETRYCOLLECTION Z (POINT Z (1 2 3), POINT (3 4))"])

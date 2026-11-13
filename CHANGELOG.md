@@ -21,6 +21,11 @@ change before 1.0.
   coordinates, except for one GEOS quirk: `MULTIPOINT (1 2 3 4, 5 6 7 8)` (no inner
   parentheses) is ZM here, while GEOS drops its M
   ([#157](https://github.com/CountlinkX-Solutions/geoframe/pull/157)).
+- WKT ordinates `NaN`, `inf` and `Infinity` (any case, optional sign) are read as GEOS reads
+  them instead of raising, so the WKT that `to_wkt` writes for a collection whose members mix
+  dimensions (`GEOMETRYCOLLECTION Z(POINT Z(1 2 NaN),...)`, since 0.3.0) reads back, and Shapely's
+  `Infinity` is understood. `POINT (NaN NaN)` reads as `POINT EMPTY`, the GeoArrow empty point
+  ([#158](https://github.com/CountlinkX-Solutions/geoframe/pull/158)).
 
 ## [0.3.0] - 2026-11-13
 

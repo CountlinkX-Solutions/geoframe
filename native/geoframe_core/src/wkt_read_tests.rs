@@ -178,3 +178,76 @@ fn text_the_wkt_crate_reads_is_unchanged() {
         assert_eq!(read(text).unwrap(), expected, "{text}");
     }
 }
+
+// GEOS reads an ordinate with `strtod`: `NaN`, `inf` and `Infinity` in any case, with or
+// without a sign, and a literal too large for a double is infinite. Shapely writes `NaN` and
+// `Infinity`; GeoFrame's `to_wkt` writes `NaN` (a promoted collection member, 0.3.0).
+#[test]
+fn non_finite_ordinates_are_read_as_geos_reads_them() {
+    for (ordinate, expected) in [
+        ("NaN", "NaN"),
+        ("nan", "NaN"),
+        ("NAN", "NaN"),
+        ("-nan", "NaN"),
+        ("+NaN", "NaN"),
+        ("inf", "inf"),
+        ("Inf", "inf"),
+        ("+inf", "inf"),
+        ("-inf", "-inf"),
+        ("Infinity", "inf"),
+        ("INFINITY", "inf"),
+        ("-Infinity", "-inf"),
+        ("1e400", "inf"),
+        ("-1e400", "-inf"),
+    ] {
+        let text = format!("POINT Z (1 2 {ordinate})");
+        assert_eq!(
+            read(&text),
+            Ok(format!("POINT Z(1 2 {expected})")),
+            "{text}"
+        );
+    }
+    assert_eq!(read("POINT (1 2 NaN)"), read("POINT Z (1 2 NaN)"));
+    assert_eq!(read("POINT (nan 1 2)").unwrap(), "POINT Z(NaN 1 2)");
+    assert_eq!(
+        read("LINESTRING (0 0 NaN, 1 1 Infinity)").unwrap(),
+        "LINESTRING Z(0 0 NaN,1 1 inf)"
+    );
+    assert_eq!(
+        read("POINT ZM (1 2 NaN NaN)").unwrap(),
+        "POINT ZM(1 2 NaN NaN)"
+    );
+}
+
+#[test]
+fn what_geos_rejects_as_a_number_stays_an_error() {
+    for text in [
+        "POINT Z (1 2 nan(1))",
+        "POINT Z (1 2 Nan1)",
+        "POINT Z (1 2 infinit)",
+        "POINT Z (1 2 1.#INF)",
+        "POINT (NaN)",
+    ] {
+        assert!(read(text).is_err(), "{text}: {:?}", read(text));
+    }
+}
+
+#[test]
+fn the_wkt_of_a_promoted_collection_member_reads_back() {
+    let first = read("GEOMETRYCOLLECTION (POINT (1 2), POINT Z (3 4 5))").unwrap();
+    assert_eq!(
+        first,
+        "GEOMETRYCOLLECTION Z(POINT Z(1 2 NaN),POINT Z(3 4 5))"
+    );
+    assert_eq!(read(&first).unwrap(), first);
+}
+
+// Deviation (documented): GEOS keeps `POINT (NaN NaN)` as a non-empty point, but a GeoArrow
+// point with NaN X and Y is the empty point. GEOS reads its own WKB of that point back as
+// `POINT EMPTY` too.
+#[test]
+fn a_point_with_nan_x_and_y_is_the_empty_point() {
+    assert_eq!(read("POINT (NaN NaN)").unwrap(), "POINT EMPTY");
+    assert_eq!(read("POINT Z (NaN NaN NaN)").unwrap(), "POINT Z EMPTY");
+    assert_eq!(read("POINT (NaN 1)").unwrap(), "POINT(NaN 1)");
+}

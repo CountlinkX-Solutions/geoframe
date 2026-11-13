@@ -6,24 +6,33 @@
 //! read again with that dimension written out (` Z` or ` ZM` after the geometry keyword), so
 //! text the crate already reads is never reinterpreted, and a coordinate count that disagrees
 //! with the first one stays an error, as in GEOS.
+//!
+//! GEOS also reads an ordinate with `strtod`, so `NaN`, `inf` and `Infinity` (any case) are
+//! numbers. The crate's tokenizer only reads them with a sign (`-inf`), since a bare word is
+//! not a number to it; the retry writes `+` before a bare one, which Rust reads as GEOS does.
 
 use std::str::FromStr;
 
-/// Parses one WKT geometry, inferring the dimension of untagged geometries as GEOS does.
+/// Parses one WKT geometry as GEOS does: untagged dimensions inferred, non-finite ordinates read.
 pub(crate) fn parse(text: &str) -> Result<wkt::Wkt<f64>, &'static str> {
-    wkt::Wkt::from_str(text).or_else(|error| match with_inferred_dimensions(text) {
+    wkt::Wkt::from_str(text).or_else(|error| match as_geos_reads_it(text) {
         Some(tagged) => wkt::Wkt::from_str(&tagged),
         None => Err(error),
     })
 }
 
-/// A token of the `wkt` crate's tokenizer: an atom is a word or a number, `end` its byte offset.
+/// A token of the `wkt` crate's tokenizer: an atom is a word or a number, `start` and `end` its
+/// byte offsets.
 #[derive(Clone, Copy)]
 enum Token<'a> {
     Open,
     Close,
     Comma,
-    Atom { text: &'a str, end: usize },
+    Atom {
+        text: &'a str,
+        start: usize,
+        end: usize,
+    },
 }
 
 /// Splits `text` as the `wkt` crate does: parentheses and commas are tokens, whitespace
@@ -45,6 +54,7 @@ fn tokens(text: &str) -> Vec<Token<'_>> {
         if let Some(s) = start.take() {
             out.push(Token::Atom {
                 text: &text[s..i],
+                start: s,
                 end: i,
             });
         }
@@ -56,6 +66,7 @@ fn tokens(text: &str) -> Vec<Token<'_>> {
     if let Some(s) = start {
         out.push(Token::Atom {
             text: &text[s..],
+            start: s,
             end: text.len(),
         });
     }
@@ -83,15 +94,32 @@ fn is_dimension_tag(word: &str) -> bool {
         .any(|t| word.eq_ignore_ascii_case(t))
 }
 
-/// `text` with ` Z` or ` ZM` after every untagged geometry keyword whose first coordinate has
-/// three or four ordinates; `None` when no keyword needs one.
-fn with_inferred_dimensions(text: &str) -> Option<String> {
+/// A non-finite number GEOS reads (`strtod`) that the crate's tokenizer takes for a word.
+fn is_bare_non_finite(word: &str) -> bool {
+    ["NaN", "inf", "infinity"]
+        .iter()
+        .any(|n| word.eq_ignore_ascii_case(n))
+}
+
+/// `text` as GEOS reads it: ` Z` or ` ZM` after every untagged geometry keyword whose first
+/// coordinate has three or four ordinates, and `+` before every bare `NaN`, `inf` or
+/// `Infinity`; `None` when nothing needs rewriting.
+fn as_geos_reads_it(text: &str) -> Option<String> {
     let tokens = tokens(text);
     let mut insertions: Vec<(usize, &str)> = Vec::new();
     for (i, token) in tokens.iter().enumerate() {
-        let Token::Atom { text: word, end } = *token else {
+        let Token::Atom {
+            text: word,
+            start,
+            end,
+        } = *token
+        else {
             continue;
         };
+        if is_bare_non_finite(word) {
+            insertions.push((start, "+"));
+            continue;
+        }
         if !infers_dimension(word) {
             continue;
         }
@@ -156,24 +184,31 @@ fn first_coordinate_tag(rest: &[Token<'_>]) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::with_inferred_dimensions;
+    use super::as_geos_reads_it;
 
     #[test]
     fn tags_are_inserted_after_each_untagged_keyword() {
-        assert_eq!(with_inferred_dimensions("POINT (1 2)"), None);
-        assert_eq!(with_inferred_dimensions("POINT EMPTY"), None);
+        assert_eq!(as_geos_reads_it("POINT (1 2)"), None);
+        assert_eq!(as_geos_reads_it("POINT EMPTY"), None);
         assert_eq!(
-            with_inferred_dimensions("POINT(1 2 3)").as_deref(),
+            as_geos_reads_it("POINT(1 2 3)").as_deref(),
             Some("POINT Z(1 2 3)")
         );
         assert_eq!(
-            with_inferred_dimensions("GEOMETRYCOLLECTION (POINT EMPTY, point (1 2 3 4))")
-                .as_deref(),
+            as_geos_reads_it("GEOMETRYCOLLECTION (POINT EMPTY, point (1 2 3 4))").as_deref(),
             Some("GEOMETRYCOLLECTION (POINT EMPTY, point ZM (1 2 3 4))")
         );
         assert_eq!(
-            with_inferred_dimensions("MULTIPOINT (EMPTY, (1 2 3)), POINT Z (1 2 3)").as_deref(),
+            as_geos_reads_it("MULTIPOINT (EMPTY, (1 2 3)), POINT Z (1 2 3)").as_deref(),
             Some("MULTIPOINT Z (EMPTY, (1 2 3)), POINT Z (1 2 3)")
+        );
+        assert_eq!(
+            as_geos_reads_it("POINT (1 2 NaN)").as_deref(),
+            Some("POINT Z (1 2 +NaN)")
+        );
+        assert_eq!(
+            as_geos_reads_it("POINT Z (inf -inf Infinity)").as_deref(),
+            Some("POINT Z (+inf -inf +Infinity)")
         );
     }
 }
