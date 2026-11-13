@@ -442,5 +442,8 @@ defmodule GeoFrame.Dissolve do
   defp apply_func(:max, s), do: Series.max(s)
   defp apply_func(:count, s), do: Series.count(s)
   defp apply_func(:median, s), do: Series.median(s)
-  defp apply_func(:n_distinct, s), do: Series.n_distinct(s)
+  # pandas `nunique` ignores nulls; Explorer's `n_distinct` counts a null as a value.
+  defp apply_func(:n_distinct, s) do
+    Series.subtract(Series.n_distinct(s), Series.clip(Series.nil_count(s), 0, 1))
+  end
 end

@@ -768,4 +768,25 @@ defmodule GeoFrame do
   @doc "Group-wise union with attribute aggregation; see `GeoFrame.Dissolve.dissolve/2`."
   @spec dissolve(GeoDataFrame.t(), keyword()) :: GeoDataFrame.t()
   defdelegate dissolve(gdf, opts \\ []), to: GeoFrame.Dissolve
+
+  @doc "Marks the groups of a frame; see `GeoFrame.GroupBy.group_by/2`."
+  @spec group_by(GeoDataFrame.t(), term()) :: GeoDataFrame.t()
+  defdelegate group_by(gdf, columns), to: GeoFrame.GroupBy
+
+  @doc "Aggregates every group into one row, attributes and geometry; see `GeoFrame.GroupBy.summarise/3`."
+  @spec summarise(GeoDataFrame.t(), keyword() | map(), keyword()) :: GeoDataFrame.t()
+  defdelegate summarise(gdf, aggregations \\ [], opts \\ []), to: GeoFrame.GroupBy
+
+  @doc "Removes the groups; see `GeoFrame.GroupBy.ungroup/2`."
+  @spec ungroup(GeoDataFrame.t(), term()) :: GeoDataFrame.t()
+  defdelegate ungroup(gdf, columns \\ ..), to: GeoFrame.GroupBy
+
+  @doc "Applies a function per group (pandas `groupby.apply`); see `GeoFrame.GroupBy.group_map/4`."
+  @spec group_map(
+          GeoDataFrame.t(),
+          term(),
+          (GeoDataFrame.t() -> GeoDataFrame.t() | Explorer.DataFrame.t()),
+          keyword()
+        ) :: GeoDataFrame.t() | Explorer.DataFrame.t()
+  defdelegate group_map(gdf, by, fun, opts \\ []), to: GeoFrame.GroupBy
 end
