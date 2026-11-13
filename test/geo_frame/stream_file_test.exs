@@ -185,6 +185,69 @@ defmodule GeoFrame.StreamFileTest do
     end
   end
 
+  describe "Shapefile" do
+    test "batches have the requested size and concatenate to read_file/2", %{tmp_dir: dir} do
+      path = written(dir, "s.shp")
+      batches = assert_same_as_read_file(path, [], 7)
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [7, 7, 7, 4]
+    end
+
+    test "bbox: filters record by record like a post-read filter", %{tmp_dir: dir} do
+      path = written(dir, "s.shp")
+
+      batches =
+        path |> GeoFrame.stream_file(bbox: {3, 0, 9, 100}, batch_size: 3) |> Enum.to_list()
+
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [3, 3, 1]
+      assert Enum.flat_map(batches, &col(&1, "id")) == Enum.to_list(3..9)
+
+      assert_raise ArgumentError, ~r/bbox/, fn ->
+        path |> GeoFrame.stream_file(bbox: {9, 0, 3, 100}) |> Enum.to_list()
+      end
+    end
+
+    test "encoding: is applied like read_file/2", %{tmp_dir: dir} do
+      path = Path.join(dir, "latin.shp")
+      geometry = GeoSeries.from_wkt!(["POINT (0 0)", "POINT (1 1)"])
+      gdf = GeoDataFrame.new(DataFrame.new(t: ["é", "ü"]), geometry)
+      :ok = GeoFrame.write_file(gdf, path, encoding: "ISO-8859-1")
+
+      assert_same_as_read_file(path, [], 1)
+      batches = assert_same_as_read_file(path, [encoding: "UTF-8"], 1)
+      refute Enum.flat_map(batches, &col(&1, "t")) == ["é", "ü"]
+    end
+
+    test "a .zip archive streams like a .shp and leaves no files behind", %{tmp_dir: dir} do
+      path = written(dir, "s.zip")
+
+      scratch = fn ->
+        File.ls!(System.tmp_dir!()) |> Enum.filter(&String.starts_with?(&1, "geoframe-shp-"))
+      end
+
+      before = scratch.()
+      batches = assert_same_as_read_file(path, [], 10)
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [10, 10, 5]
+      assert scratch.() == before
+      assert [_] = path |> GeoFrame.stream_file(batch_size: 5) |> Enum.take(1)
+      assert scratch.() == before
+    end
+
+    test "an empty shapefile yields no batches and junk raises", %{tmp_dir: dir} do
+      path = Path.join(dir, "empty.shp")
+      empty = GeoDataFrame.new(DataFrame.new(id: [1]), GeoSeries.from_wkt!(["POINT (0 0)"]))
+      :ok = GeoFrame.write_file(GeoDataFrame.head(empty, 0), path)
+      assert path |> GeoFrame.stream_file() |> Enum.to_list() == []
+
+      junk = Path.join(dir, "junk.shp")
+      File.write!(junk, "not a shapefile")
+      assert_raise ArgumentError, fn -> junk |> GeoFrame.stream_file() |> Enum.to_list() end
+
+      assert_raise ArgumentError, ~r/unknown option/, fn ->
+        GeoFrame.stream_file(path, columns: ["id"])
+      end
+    end
+  end
+
   describe "resource lifetime" do
     test "the stream is lazy: nothing opens before it is enumerated", %{tmp_dir: dir} do
       path = written(dir, "s.parquet")
@@ -196,7 +259,9 @@ defmodule GeoFrame.StreamFileTest do
     for {name, file, opts} <- [
           {"GeoParquet", "s.parquet", []},
           {"FlatGeobuf", "s.fgb", []},
-          {"Feather", "s.feather", []}
+          {"Feather", "s.feather", []},
+          {"Shapefile", "s.shp", []},
+          {"Shapefile zip", "s.zip", []}
         ] do
       test "#{name}: a full run closes the reader", %{tmp_dir: dir} do
         path = written(dir, unquote(file))

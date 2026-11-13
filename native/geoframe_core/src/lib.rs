@@ -46,6 +46,7 @@ mod projjson;
 mod reproject;
 mod set_ops;
 mod shapefile_io;
+mod shapefile_stream;
 mod sindex;
 mod stream_io;
 mod unary;

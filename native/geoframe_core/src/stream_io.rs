@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::feather_stream::FeatherStream;
 use crate::flatgeobuf_io::FgbStream;
 use crate::parquet_io::ParquetStream;
+use crate::shapefile_stream::ShapefileStream;
 use crate::GeoColumn;
 
 static OPEN_READERS: AtomicUsize = AtomicUsize::new(0);
@@ -40,6 +41,7 @@ enum Source {
     GeoParquet(Box<ParquetStream>),
     FlatGeobuf(Box<FgbStream>),
     Feather(Box<FeatherStream>),
+    Shapefile(Box<ShapefileStream>),
 }
 
 /// An open file read batch by batch.
@@ -88,6 +90,18 @@ impl BatchReader {
         Ok(Self::counted(Source::Feather(Box::new(stream))))
     }
 
+    /// Opens a shapefile (`.shp`, or a `.zip` holding one); `encoding` is as in
+    /// `read_shapefile`. `bbox` keeps the records whose geometry bounding box intersects it.
+    pub fn open_shapefile(
+        path: &str,
+        encoding: Option<&str>,
+        bbox: Option<[f64; 4]>,
+        batch_size: usize,
+    ) -> Result<Self, String> {
+        let stream = ShapefileStream::open(path, encoding, bbox, batch_size)?;
+        Ok(Self::counted(Source::Shapefile(Box::new(stream))))
+    }
+
     /// The next batch, `None` once the file is exhausted. A batch has `batch_size` rows except
     /// the last one.
     pub fn next_batch(&mut self) -> Result<Option<StreamBatch>, String> {
@@ -102,6 +116,12 @@ impl BatchReader {
                 geometry: read.geometry,
                 geometry_column: Some(read.geometry_column),
                 secondary_geometries: read.secondary_geometries,
+                attributes_ipc: read.attributes_ipc,
+            })),
+            Source::Shapefile(stream) => Ok(stream.next_batch()?.map(|read| StreamBatch {
+                geometry: read.geometry,
+                geometry_column: None,
+                secondary_geometries: Vec::new(),
                 attributes_ipc: read.attributes_ipc,
             })),
             Source::FlatGeobuf(stream) => Ok(stream.next_batch()?.map(|read| StreamBatch {

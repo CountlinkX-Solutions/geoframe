@@ -307,7 +307,7 @@ fn open_plan(
 }
 
 /// Which rows of `geometry` have a bounding box intersecting `query`.
-fn bbox_keep(geometry: &GeoColumn, query: [f64; 4]) -> Vec<bool> {
+pub(crate) fn bbox_keep(geometry: &GeoColumn, query: [f64; 4]) -> Vec<bool> {
     geometry
         .bounds()
         .into_iter()

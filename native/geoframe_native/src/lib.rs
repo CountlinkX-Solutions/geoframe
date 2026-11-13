@@ -1431,6 +1431,19 @@ fn open_feather_reader(
         .map(new_reader)
 }
 
+/// Opens a shapefile (`.shp` or `.zip`) for batched reading (`encoding` as
+/// `read_shapefile_file`; `bbox` is applied record by record).
+#[rustler::nif(schedule = "DirtyIo")]
+fn open_shapefile_reader(
+    path: String,
+    encoding: Option<String>,
+    bbox: Option<(f64, f64, f64, f64)>,
+    batch_size: usize,
+) -> Result<Reader, String> {
+    let bbox = bbox.map(|(a, b, c, d)| [a, b, c, d]);
+    BatchReader::open_shapefile(&path, encoding.as_deref(), bbox, batch_size).map(new_reader)
+}
+
 type NextBatch<'a> = Option<(Handle, Option<String>, Binary<'a>, Secondary)>;
 
 /// The next batch as `{geometry, geometry_column | nil, attributes_ipc, secondary}`, or `nil`
