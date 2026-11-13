@@ -807,3 +807,40 @@ fn names_map_only_to_codes_of_the_root_kind() {
         "EPSG:4326"
     );
 }
+
+/// Supplementary-table codes (not in the `crs-definitions` crate) get a WKT1 `.prj` too.
+#[test]
+fn supplementary_epsg_codes_have_a_prj_definition() {
+    for (crs, name) in [
+        ("EPSG:29701", "Laborde"),
+        ("EPSG:3144", "PROJCS"),
+        ("EPSG:8694", "GEOGCS"),
+    ] {
+        let Some(prj) = crs_to_prj_wkt(crs) else {
+            panic!("no prj for {crs}");
+        };
+        assert!(prj.contains(name), "{crs}: {prj}");
+        assert_eq!(prj_wkt_to_crs(&prj), crs, "{crs}");
+    }
+}
+
+/// The few supplementary codes PROJ cannot write as WKT1 (Krovak Modified, 3D, compound) keep
+/// having no `.prj`.
+#[test]
+fn supplementary_codes_without_wkt1_have_no_prj() {
+    assert_eq!(crs_to_prj_wkt("EPSG:5515"), None);
+}
+
+/// Every WKT1 of the supplementary table names its own code, so the `.prj` reads back as it.
+#[test]
+fn every_supplementary_wkt1_reads_back_as_its_code() {
+    let mut with_wkt1 = 0;
+    for code in crate::crs_extra::codes() {
+        let Some(wkt) = crate::crs_extra::wkt1(code) else {
+            continue;
+        };
+        with_wkt1 += 1;
+        assert_eq!(prj_wkt_to_crs(wkt), format!("EPSG:{code}"));
+    }
+    assert_eq!(with_wkt1, 1098);
+}

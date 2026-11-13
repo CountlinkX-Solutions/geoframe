@@ -528,8 +528,13 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
   PROJJSON and written as full PROJJSON to GeoParquet (pyproj reads it). The release NIF
   (`libgeoframe_native.so`, unstripped) grows from 38 394 160 to 38 662 976 bytes (+269 KB, 0.7 %):
   the 51 KB table, the larger Helmert and name tables, the converter and the new projections. The data are the EPSG dataset (see `NOTICE` for the attribution
-  and terms of use). WKT1 for Shapefile `.prj` and GeoPackage is still only available for the
-  codes of the `crs-definitions` table.
+  and terms of use). A second table, `crs_extra_wkt1.bin` (`generate_crs_datum.py extra_wkt1`,
+  pyproj `to_wkt("WKT1_GDAL")`, 641 KB of text, 34 KB deflate-compressed), holds the OGC WKT1 of
+  the 1 098 of those 1 217 codes PROJ can write as WKT1, so Shapefile `.prj` and GeoPackage
+  `gpkg_spatial_ref_sys.definition` carry a definition for them like for the other codes
+  (GeoPandas/pyogrio reads them back as the same EPSG code). The other 119 (Krovak Modified, 3D
+  geographic, geocentric and compound CRSs, which have no WKT1 form) keep the old behaviour: no
+  `.prj` and a warning for a Shapefile, an `undefined` definition and a warning for a GeoPackage.
 * **Tests.** `crs_convert.json` (`generate_crs_datum.py convert`): 42 CRSs as PROJJSON without an
   identifier, 12 as WKT1, 13 as WKT2, and 4 codes from the supplementary table, against pyproj
   within 1 cm (Laborde 5 cm, Hyperbolic Cassini-Soldner inverse 10 cm: PROJ evaluates series
@@ -541,8 +546,8 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
   CRS that change the prime meridian between Helmert steps (Tokyo 1892, MGI (Ferro)); PROJ's
   area test in the projected coordinates (a point just outside the geographic area of use);
   Local Orthographic (EPSG:10622), Bonne, Polar Stereographic C, Tunisia Mining Grid and
-  Transverse Mercator Zoned Grid System as definitions; WKT1 for the codes only in the
-  supplementary table.
+  Transverse Mercator Zoned Grid System as definitions; WKT1 for the 119 supplementary codes
+  that have no WKT1 form (3D, geocentric, compound, Krovak Modified).
 
 ## 11. Spatial index and joins
 

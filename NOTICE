@@ -10,7 +10,8 @@ Association of Oil & Gas Producers (IOGP). The data come from three places:
   * the `crs-definitions` crate (a dependency), generated from the EPSG registry;
   * the tables generated from the PROJ database (proj.db, pyproj 3.8 / PROJ 9.8) by
     test/reference/generate_crs_datum.py and committed under native/geoframe_core/src:
-    crs_extra.bin (about 1 200 CRS definitions the crate lacks, as PROJJSON),
+    crs_extra.bin (about 1 200 CRS definitions the crate lacks, as PROJJSON), crs_extra_wkt1.bin
+    (the OGC WKT1 of those that have one),
     datum_helmert.rs, datum_grids.rs, crs_names.rs and utm_crs.rs (datum operations by area of
     use, grid names, CRS names, UTM zones);
   * the PROJ database itself is part of PROJ, distributed under the MIT license by the PROJ
