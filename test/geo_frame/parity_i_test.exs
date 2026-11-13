@@ -437,6 +437,80 @@ defmodule GeoFrame.ParityITest do
     end
   end
 
+  # GeoPandas 1.2: g = GeoDataFrame({"a": [1, None], "geometry": [Point(0, 0), Point(1, 1)]},
+  #   crs=4326); g["g2"] = GeoSeries([Point(2, 2), None], crs=4326)
+  #   g.to_wkb() / g.to_wkt() -> a DataFrame (columns a, geometry, g2) with every geometry
+  #   column encoded (a null geometry gives None); to_wkb(hex=True) gives hex strings;
+  #   g.rename_geometry("a") and ("g2") and ("geometry") raise
+  #   ValueError("Column named <name> already exists"); rename_geometry("shape") renames.
+  describe "frame to_wkb/2, to_wkt/2 and rename_geometry/2" do
+    defp wkb_frame do
+      data = DataFrame.new(a: Series.from_list([1, nil]))
+      gdf = GeoDataFrame.new(data, s(["POINT (0 0)", "POINT (1 1)"], crs: "EPSG:4326"))
+      GeoDataFrame.put_geometry(gdf, "g2", s(["POINT (2 2)", nil], crs: "EPSG:4326"))
+    end
+
+    test "to_wkb encodes every geometry column and keeps the others" do
+      df = GeoDataFrame.to_wkb(wkb_frame())
+      assert %DataFrame{} = df
+      assert DataFrame.names(df) == ["a", "geometry", "g2"]
+      assert list(df["a"]) == [1, nil]
+
+      assert list(df["geometry"]) ==
+               [
+                 Base.decode16!("010100000000000000000000000000000000000000"),
+                 Base.decode16!("0101000000000000000000F03F000000000000F03F")
+               ]
+
+      assert list(df["g2"]) |> Enum.at(1) == nil
+    end
+
+    test "to_wkb hex: and srid:" do
+      df = GeoDataFrame.to_wkb(wkb_frame(), hex: true)
+
+      assert list(df["geometry"]) ==
+               [
+                 "010100000000000000000000000000000000000000",
+                 "0101000000000000000000F03F000000000000F03F"
+               ]
+
+      assert list(df["g2"]) == ["010100000000000000000000400000000000000040", nil]
+
+      assert list(GeoDataFrame.to_wkb(wkb_frame(), hex: true, srid: true)["geometry"]) |> hd() ==
+               "0101000020E610000000000000000000000000000000000000"
+    end
+
+    test "to_wkt encodes every geometry column" do
+      df = GeoDataFrame.to_wkt(wkb_frame())
+      assert DataFrame.names(df) == ["a", "geometry", "g2"]
+      assert list(df["geometry"]) == ["POINT(0 0)", "POINT(1 1)"]
+      assert list(df["g2"]) == ["POINT(2 2)", nil]
+    end
+
+    test "a frame without attributes works and options are validated" do
+      gdf = GeoDataFrame.new(DataFrame.new([]), s(["POINT (0 0)"]))
+      assert DataFrame.names(GeoDataFrame.to_wkt(gdf)) == ["geometry"]
+      assert_raise ArgumentError, fn -> GeoDataFrame.to_wkb(gdf, bogus: 1) end
+      assert_raise ArgumentError, fn -> GeoDataFrame.to_wkt(gdf, bogus: 1) end
+    end
+
+    test "rename_geometry renames the active geometry column" do
+      gdf = GeoDataFrame.rename_geometry(wkb_frame(), "shape")
+      assert gdf.geometry_column == "shape"
+      assert GeoDataFrame.geometry_columns(gdf) == ["shape", "g2"]
+      assert GeoDataFrame.names(gdf) == ["a", "shape", "g2"]
+      assert GeoDataFrame.rename_geometry(wkb_frame(), :shape).geometry_column == "shape"
+    end
+
+    test "rename_geometry rejects an existing column name" do
+      for name <- ["a", "g2", "geometry"] do
+        assert_raise ArgumentError, "Column named #{name} already exists", fn ->
+          GeoDataFrame.rename_geometry(wkb_frame(), name)
+        end
+      end
+    end
+  end
+
   describe "GeoFrame.geoparquet_metadata/1" do
     test "decodes the geo metadata", %{tmp_dir: dir} do
       path = Path.join(dir, "m.parquet")

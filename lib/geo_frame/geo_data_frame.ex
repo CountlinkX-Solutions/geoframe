@@ -1003,29 +1003,71 @@ defmodule GeoFrame.GeoDataFrame do
   @doc """
   Converts to an `Explorer.DataFrame` with the geometry columns last (active first).
 
-  Options: `:encoding` - `:wkb` (default, binary column) or `:wkt` (string column).
+  Options: `:encoding` - `:wkb` (default, binary column) or `:wkt` (string column). See
+  `to_wkb/2` and `to_wkt/2`.
   """
   @spec to_explorer(t(), keyword()) :: DataFrame.t()
-  def to_explorer(%__MODULE__{data: data, geometry: geometry} = gdf, opts \\ []) do
+  def to_explorer(%__MODULE__{} = gdf, opts \\ []) do
     GeoFrame.Options.validate!(opts, [:encoding])
 
-    encode = fn geometry ->
-      {values, dtype} =
-        case Keyword.get(opts, :encoding, :wkb) do
-          :wkb -> {GeoSeries.to_wkb(geometry), :binary}
-          :wkt -> {GeoSeries.to_wkt(geometry), :string}
-        end
-
-      Series.from_list(values, dtype: dtype)
+    case Keyword.get(opts, :encoding, :wkb) do
+      :wkb -> to_wkb(gdf)
+      :wkt -> to_wkt(gdf)
     end
+  end
 
-    columns = [{gdf.geometry_column, geometry} | gdf.secondary_geometries]
+  @doc """
+  Every geometry column, the active one and the secondary ones, encoded as WKB in an
+  `Explorer.DataFrame`; the attribute columns are unchanged and the geometry columns come last
+  (active first). Like GeoPandas `GeoDataFrame.to_wkb`; null geometries stay `nil`.
 
-    Enum.reduce(columns, data, fn {name, series}, acc ->
+  Options: `:hex` (default `false`) gives upper-case hexadecimal strings instead of binaries,
+  and `:srid` (an integer, or `true` for each column's own `EPSG:` CRS) gives PostGIS EWKB; see
+  `GeoFrame.GeoSeries.to_wkb/2`.
+  """
+  @spec to_wkb(t(), keyword()) :: DataFrame.t()
+  def to_wkb(%__MODULE__{} = gdf, opts \\ []) do
+    opts = Keyword.validate!(opts, hex: false, srid: nil)
+    dtype = if opts[:hex], do: :string, else: :binary
+    encode_geometries(gdf, &GeoSeries.to_wkb(&1, opts), dtype)
+  end
+
+  @doc """
+  Every geometry column encoded as WKT strings in an `Explorer.DataFrame`, like GeoPandas
+  `GeoDataFrame.to_wkt`; see `to_wkb/2` for the layout. Takes no options (GeoPandas passes
+  its keyword arguments to shapely, such as `rounding_precision`, which are not supported).
+  """
+  @spec to_wkt(t(), keyword()) :: DataFrame.t()
+  def to_wkt(%__MODULE__{} = gdf, opts \\ []) do
+    [] = Keyword.validate!(opts, [])
+    encode_geometries(gdf, &GeoSeries.to_wkt/1, :string)
+  end
+
+  defp encode_geometries(gdf, encode, dtype) do
+    columns = [{gdf.geometry_column, gdf.geometry} | gdf.secondary_geometries]
+
+    Enum.reduce(columns, gdf.data, fn {name, series}, acc ->
+      encoded = Series.from_list(encode.(series), dtype: dtype)
+
       if has_columns?(acc),
-        do: DataFrame.put(acc, name, encode.(series)),
-        else: DataFrame.new([{name, encode.(series)}])
+        do: DataFrame.put(acc, name, encoded),
+        else: DataFrame.new([{name, encoded}])
     end)
+  end
+
+  @doc """
+  Renames the active geometry column, like GeoPandas `GeoDataFrame.rename_geometry`.
+
+  Raises `ArgumentError` (`"Column named <name> already exists"`) when the frame already has a
+  column with that name, the geometry column itself included.
+  """
+  @spec rename_geometry(t(), String.t() | atom()) :: t()
+  def rename_geometry(%__MODULE__{} = gdf, new_name) do
+    name = to_string(new_name)
+
+    if name in names(gdf),
+      do: raise(ArgumentError, "Column named #{name} already exists"),
+      else: %{gdf | geometry_column: name}
   end
 
   @doc false
