@@ -1,14 +1,15 @@
 defmodule GeoFrame.GroupBy do
   @moduledoc """
-  `group_by/2`, `ungroup/2`, `groups/1` and `summarise/3` for `GeoFrame.GeoDataFrame`: grouped
-  aggregation of attributes *and* geometry.
+  `group_by/2`, `ungroup/2`, `groups/1`, `summarise/3` and `group_map/4` for
+  `GeoFrame.GeoDataFrame`: grouped aggregation of attributes *and* geometry, and a function per group.
 
   ## Grouping state
 
   `group_by/2` is `Explorer.DataFrame.group_by/2` on the attribute frame: the groups live in
-  `gdf.data` and `groups/1` reads them back. Grouped row verbs behave as Explorer's do (for
-  example `head/2` keeps the first rows of each group) and the geometry always follows the
-  rows Explorer picked. Geometry columns cannot be grouping keys.
+  `gdf.data` and `groups/1` reads them back. Grouped `head/2`, `tail/2`, `slice/3` and
+  `sample/2` act per group as Explorer's do (`head(grouped, 1)` is the first row of *each*
+  group; `head`, `tail` and `slice` return them in the original row order, as pandas'
+  `groupby.head` does, while `sample` lists group after group in an unspecified order) and the geometry always follows the rows Explorer picked. Geometry columns cannot be grouping keys.
 
   ## `summarise/3`
 
@@ -23,7 +24,12 @@ defmodule GeoFrame.GroupBy do
 
   Attribute columns: `:sum`, `:mean`, `:median`, `:min`, `:max`, `:count` (non-null values),
   `:first`, `:last` (the first / last *non-null* value, as pandas does; a group with only nulls
-  gives null), `:n_distinct` (Explorer's: a null counts as a value).
+  gives null), `:n_distinct` (distinct non-null values, as pandas `nunique`: unlike Explorer's `n_distinct`, a
+  null is not counted).
+
+  `:first` and `:last` skip nulls too (pandas semantics), which differs from
+  `Explorer.Series.first/1` and `Explorer.Series.last/1`: they return the first / last value even if it is
+  null.
 
   Geometry columns (the active one or any secondary one): `:union_all`, `:intersection_all`,
   `:collect` (`GeoFrame.GeoSeries.collect/2` of the group), `:envelope` (the box of the group's
@@ -46,6 +52,10 @@ defmodule GeoFrame.GroupBy do
   An ungrouped frame is one group. Raises `ArgumentError` for unknown columns or
   aggregations, a geometry function on an attribute (or the reverse), or an output name that
   repeats or clashes with a key or the geometry column.
+
+  ## `group_map/4`
+
+  See `group_map/4`: the equivalent of pandas `groupby(by).apply(fun)`.
 
   ## Example
 
@@ -139,6 +149,145 @@ defmodule GeoFrame.GroupBy do
 
     %{gdf | data: data, geometry: geometry, secondary_geometries: secondary}
   end
+
+  @doc """
+  Calls `fun` once per group with the group's `GeoFrame.GeoDataFrame` and concatenates the
+  results, like pandas `groupby(by).apply(fun)`.
+
+  `by` is a column name or a list of names (as `group_by/2`); groups come in key order, with
+  the options of `summarise/3`:
+
+    * `:sort` - `true` (default) orders groups by key (nulls last), `false` by first appearance.
+    * `:dropna` - `true` (default) skips rows with a null key; `false` makes them a group.
+
+  The frame handed to `fun` is ungrouped, holds the rows of the group in their original order
+  and **keeps the key columns** (unlike pandas 3, which removes them and puts the keys in the
+  index). The result equals concatenating `fun` over `GeoFrame.GeoDataFrame.filter_with/2` per key.
+
+  `fun` returns a `GeoFrame.GeoDataFrame` or an `Explorer.DataFrame`, and every group must
+  return the same kind (a mix raises `ArgumentError`, as does any other value). GeoDataFrames must
+  share the first group's CRS and geometry column name (and the same secondary geometry
+  columns); a mismatch raises `ArgumentError` naming the group. The result is the
+  concatenation (`GeoFrame.GeoDataFrame.concat_rows/1`, or `Explorer.DataFrame.concat_rows/1`),
+  without groups.
+
+  There is no index, so pandas' `group_keys=True` (the keys prepended as an index) becomes:
+  key columns that `fun` dropped are **prepended as columns**, repeated for every row of
+  the group; key columns it kept are left where they are. Groups for which `fun` returns no
+  rows contribute nothing.
+
+      GeoFrame.GeoDataFrame.group_map(gdf, "region", fn group ->
+        GeoFrame.GeoDataFrame.head(group, 2)
+      end)
+  """
+  @spec group_map(
+          GeoDataFrame.t(),
+          term(),
+          (GeoDataFrame.t() -> GeoDataFrame.t() | DataFrame.t()),
+          keyword()
+        ) ::
+          GeoDataFrame.t() | DataFrame.t()
+  def group_map(%GeoDataFrame{} = gdf, by, fun, opts \\ []) when is_function(fun, 1) do
+    GeoFrame.Options.validate!(opts, [:dropna, :sort])
+    gdf = GeoDataFrame.ungroup(gdf)
+    by = gdf |> group_by(by) |> groups()
+    gdf = if Keyword.get(opts, :dropna, true), do: Dissolve.drop_null_keys(gdf, by), else: gdf
+    {gids, keys} = Dissolve.group_ids(gdf, by, Keyword.get(opts, :sort, true))
+
+    positions =
+      gids
+      |> Enum.with_index()
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+
+    results =
+      for {key, id} <- Enum.with_index(keys) do
+        group = GeoDataFrame.take(gdf, Map.fetch!(positions, id))
+        {key, group |> fun.() |> add_keys(group, by)}
+      end
+
+    concat_results(results)
+  end
+
+  defp add_keys(%GeoDataFrame{data: data} = result, group, by),
+    do: %{result | data: prepend_missing(data, group, by, GeoDataFrame.n_rows(result))}
+
+  defp add_keys(%DataFrame{} = result, group, by),
+    do: prepend_missing(result, group, by, DataFrame.n_rows(result))
+
+  defp add_keys(other, _group, _by) do
+    raise ArgumentError,
+          "group_map function must return a GeoDataFrame or an Explorer.DataFrame, " <>
+            "got: #{inspect(other)}"
+  end
+
+  defp prepend_missing(data, group, by, rows) do
+    names = DataFrame.names(data)
+
+    missing =
+      for key <- by, key not in names do
+        series = DataFrame.pull(group.data, key)
+        value = series |> Series.to_list() |> hd()
+        {key, Series.from_list(List.duplicate(value, rows), dtype: Series.dtype(series))}
+      end
+
+    cond do
+      missing == [] ->
+        data
+
+      names == [] ->
+        DataFrame.new(missing)
+
+      true ->
+        data
+        |> then(&Enum.reduce(missing, &1, fn {k, s}, d -> DataFrame.put(d, k, s) end))
+        |> DataFrame.select(Enum.map(missing, &elem(&1, 0)) ++ names)
+    end
+  end
+
+  defp concat_results([]), do: DataFrame.new([])
+
+  defp concat_results([{_, %GeoDataFrame{} = first} | _] = results) do
+    results
+    |> Enum.map(fn
+      {key, %GeoDataFrame{} = result} -> check_compatible!(result, first, key)
+      {key, _} -> raise mix_error(key)
+    end)
+    |> GeoDataFrame.concat_rows()
+  end
+
+  defp concat_results([{_, %DataFrame{}} | _] = results) do
+    results
+    |> Enum.map(fn
+      {_, %DataFrame{} = result} -> result
+      {key, _} -> raise mix_error(key)
+    end)
+    |> DataFrame.concat_rows()
+  end
+
+  defp check_compatible!(result, first, key) do
+    if GeoDataFrame.crs(result) != GeoDataFrame.crs(first) do
+      raise ArgumentError,
+            "group #{inspect(key)} returned a GeoDataFrame with a different CRS " <>
+              "(#{inspect(GeoDataFrame.crs(result))}) than the first group " <>
+              "(#{inspect(GeoDataFrame.crs(first))})"
+    end
+
+    if result.geometry_column != first.geometry_column do
+      raise ArgumentError,
+            "group #{inspect(key)} returned a different geometry column " <>
+              "(#{inspect(result.geometry_column)}) than the first group " <>
+              "(#{inspect(first.geometry_column)})"
+    end
+
+    result
+  end
+
+  defp mix_error(key),
+    do:
+      ArgumentError.exception(
+        "group_map function returned a mix of GeoDataFrames and Explorer dataframes " <>
+          "(at group #{inspect(key)}); every group must return the same kind"
+      )
 
   # -- specs ---------------------------------------------------------------------------------
 

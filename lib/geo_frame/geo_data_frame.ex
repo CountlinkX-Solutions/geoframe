@@ -473,19 +473,30 @@ defmodule GeoFrame.GeoDataFrame do
   defp take_secondary(%__MODULE__{secondary_geometries: secondary}, fun),
     do: Enum.map(secondary, fn {name, series} -> {name, fun.(series)} end)
 
-  @doc "Rows from `offset` for `length` rows, with `Explorer.DataFrame.slice/3` semantics."
+  @doc """
+  Rows from `offset` for `length` rows, with `Explorer.DataFrame.slice/3` semantics.
+
+  On a grouped frame (`group_by/2`) the slice is taken within each group, as Explorer does;
+  the rows come back in their original order.
+  """
   @spec slice(t(), integer(), non_neg_integer()) :: t()
   def slice(gdf, offset, length) when is_integer(offset) and is_integer(length) do
-    by_positions(gdf, &DataFrame.slice(&1, offset, length))
+    by_positions(gdf, &DataFrame.slice(&1, offset, length), nil, true)
   end
 
-  @doc "The first `n` rows (default 5)."
+  @doc """
+  The first `n` rows (default 5); on a grouped frame (`group_by/2`) the first `n` rows of each
+  group, in the original row order (as pandas `groupby.head`).
+  """
   @spec head(t(), non_neg_integer()) :: t()
-  def head(gdf, n \\ 5), do: by_positions(gdf, &DataFrame.head(&1, n))
+  def head(gdf, n \\ 5), do: by_positions(gdf, &DataFrame.head(&1, n), nil, true)
 
-  @doc "The last `n` rows (default 5)."
+  @doc """
+  The last `n` rows (default 5); on a grouped frame the last `n` rows of each group, in the
+  original row order (as pandas `groupby.tail`).
+  """
   @spec tail(t(), non_neg_integer()) :: t()
-  def tail(gdf, n \\ 5), do: by_positions(gdf, &DataFrame.tail(&1, n))
+  def tail(gdf, n \\ 5), do: by_positions(gdf, &DataFrame.tail(&1, n), nil, true)
 
   @doc """
   Keeps rows for which `fun` is true, like `Explorer.DataFrame.filter_with/2`.
@@ -574,7 +585,9 @@ defmodule GeoFrame.GeoDataFrame do
 
   @doc """
   A random sample of rows, like `Explorer.DataFrame.sample/3`: `n_or_frac` is a row count
-  or a fraction. Options (`:replace`, `:shuffle`, `:seed`) are passed through.
+  or a fraction. Options (`:replace`, `:shuffle`, `:seed`) are passed through. On a grouped
+  frame (`group_by/2`) each group is sampled (`n_or_frac` per group), as Explorer does; the
+  order of the groups in the result is unspecified.
   """
   @spec sample(t(), number(), keyword()) :: t()
   def sample(gdf, n_or_frac, opts \\ []) do
@@ -588,8 +601,11 @@ defmodule GeoFrame.GeoDataFrame do
   # Runs `op` on a dataframe carrying a temporary row-position column and applies the
   # resulting positions to both sides. `source` is the attribute data `op` should see;
   # for position-only operations it is a bare position frame.
-  defp by_positions(%__MODULE__{data: data} = gdf, op, source \\ nil) do
+  defp by_positions(%__MODULE__{data: data} = gdf, op, source \\ nil, sorted? \\ false) do
     rows = n_rows(gdf)
+    # on a grouped frame the position-only verbs (head, tail, slice, sample) must see the
+    # groups, as Explorer's do, so they get the key columns
+    source = source || group_keys(data)
     column = temp_column(DataFrame.names(data))
     positions = Series.from_list(Enum.to_list(0..(rows - 1)//1), dtype: {:s, 64})
 
@@ -599,7 +615,14 @@ defmodule GeoFrame.GeoDataFrame do
         else: DataFrame.new([{column, positions}])
 
     indices = base |> op.() |> DataFrame.pull(column) |> Series.to_list()
-    take(gdf, indices)
+    take(gdf, if(sorted?, do: Enum.sort(indices), else: indices))
+  end
+
+  defp group_keys(data) do
+    case DataFrame.groups(data) do
+      [] -> nil
+      groups -> DataFrame.select(data, groups)
+    end
   end
 
   defp temp_column(names) do
@@ -825,6 +848,10 @@ defmodule GeoFrame.GeoDataFrame do
   @doc "Aggregates every group into one row, attributes and geometry; see `GeoFrame.GroupBy`."
   @spec summarise(t(), keyword() | map(), keyword()) :: t()
   defdelegate summarise(gdf, aggregations \\ [], opts \\ []), to: GeoFrame.GroupBy
+
+  @doc "Applies a function per group and concatenates the results; see `GeoFrame.GroupBy.group_map/4`."
+  @spec group_map(t(), term(), (t() -> t() | DataFrame.t()), keyword()) :: t() | DataFrame.t()
+  defdelegate group_map(gdf, by, fun, opts \\ []), to: GeoFrame.GroupBy
 
   # -- attribute operations -------------------------------------------------------------
 

@@ -90,9 +90,10 @@ defmodule GeoFrame.GroupByTest do
       assert GeoDataFrame.groups(sorted) == ["key"]
       assert wkt(sorted.geometry) == wkt(GeoSeries.take(gdf.geometry, sorted_positions(sorted)))
 
+      # head acts per group (Explorer): first row of b, a and the null group
       head = GeoDataFrame.head(grouped, 1)
-      assert col(head, "name") == ["p"]
-      assert wkt(head.geometry) == wkt(GeoSeries.take(gdf.geometry, [0]))
+      assert col(head, "name") == ["p", nil, "u"]
+      assert wkt(head.geometry) == wkt(GeoSeries.take(gdf.geometry, [0, 2, 5]))
       assert GeoDataFrame.groups(GeoDataFrame.drop_nil(grouped, "name")) == ["key"]
 
       # filter_with sees the groups (a per-group maximum), and keeps the geometry aligned
@@ -157,7 +158,8 @@ defmodule GeoFrame.GroupByTest do
       assert col(out, "key") == ["a", "b", "b"]
       assert col(out, "zone") == [2, 1, 2]
       assert col(out, "total") == [12, 30, 0]
-      assert col(out, "kinds") == [2, 2, 1]
+      # nulls are not counted (pandas nunique): a,2 -> {t}; b,1 -> {p,q}; b,2 -> {s}
+      assert col(out, "kinds") == [1, 2, 1]
     end
 
     test "dropna: false keeps the null key last, sort: false keeps first appearance", %{
