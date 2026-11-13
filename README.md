@@ -60,8 +60,9 @@ version 2.15), through [rustler_precompiled](https://hex.pm/packages/rustler_pre
 download is verified against the checksum file shipped in the Hex package.
 
 - **Build from source** (needs Rust) with `GEOFRAME_BUILD=true`, or if your platform has no
-  precompiled build. Add `{:rustler, "~> 0.38"}` to your own deps as well when you do this
-  from Hex or a git dependency, or set the variable when running `mix deps.compile`.
+  precompiled build. Set the variable for both `mix deps.get` and `mix deps.compile`
+  (Rustler is then pulled in as a dependency of GeoFrame), or add `{:rustler, "~> 0.38"}` to
+  your own deps.
   GeoFrame always builds from source in `:dev` and `:test` inside its own checkout.
 - **Git dependencies** do not carry the checksum file (it is generated from the release
   assets, after the tag exists), so a `github:`/`git:` dependency cannot verify a download and
