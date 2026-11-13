@@ -718,3 +718,99 @@ fn boundary_of_many_lines_follows_the_mod_2_rule_with_signed_zero() {
         vec![Some("MULTIPOINT((0 0),(5 5),(9 9),(7 7))".to_string())]
     );
 }
+
+// -- single_sided on polygons (GEOS: the ordinary buffer, unless the input boundary splits it) --
+//
+// Shapely values from:
+//   import shapely; from shapely import box, Polygon, MultiPolygon
+//   shapely.buffer(g, d, single_sided=True, quad_segs=8, join_style=j).area
+// GEOS 3.14 builds the ordinary buffer B of a polygon, nodes the polygon boundary with B's
+// boundary, polygonizes, and keeps the largest face when there is more than one, else B.
+
+fn polygon_sided(wkt: &str, d: f64, join: &str) -> f64 {
+    sided_area(wkt, d, &single_sided(join, 5.0))
+}
+
+fn square(s: f64) -> String {
+    format!("POLYGON ((0 0, {s} 0, {s} {s}, 0 {s}, 0 0))")
+}
+
+/// Positive distance: the band around the square while its side is below about 4.68 d, the
+/// square itself above (`s / d = 2 + sqrt(4 + pi)`).
+#[test]
+fn single_sided_square_switches_from_band_to_polygon_at_4_68() {
+    assert!(close(
+        polygon_sided(&square(4.5), 1.0, "round"),
+        21.121445152,
+        1e-6
+    ));
+    assert!(close(
+        polygon_sided(&square(4.9), 1.0, "round"),
+        24.01,
+        1e-6
+    ));
+    assert!(close(
+        polygon_sided(&square(10.0), 0.5, "round"),
+        100.0,
+        1e-6
+    ));
+}
+
+/// Negative distance: the band (polygon minus its erosion) up to about 6.83 |d|, the ordinary
+/// negative buffer above; a square of side <= 2 |d| erodes to nothing.
+#[test]
+fn single_sided_square_switches_from_band_to_negative_buffer_at_6_83() {
+    assert!(close(
+        polygon_sided(&square(4.0), -1.0, "round"),
+        12.0,
+        1e-6
+    ));
+    assert!(close(
+        polygon_sided(&square(6.5), -1.0, "round"),
+        22.0,
+        1e-6
+    ));
+    assert!(close(
+        polygon_sided(&square(7.2), -1.0, "round"),
+        27.04,
+        1e-6
+    ));
+    assert!(close(polygon_sided(&square(2.5), -1.0, "round"), 6.0, 1e-6));
+    let empty = one(&square(2.0)).buffer(-1.0, &single_sided("round", 5.0));
+    assert_geom_eq(&empty.unwrap(), &[Some("POLYGON EMPTY")]);
+}
+
+#[test]
+fn single_sided_holed_polygon_follows_the_ordinary_buffer_rule() {
+    let h = "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 4 2, 4 4, 2 4, 2 2))";
+    assert!(close(polygon_sided(h, 1.0, "round"), 96.0, 1e-6));
+    assert!(close(polygon_sided(h, 2.0, "round"), 96.0, 1e-6));
+    assert!(close(polygon_sided(h, -1.0, "round"), 48.658916136, 1e-6));
+    assert!(close(polygon_sided(h, -0.5, "round"), 72.219638712, 1e-6));
+    assert!(close(polygon_sided(h, -1.0, "mitre"), 48.0, 1e-6));
+    assert!(close(polygon_sided(h, -1.0, "bevel"), 49.5, 1e-6));
+}
+
+#[test]
+fn single_sided_star_polygon_matches_shapely() {
+    let star = "POLYGON ((5.970024991668155 0.5990004998809689, 1.7090495280277873 2.0902511118877554, -0.599000499880969 5.970024991668154, -2.0902511118877554 1.7090495280277873, -5.970024991668155 -0.5990004998809687, -1.7090495280277884 -2.0902511118877545, 0.5990004998809657 -5.970024991668155, 2.0902511118877545 -1.7090495280277884, 5.970024991668155 0.5990004998809689))";
+    for (d, area) in [
+        (1.0, 45.820519421),
+        (-1.0, 28.932264326),
+        (2.0, 84.450999088),
+        (-0.5, 29.558668196),
+    ] {
+        assert!(
+            close(polygon_sided(star, d, "round"), area, 1e-6),
+            "d = {d}"
+        );
+    }
+}
+
+/// A MultiPolygon is buffered per member and the results are united.
+#[test]
+fn single_sided_multipolygon_unions_its_members() {
+    let mp = "MULTIPOLYGON (((0 0, 3 0, 3 3, 0 3, 0 0)), ((10 0, 20 0, 20 10, 10 10, 10 0)))";
+    assert!(close(polygon_sided(mp, 1.0, "round"), 115.121445152, 1e-6));
+    assert!(close(polygon_sided(mp, -1.0, "round"), 72.0, 1e-6));
+}
