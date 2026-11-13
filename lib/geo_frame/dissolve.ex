@@ -50,10 +50,14 @@ defmodule GeoFrame.Dissolve do
     * `:dropna` - `true` (default) drops rows with a null key; `false` keeps them as a group.
     * `:sort` - `true` (default) orders groups by key, `false` by first appearance.
     * `:observed` - for `:category` key columns only. `true` (default) keeps the groups that
-      occur in the data; `false` also adds every unobserved category (every combination, for
-      several keys) as an empty group, like `observed=False` in GeoPandas: the geometry is
+      occur in the data; `false` also adds every unobserved combination of the keys' values as
+      an empty group, like `observed=False` in GeoPandas: the geometry is
       `GEOMETRYCOLLECTION EMPTY`, `:sum` and `:count` give 0 and the other functions null.
-      Groups are ordered by category text; with `sort: false` each key's observed values come first, in order of appearance.
+      Each key's levels are the values it holds: Explorer categoricals share one
+      process-wide category mapping, so a column has no categories of its own beyond its
+      values, and categories with no rows (which pandas can declare) are not added; with one
+      key the option therefore adds nothing. Groups are ordered by key text; with
+      `sort: false` each key's values come in order of appearance.
       Without category keys the option has no effect; mixing category and other keys raises
       `ArgumentError`. GeoPandas defaults to `false`; the default here stays `true` so existing
       calls keep their result.
@@ -147,9 +151,16 @@ defmodule GeoFrame.Dissolve do
   # Re-lays the dissolved `out` (one row per observed group, in `groups` order) over every
   # combination of the key categories; the added groups are empty.
   defp add_unobserved(out, gdf, by, groups, all_aggs, sort?) do
+    # Each key's levels are its own non-null values. `Series.categories/1` cannot be used:
+    # Explorer 0.13 categoricals share one process-wide category mapping (Polars), so it
+    # returns every string categorized anywhere in the session, not this column's categories.
     categories =
       Enum.map(by, fn name ->
-        gdf.data |> DataFrame.pull(name) |> Series.categories() |> Series.to_list()
+        gdf.data
+        |> DataFrame.pull(name)
+        |> Series.distinct()
+        |> Series.to_list()
+        |> Enum.reject(&is_nil/1)
       end)
 
     all_groups = level_product(categories, groups, sort?)

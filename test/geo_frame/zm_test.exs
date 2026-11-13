@@ -76,9 +76,40 @@ defmodule GeoFrame.ZmTest do
            ]
   end
 
-  test "a collection mixing member dimensions is an error" do
-    assert_raise ArgumentError, ~r/dimension/, fn ->
-      s(["GEOMETRYCOLLECTION (POINT (1 2), POINT Z (1 2 3))"])
+  describe "a collection mixing member dimensions" do
+    # Shapely 2.2 / GEOS 3.14 keep each member's dimension: GEOMETRYCOLLECTION Z (POINT (1 2),
+    # POINT Z (3 4 5)), has_z true, get_coordinates(include_z=True) [[1, 2, nan], [3, 4, 5]].
+    # A GeoArrow collection has one dimension, so the 2D member is stored with a NaN Z.
+    @mixed "GEOMETRYCOLLECTION (POINT (1 2), POINT Z (3 4 5))"
+
+    test "is read with the missing ordinates NaN, as Shapely reports them" do
+      series = s([@mixed])
+      assert list(GeoSeries.has_z(series)) == [true]
+      assert list(GeoSeries.has_m(series)) == [false]
+      coords = GeoSeries.get_coordinates(series, include_z: true)
+      assert list(coords["z"]) == [:nan, 5.0]
+      assert list(coords["x"]) == [1.0, 3.0]
+      assert GeoSeries.to_wkt(series) == ["GEOMETRYCOLLECTION Z(POINT Z(1 2 NaN),POINT Z(3 4 5))"]
+
+      assert GeoSeries.to_wkt(GeoSeries.force_2d(series)) == [
+               "GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))"
+             ]
+    end
+
+    test "is read from Shapely's WKB" do
+      wkb =
+        Base.decode16!(
+          "01EF030000020000000101000000000000000000F03F000000000000004001E903000000000000000008" <>
+            "4000000000000010400000000000001440"
+        )
+
+      assert GeoSeries.to_wkt(GeoSeries.from_wkb!([wkb])) == GeoSeries.to_wkt(s([@mixed]))
+    end
+
+    test "a member of another dimension in a tagged WKT collection is an error, as in GEOS" do
+      assert_raise ArgumentError, ~r/cannot mix dimensionality/, fn ->
+        s(["GEOMETRYCOLLECTION Z (POINT Z (1 2 3), POINT (3 4))"])
+      end
     end
   end
 

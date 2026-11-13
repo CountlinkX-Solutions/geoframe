@@ -85,17 +85,27 @@ impl ColumnBuilder {
     }
 }
 
-/// Pushes one parsed geometry. The GeoArrow builder panics (instead of returning an error) on
-/// a collection whose members have different dimensions, so a panic is reported as such; the
-/// builder is dropped by the caller on error.
+/// Pushes one parsed geometry. The GeoArrow builder stores one dimension per collection (and
+/// panics instead of returning an error on a collection whose members differ), so such a
+/// collection is first promoted to the dimension GEOS gives it (`mixed_dims`); the builder is
+/// dropped by the caller on error.
 fn push_guarded(
     builder: &mut GeometryBuilder,
     geometry: Option<&impl geo_traits::GeometryTrait<T = f64>>,
 ) -> Result<(), String> {
-    if geometry.is_some_and(mixes_dimensions) {
-        return Err(MIXED_DIMENSIONS_ERROR.to_string());
+    if let Some(g) = geometry.filter(|g| mixes_dimensions(*g)) {
+        let bytes = crate::mixed_dims::promoted_wkb(g)?;
+        let promoted = wkb::reader::read_wkb(&bytes).map_err(|e| e.to_string())?;
+        return push_caught(builder, Some(&promoted));
     }
-    // Last-resort guard: the pre-check above mirrors the known panic, not every possible one.
+    push_caught(builder, geometry)
+}
+
+/// Last-resort guard: the promotion above mirrors the known panic, not every possible one.
+fn push_caught(
+    builder: &mut GeometryBuilder,
+    geometry: Option<&impl geo_traits::GeometryTrait<T = f64>>,
+) -> Result<(), String> {
     catch_unwind(AssertUnwindSafe(|| builder.push_geometry(geometry)))
         .map_err(|_| MIXED_DIMENSIONS_ERROR.to_string())?
         .map_err(|e| e.to_string())
@@ -230,9 +240,15 @@ impl GeoColumn {
                     if wkt_nesting_exceeds(text.as_ref(), MAX_WKT_NESTING_DEPTH) {
                         return Err(format!("invalid WKT at row {i}: nesting too deep"));
                     }
-                    wkt::Wkt::<f64>::from_str(text.as_ref())
-                        .map(Some)
-                        .map_err(|e| format!("invalid WKT at row {i}: {e}"))
+                    let parsed = wkt::Wkt::<f64>::from_str(text.as_ref())
+                        .map_err(|e| format!("invalid WKT at row {i}: {e}"))?;
+                    if crate::mixed_dims::tagged_collection_conflict(&parsed) {
+                        return Err(format!(
+                            "invalid WKT at row {i}: cannot mix dimensionality in a geometry \
+                             (a member of a GEOMETRYCOLLECTION Z, M or ZM has another dimension)"
+                        ));
+                    }
+                    Ok(Some(parsed))
                 }
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -591,12 +607,129 @@ mod mixed_dimension_tests {
         assert!(!mixed("GEOMETRYCOLLECTION EMPTY"));
     }
 
+    fn read_wkt(text: &str) -> Result<String, String> {
+        let column = GeoColumn::from_wkt(&[Some(text)], None)?;
+        Ok(column.to_wkt()?[0].clone().unwrap())
+    }
+
+    fn read_wkb(bytes: &[u8]) -> String {
+        let column = GeoColumn::from_wkb(&[Some(bytes)], None).unwrap();
+        column.to_wkt().unwrap()[0].clone().unwrap()
+    }
+
+    /// ISO WKB, little endian: a point with the given ordinates (2 to 4 values; `zm` names
+    /// them) and a collection of members under a header type code.
+    fn point_wkb(type_code: u32, ordinates: &[f64]) -> Vec<u8> {
+        let mut out = vec![1];
+        out.extend(type_code.to_le_bytes());
+        ordinates.iter().for_each(|v| out.extend(v.to_le_bytes()));
+        out
+    }
+
+    fn collection_wkb(type_code: u32, members: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = vec![1];
+        out.extend(type_code.to_le_bytes());
+        out.extend((members.len() as u32).to_le_bytes());
+        members.iter().for_each(|m| out.extend(m));
+        out
+    }
+
+    // Shapely 2.2 / GEOS 3.14 read these collections; the members keep their own dimension
+    // there and `get_coordinates` reports a missing ordinate as NaN, which is what a member
+    // promoted to the collection's dimension holds here.
     #[test]
-    fn push_guarded_returns_the_error_for_a_mixed_collection() {
-        let g =
-            wkt::Wkt::<f64>::from_str("GEOMETRYCOLLECTION (POINT (1 2), POINT Z (1 2 3))").unwrap();
-        let mut b = ColumnBuilder::new(None);
-        let err = b.push(Some(&g)).unwrap_err();
-        assert!(err.contains("cannot mix dimensions"), "{err}");
+    fn a_collection_with_two_and_three_dimensional_members_is_promoted_with_nan_z() {
+        assert_eq!(
+            read_wkt("GEOMETRYCOLLECTION (POINT (1 2), POINT Z (3 4 5))").unwrap(),
+            "GEOMETRYCOLLECTION Z(POINT Z(1 2 NaN),POINT Z(3 4 5))"
+        );
+        assert_eq!(
+            read_wkt(
+                "GEOMETRYCOLLECTION (LINESTRING Z (0 0 1, 1 1 2), POLYGON ((0 0, 1 0, 1 1, 0 0)))"
+            )
+            .unwrap(),
+            "GEOMETRYCOLLECTION Z(LINESTRING Z(0 0 1,1 1 2),\
+             POLYGON Z((0 0 NaN,1 0 NaN,1 1 NaN,0 0 NaN)))"
+        );
+        assert_eq!(
+            read_wkt("GEOMETRYCOLLECTION (POINT (1 2), MULTIPOINT Z ((3 4 5)))").unwrap(),
+            "GEOMETRYCOLLECTION Z(POINT Z(1 2 NaN),MULTIPOINT Z((3 4 5)))"
+        );
+    }
+
+    #[test]
+    fn measured_and_three_dimensional_members_make_an_xyzm_collection() {
+        assert_eq!(
+            read_wkt("GEOMETRYCOLLECTION (POINT M (1 2 3), POINT Z (3 4 5))").unwrap(),
+            "GEOMETRYCOLLECTION ZM(POINT ZM(1 2 NaN 3),POINT ZM(3 4 5 NaN))"
+        );
+    }
+
+    #[test]
+    fn a_nested_mixed_collection_reports_that_geoarrow_cannot_nest_collections() {
+        // GeoArrow stores no collection inside a collection, whatever the dimensions.
+        for text in [
+            "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (POINT (1 2), POINT (5 6)), POINT M (3 4 9))",
+            "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (POINT (1 2), POINT (5 6)), POINT (3 4))",
+        ] {
+            let err = read_wkt(text).unwrap_err();
+            assert!(err.contains("nested geometry collections"), "{text}: {err}");
+        }
+    }
+
+    #[test]
+    fn empty_members_count_like_geos() {
+        // An empty point or line keeps its dimension; an empty multi geometry adds none.
+        assert_eq!(
+            read_wkt("GEOMETRYCOLLECTION (POINT (1 2), POINT Z EMPTY)").unwrap(),
+            "GEOMETRYCOLLECTION Z(POINT Z(1 2 NaN),POINT Z EMPTY)"
+        );
+        assert_eq!(
+            read_wkt("GEOMETRYCOLLECTION (POINT (1 2), LINESTRING Z EMPTY)").unwrap(),
+            "GEOMETRYCOLLECTION Z(POINT Z(1 2 NaN),LINESTRING Z EMPTY)"
+        );
+        assert_eq!(
+            read_wkt("GEOMETRYCOLLECTION (POINT (1 2), MULTIPOINT Z EMPTY)").unwrap(),
+            "GEOMETRYCOLLECTION(POINT(1 2),MULTIPOINT EMPTY)"
+        );
+    }
+
+    #[test]
+    fn the_wkb_collection_header_does_not_decide_the_dimension() {
+        // GEOS: a GC Z header around 2D points gives a 2D collection; an M header around a 2D
+        // and a Z point gives a Z collection.
+        let xy = || [point_wkb(1, &[1.0, 2.0]), point_wkb(1, &[3.0, 4.0])];
+        assert_eq!(
+            read_wkb(&collection_wkb(1007, &xy())),
+            "GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))"
+        );
+        let mixed = [point_wkb(1, &[1.0, 2.0]), point_wkb(1001, &[3.0, 4.0, 5.0])];
+        assert_eq!(
+            read_wkb(&collection_wkb(2007, &mixed)),
+            "GEOMETRYCOLLECTION Z(POINT Z(1 2 NaN),POINT Z(3 4 5))"
+        );
+        assert_eq!(
+            read_wkb(&collection_wkb(7, &mixed)),
+            "GEOMETRYCOLLECTION Z(POINT Z(1 2 NaN),POINT Z(3 4 5))"
+        );
+    }
+
+    #[test]
+    fn a_member_of_another_dimension_in_a_tagged_wkt_collection_is_an_error_as_in_geos() {
+        for text in [
+            "GEOMETRYCOLLECTION Z (POINT Z (1 2 3), POINT (3 4))",
+            "GEOMETRYCOLLECTION Z (POINT Z (1 2 3), POINT M (1 2 3))",
+            "GEOMETRYCOLLECTION Z (POINT Z (1 2 3), POINT EMPTY)",
+            "GEOMETRYCOLLECTION ZM (POINT ZM (1 2 3 4), POINT Z (1 2 3))",
+            "GEOMETRYCOLLECTION Z (POINT Z (1 2 3), GEOMETRYCOLLECTION (POINT Z (1 2 3)))",
+            "GEOMETRYCOLLECTION (POINT (1 2), GEOMETRYCOLLECTION Z (POINT (1 2)))",
+        ] {
+            let err = read_wkt(text).unwrap_err();
+            assert!(err.contains("cannot mix dimensionality"), "{text}: {err}");
+        }
+        assert_eq!(
+            read_wkt("GEOMETRYCOLLECTION Z (POINT Z (1 2 3), POINT Z (4 5 6))").unwrap(),
+            "GEOMETRYCOLLECTION Z(POINT Z(1 2 3),POINT Z(4 5 6))"
+        );
     }
 }

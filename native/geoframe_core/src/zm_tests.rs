@@ -66,11 +66,16 @@ fn empty_geometries_keep_their_declared_dimension() {
 }
 
 #[test]
-fn a_collection_with_mixed_member_dimensions_is_an_error_not_a_panic() {
-    // The GeoArrow builder cannot hold members of different dimensions in one collection.
+fn a_collection_with_mixed_member_dimensions_is_promoted_not_a_panic() {
+    // The GeoArrow builder holds one dimension per collection (and panics on mixed members),
+    // so the 2D member is promoted with a NaN Z, as Shapely reports it.
     let text = "GEOMETRYCOLLECTION (POINT (1 2), POINT Z (1 2 3))";
-    let err = GeoColumn::from_wkt(&[Some(text)], None).unwrap_err();
-    assert!(err.contains("dimension"), "{err}");
+    let c = GeoColumn::from_wkt(&[Some(text)], None).unwrap();
+    assert_eq!(c.has_z(), vec![true]);
+    assert_eq!(
+        c.to_wkt().unwrap()[0].as_deref(),
+        Some("GEOMETRYCOLLECTION Z(POINT Z(1 2 NaN),POINT Z(1 2 3))")
+    );
     let wkb = col(&[Some("POINT Z (1 2 3)")]).to_wkb().unwrap();
     assert!(GeoColumn::from_wkb(&wkb, None).is_ok());
 }
