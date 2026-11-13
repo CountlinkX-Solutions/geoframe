@@ -438,3 +438,90 @@ fn polygonize_a_sparse_grid_of_90_000_cells_is_fast() {
     let out = series(&refs).polygonize(true).unwrap();
     assert_eq!(out.polygons.len(), 299 * 299);
 }
+
+// Lines crossing input polygons (`node: true`, 0.2.0 B14). GEOS makes a union first and
+// polygonizes it, but a polygon ring is one edge there (a node only at its start), so the line
+// pieces between two rings' inner vertices are dangles, not faces; the crossing points are
+// vertices of the merged ring. Expected answers: Shapely 2.2 / GEOS 3.14
+// `shapely.polygonize([shapely.union_all(rows)])`, case numbers from the A6 fuzz (seed 7); GEOS's
+// rounding vertex `1.9999999999999996 5` next to `2 5` (case 357) is left out.
+#[allow(clippy::type_complexity)]
+const LINE_CROSSINGS: &[(u32, &[&str], &[&str])] = &[
+    (
+        380,
+        &["POLYGON ((1 2, 1 2, 2 2, 2 5, 1 5, 1 2))", "POLYGON ((2 3, 3 3, 5 3, 5 6, 2 6, 2 3))", "LINESTRING (1 4, 3 7)", "POLYGON ((4 2, 4 4, 1 4, 1 2, 4 2))"],
+        &["POLYGON ((1 2, 1 4, 1 5, 1.6666666666666667 5, 2 5, 2 5.5, 2 6, 2.3333333333333335 6, 5 6, 5 3, 4 3, 4 2, 2 2, 1 2))"],
+    ),
+    (
+        357,
+        &["LINESTRING (0 3, 1 7)", "LINESTRING (0 4, 4 6)", "POLYGON ((1 5, 2 5, 3 5, 3 8, 1 8, 1 5))", "POLYGON ((1 1, 3 1, 1 5, 1 1))"],
+        &["POLYGON ((1 1, 1 4.5, 1 5, 1.2 4.6000000000000005, 3 1, 1 1))", "POLYGON ((1 5, 1 7, 1 8, 3 8, 3 5.5, 3 5, 2 5, 1 5))"],
+    ),
+    (
+        171,
+        &["POLYGON ((1 3, 1 3, 2 3, 2 7, 1 7, 1 3))", "POLYGON ((1 0, 2 0, 3 0, 3 2, 1 2, 1 0))", "LINESTRING (3 2, 7 5)", "LINESTRING (3 0, 5 4)"],
+        &["POLYGON ((1 0, 1 2, 3 2, 3 0, 2 0, 1 0))", "POLYGON ((1 3, 1 7, 2 7, 2 3, 1 3))"],
+    ),
+    (
+        156,
+        &["LINESTRING (3 0, 6 2)", "LINESTRING (1 2, 4 6)", "POLYGON ((1 2, 1 2, 2 2, 2 3, 1 3, 1 2))", "POLYGON ((3 3, 3 7, 2 7, 2 3, 3 3))"],
+        &["POLYGON ((1 2, 1 3, 1.75 3, 2 3, 2 2, 1 2))", "POLYGON ((2 3, 2 3.3333333333333335, 2 7, 3 7, 3 4.666666666666667, 3 3, 2 3))"],
+    ),
+    (
+        115,
+        &["POLYGON ((7 2, 7 4, 4 4, 4 2, 7 2))", "POLYGON ((2 1, 5 1, 2 4, 2 1))", "POLYGON ((6 0, 6 4, 5 4, 5 0, 6 0))", "LINESTRING (4 4, 5 8)"],
+        &["POLYGON ((2 1, 2 4, 4 2, 5 1, 2 1))", "POLYGON ((4 2, 4 4, 5 4, 6 4, 7 4, 7 2, 6 2, 6 0, 5 0, 5 1, 5 2, 4 2))"],
+    ),
+    (
+        12,
+        &["LINESTRING (2 1, 5 3)", "POLYGON ((1 1, 5 1, 1 3, 1 1))", "POLYGON ((4 2, 4 3, 3 3, 3 2, 4 2))"],
+        &["POLYGON ((1 1, 1 3, 3 2, 3.2857142857142856 1.8571428571428572, 5 1, 2 1, 1 1))", "POLYGON ((3 2, 3 3, 4 3, 4 2.3333333333333335, 4 2, 3.5 2, 3 2))"],
+    ),
+    (
+        352,
+        &["LINESTRING (1 4, 4 7)", "POLYGON ((5 4, 5 4, 6 4, 6 6, 5 6, 5 4))", "LINESTRING (5 3, 7 7)", "POLYGON ((0 3, 2 3, 0 6, 0 3))"],
+        &["POLYGON ((0 3, 0 6, 1.2 4.2, 2 3, 0 3))", "POLYGON ((5 4, 5 6, 6 6, 6 5, 6 4, 5.5 4, 5 4))"],
+    ),
+    (
+        181,
+        &["LINESTRING (5 1, 6 5)", "POLYGON ((1 3, 2 3, 3 3, 3 6, 1 6, 1 3))", "POLYGON ((4 2, 6 2, 4 4, 4 2))"],
+        &["POLYGON ((1 3, 1 6, 3 6, 3 3, 2 3, 1 3))", "POLYGON ((4 2, 4 4, 5.4 2.6, 6 2, 5.25 2, 4 2))"],
+    ),
+];
+
+/// Canonical rows with every number rounded to 9 places.
+fn rounded(column: &GeoColumn) -> Vec<String> {
+    let number = |t: &str| {
+        t.parse::<f64>()
+            .map_or(t.to_string(), |v| format!("{v:.9}"))
+    };
+    let mut rows: Vec<String> = canonical(column)
+        .iter()
+        .map(|w| {
+            w.split_inclusive(|c: char| " ,()".contains(c))
+                .map(|tok| {
+                    let (body, tail) = tok.split_at(tok.len() - 1);
+                    if tail.chars().all(|c| " ,()".contains(c)) && !body.is_empty() {
+                        format!("{}{tail}", number(body))
+                    } else {
+                        tok.to_string()
+                    }
+                })
+                .collect::<String>()
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+#[test]
+fn polygonize_lines_crossing_polygons_matches_geos() {
+    let mut wrong = Vec::new();
+    for (case, input, polygons) in LINE_CROSSINGS {
+        let got = series(input).polygonize(true).unwrap().polygons;
+        if rounded(&got) != rounded(&series(polygons)) {
+            wrong.push(*case);
+        }
+    }
+    assert!(wrong.is_empty(), "cases that differ from GEOS: {wrong:?}");
+}

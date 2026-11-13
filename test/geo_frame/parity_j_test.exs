@@ -245,6 +245,34 @@ defmodule GeoFrame.ParityJTest do
                [canon("POLYGON ((0 0, 0 1, 1 1, 2 1, 2 0, 1 0, 0 0))")]
     end
 
+    # shapely.polygonize([shapely.union_all(rows)]), Shapely 2.2 / GEOS 3.14. A ring of the
+    # merged area is one edge (a node only at its start): the line piece between the triangle
+    # and the square ends at inner vertices of both rings, so it is a dangle and makes no face.
+    test "node: true: a line piece between two polygons is no face" do
+      series =
+        s([
+          "LINESTRING (2 1, 5 3)",
+          "POLYGON ((1 1, 5 1, 1 3, 1 1))",
+          "POLYGON ((4 2, 4 3, 3 3, 3 2, 4 2))"
+        ])
+
+      assert series |> GeoSeries.polygonize() |> GeoSeries.normalize() |> GeoSeries.to_wkt() ==
+               [
+                 canon(
+                   "POLYGON ((1 1, 1 3, 3 2, 3.2857142857142856 1.8571428571428572, 5 1, 2 1, 1 1))"
+                 ),
+                 canon_n("POLYGON ((3 2, 3 3, 4 3, 4 2.3333333333333335, 4 2, 3.5 2, 3 2))")
+               ]
+    end
+
+    # Where a line crosses a ring, the crossing is a vertex of the ring.
+    test "node: true: the crossing of a line and a ring is a vertex of the ring" do
+      series = s(["LINESTRING (1 4, 4 7)", "POLYGON ((0 3, 2 3, 0 6, 0 3))"])
+
+      assert series |> GeoSeries.polygonize() |> GeoSeries.normalize() |> GeoSeries.to_wkt() ==
+               [canon_n("POLYGON ((0 3, 0 6, 1.2 4.2, 2 3, 0 3))")]
+    end
+
     test "full: true also returns cut edges, dangles and invalid rings" do
       series =
         s([

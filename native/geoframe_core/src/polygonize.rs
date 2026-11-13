@@ -22,6 +22,9 @@
 //!
 //! Shells are output clockwise and holes counter-clockwise, as GEOS does. Which ring vertex
 //! comes first and the order of the polygons differ from GEOS; the polygons themselves agree.
+//! As in GEOS, a ring of the merged area is one edge (a node only at its start) and the points
+//! where a line crosses it are vertices of it, so a line piece that ends at an inner vertex of a
+//! ring is a dangle.
 //! Where input polygons are merged first (`node = true`) every input vertex that lies on the
 //! merged outline stays, collinear ones included, as in a GEOS union (see
 //! `keep_input_vertices`).
@@ -587,11 +590,42 @@ fn edges_of(rows: &[Geometry<f64>], node: bool) -> Result<Vec<Vec<C>>, String> {
         keep_input_vertices(unary_union(&oriented), &oriented, &work.lines)
     };
     let mut lines: Vec<LineString<f64>> = work.lines;
+    let mut rings_out: Vec<Vec<C>> = Vec::new();
     if !area.0.is_empty() {
         lines = line_outside_polygon(&MultiLineString::new(lines), &area);
+        let area = add_crossings(area, &lines);
+        rings_out = area
+            .0
+            .iter()
+            .flat_map(rings)
+            .map(|r| dedup(&r.0))
+            .filter(|c| c.len() >= 2)
+            .collect();
     }
-    lines.extend(area.0.iter().flat_map(rings).cloned());
-    node_lines(&lines)
+    // As in the GEOS polygonizer, a ring of the merged area is one edge: its only node is its
+    // start, so a line piece that ends at another vertex of the ring is a dangle.
+    let mut edges = node_lines(&lines)?;
+    edges.extend(rings_out);
+    Ok(edges)
+}
+
+/// Adds the points where a line piece ends on the outline of the area (where the line crossed
+/// or touched it) to the outline. The union has them as vertices, but they are computed, so
+/// they are on the outline only up to rounding.
+fn add_crossings(area: MultiPolygon<f64>, pieces: &[LineString<f64>]) -> MultiPolygon<f64> {
+    let ends = pieces
+        .iter()
+        .flat_map(|l| [l.0.first(), l.0.last()])
+        .flatten()
+        .copied();
+    insert_on_outline(area, ends, 2e-9, |a, b, c| {
+        let tolerance = 1e-9 * (1.0 + a.x.abs().max(a.y.abs()).max(b.x.abs()).max(b.y.abs()));
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let length2 = dx * dx + dy * dy;
+        let t = (((c.x - a.x) * dx + (c.y - a.y) * dy) / length2).clamp(0.0, 1.0);
+        let (px, py) = (a.x + t * dx - c.x, a.y + t * dy - c.y);
+        px.hypot(py) <= tolerance
+    })
 }
 
 /// Puts back the vertices the union dropped. GEOS keeps every input vertex that lies on the
@@ -604,6 +638,23 @@ fn keep_input_vertices(
 ) -> MultiPolygon<f64> {
     use geo::algorithm::kernels::{Kernel, Orientation, RobustKernel};
 
+    let ring_vertices = inputs.iter().flat_map(rings).flat_map(|r| r.0.iter());
+    let points = ring_vertices
+        .chain(lines.iter().flat_map(|l| l.0.iter()))
+        .copied();
+    insert_on_outline(area, points, 0.0, |a, b, c| {
+        RobustKernel::orient2d(a, b, c) == Orientation::Collinear
+    })
+}
+
+/// Inserts every point that `on_segment(a, b, point)` finds on a segment `a`-`b` of the outline
+/// of `area`, strictly inside it, into that segment.
+fn insert_on_outline(
+    area: MultiPolygon<f64>,
+    points: impl Iterator<Item = C>,
+    slack: f64,
+    on_segment: impl Fn(C, C, C) -> bool,
+) -> MultiPolygon<f64> {
     let outline: Vec<&LineString<f64>> = area.0.iter().flat_map(rings).collect();
     let mut segments: Vec<(C, C, usize)> = Vec::new();
     for (ring, line) in outline.iter().enumerate() {
@@ -619,15 +670,15 @@ fn keep_input_vertices(
     // For every segment of the outline, the input vertices that lie strictly inside it.
     let mut inserts: HashMap<usize, Vec<C>> = HashMap::new();
     let mut done: HashSet<Key> = HashSet::new();
-    let ring_vertices = inputs.iter().flat_map(rings).flat_map(|r| r.0.iter());
-    for &c in ring_vertices.chain(lines.iter().flat_map(|l| l.0.iter())) {
+    for c in points {
         if !done.insert(key(c)) {
             continue;
         }
-        let point = AABB::from_point([c.x, c.y]);
+        let e = slack * (1.0 + c.x.abs().max(c.y.abs()));
+        let point = AABB::from_corners([c.x - e, c.y - e], [c.x + e, c.y + e]);
         for hit in tree.locate_in_envelope_intersecting(&point) {
             let (a, b, _) = segments[hit.data];
-            if c != a && c != b && RobustKernel::orient2d(a, b, c) == Orientation::Collinear {
+            if c != a && c != b && on_segment(a, b, c) {
                 inserts.entry(hit.data).or_default().push(c);
             }
         }
