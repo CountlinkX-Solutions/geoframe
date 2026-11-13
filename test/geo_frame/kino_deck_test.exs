@@ -385,6 +385,114 @@ defmodule GeoFrame.Kino.DeckTest do
     end
   end
 
+  describe "payload/2 several layers" do
+    defp group_buffer({:binary, _info, bin} = payload, group, name) do
+      %{offset: offset, bytes: bytes} = Map.fetch!(elem(payload, 1).buffers, "#{group}.#{name}")
+      binary_part(bin, offset, bytes)
+    end
+
+    test "a list of frames gives one group per frame with prefixed buffers" do
+      a = points(["POINT (1 2)", "POINT (3 4)"])
+      b = points(["LINESTRING (10 10, 20 20)"])
+      {:binary, info, _} = payload = Deck.payload([a, b], [])
+
+      assert [%{name: "Layer 1", prefix: "0."}, %{name: "Layer 2", prefix: "1."}] =
+               Enum.map(info.groups, &Map.take(&1, [:name, :prefix]))
+
+      assert [%{layers: %{points: 2, lines: 0}}, %{layers: %{points: 0, lines: 1}}] =
+               info.groups
+
+      assert f64s(group_buffer(payload, 0, "points.positions")) == [1.0, 2.0, 3.0, 4.0]
+      assert f64s(group_buffer(payload, 1, "lines.positions")) == [10.0, 10.0, 20.0, 20.0]
+      assert Enum.all?(info.buffers, fn {_, %{offset: o}} -> rem(o, 8) == 0 end)
+      assert info.bounds == [1.0, 2.0, 20.0, 20.0]
+      assert info.config.basemap =~ "positron"
+      refute Map.has_key?(info, :layers)
+      assert {:ok, _} = Jason.encode(info)
+    end
+
+    test "each layer keeps its own name, color, size, opacity, legend, tooltip and popup" do
+      a = gdf(["POINT (0 0)", "POINT (1 1)"], v: [1.0, 2.0], k: ["x", "y"])
+      b = gdf(["POINT (5 5)"], w: [3])
+
+      {:binary, info, _} =
+        Deck.payload(
+          [
+            {a, name: "Cities", color: {:v, :viridis}, radius: 6, tooltip: [:k], popup: true},
+            {b, color: {255, 0, 0}, opacity: 0.3, legend: false}
+          ],
+          []
+        )
+
+      [first, second] = info.groups
+      assert first.name == "Cities"
+      assert first.config.color == nil and first.config.radius == 6
+      assert first.legend.title == "v"
+      assert first.tooltip.columns == ["k"]
+      assert first.popup.columns == ["v", "k"]
+      assert second.name == "Layer 2"
+      assert second.config.color == [255, 0, 0, 255] and second.config.opacity == 0.3
+      assert second.legend == nil
+      refute Map.has_key?(second, :popup)
+    end
+
+    test "top-level layer options are defaults for every layer" do
+      {:binary, info, _} =
+        Deck.payload([points(), {points(), color: {1, 2, 3}}], color: {9, 9, 9}, opacity: 0.5)
+
+      assert [[9, 9, 9, 255], [1, 2, 3, 255]] = Enum.map(info.groups, & &1.config.color)
+      assert Enum.all?(info.groups, &(&1.config.opacity == 0.5))
+    end
+
+    test "per-row colors are expanded per layer" do
+      a = gdf(["POINT (0 0)", "POINT (1 1)"], k: ["x", "y"])
+      payload = Deck.payload([{a, color: {:k, :categorical}}, points()], [])
+      assert length(bytes4(group_buffer(payload, 0, "points.colors"))) == 2
+      refute Map.has_key?(elem(payload, 1).buffers, "1.points.colors")
+    end
+
+    test ":max_features and :max_vertices are totals over all layers" do
+      assert_raise ArgumentError, ~r/6 features/, fn ->
+        Deck.payload([points(), points()], max_features: 5)
+      end
+
+      assert_raise ArgumentError, ~r/6 vertices/, fn ->
+        Deck.payload([points(), points()], max_vertices: 5)
+      end
+
+      assert {:binary, _, _} = Deck.payload([points(), points()], max_features: 6)
+    end
+
+    test "layer options that belong to the whole map raise" do
+      assert_raise ArgumentError, ~r/whole map/, fn ->
+        Deck.payload([{points(), basemap: nil}], [])
+      end
+    end
+
+    test "invalid lists raise" do
+      assert_raise ArgumentError, ~r/at least one/, fn -> Deck.payload([], []) end
+      assert_raise ArgumentError, ~r/layer 2/, fn -> Deck.payload([points(), :nope], []) end
+      assert_raise ArgumentError, ~r/:name/, fn -> Deck.payload([{points(), name: 1}], []) end
+
+      assert_raise ArgumentError, ~r/unknown option/, fn ->
+        Deck.payload([{points(), x: 1}], [])
+      end
+    end
+
+    test "a layer with nothing to draw raises naming it" do
+      empty = GeoSeries.from_wkt!([nil, "POINT EMPTY"])
+
+      assert_raise ArgumentError, ~r/Layer 2.*nothing to draw/, fn ->
+        Deck.payload([points(), empty], [])
+      end
+    end
+
+    test "a single frame keeps the original payload shape" do
+      {:binary, info, _} = Deck.payload(points(), [])
+      assert Map.has_key?(info, :layers) and not Map.has_key?(info, :groups)
+    end
+  end
+
   describe "payload/2 limits and validation" do
     test "raises above :max_features with a clear message" do
       assert_raise ArgumentError, ~r/max_features/, fn ->
@@ -466,6 +574,11 @@ defmodule GeoFrame.Kino.DeckTest do
     test "accepts a GeoDataFrame" do
       frame = gdf(["POINT (0 0)"], n: [1])
       assert %Kino.JS.Live{} = GeoFrame.Kino.deck(frame, tooltip: [:n])
+    end
+
+    test "accepts a list of layers" do
+      kino = GeoFrame.Kino.deck([points(), {points(), name: "B"}], height: 300)
+      assert {:binary, %{groups: [_, %{name: "B"}]}, _} = connect(kino, nil, 5_000)
     end
   end
 end

@@ -73,6 +73,35 @@ if Code.ensure_loaded?(Kino.JS.Live) do
         bottom-left corner (MapLibre `ScaleControl`), like the `control_scale=True` of GeoPandas
         `explore`.
 
+      * `:name` - the layer's name in the layer control (several layers only), default
+        `"Layer N"`.
+
+    ## Several layers
+
+    Pass a list instead of one frame to draw several frames on one map, like
+    `m = gdf1.explore(); gdf2.explore(m=m)` plus `folium.LayerControl()` in GeoPandas. Each entry
+    is a frame, or `{frame, options}` with its own `:color`, `:radius`, `:width`, `:opacity`,
+    `:tooltip`, `:popup`, `:legend` and `:name`:
+
+        GeoFrame.Kino.deck(
+          [
+            {countries, name: "Countries", color: {"POP_EST", :viridis}, popup: ["NAME"]},
+            {cities, name: "Cities", color: {200, 30, 30}, radius: 4, tooltip: ["name"]}
+          ],
+          height: 600
+        )
+
+    Layer options given in the second argument are defaults for every layer; an entry's own
+    options win. The options of the whole map (`:basemap`, `:height`, `:scale`, `:max_features`,
+    `:max_vertices`) are top-level only. A top-left panel has a checkbox per layer; hiding a layer
+    also hides its legend and closes its popup, and each layer keeps its own legend card, tooltip
+    and popup. The map fits the union of the layers' bounds. A list of one frame still draws the
+    layer control; a bare frame draws none and sends the same payload as before.
+
+    `:max_features` and `:max_vertices` are totals over all layers of the widget, so ten layers
+    of 100 000 rows count as 1 000 000 features. The tooltip and popup cell caps apply to each
+    layer. All layers travel in the one binary payload, each buffer named `"<layer>.<name>"`.
+
     deck.gl and MapLibre GL load in the browser from pinned jsDelivr URLs, so the widget needs
     internet access there.
     """
@@ -84,6 +113,11 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     alias GeoFrame.GeoSeries
     alias GeoFrame.Native
     alias Kino.JS.Live, as: LiveKino
+
+    @typedoc "A frame drawn by the widget."
+    @type frame :: GeoDataFrame.t() | GeoSeries.t()
+    @typedoc "One layer: a frame, or a frame with its own options."
+    @type layer :: frame() | {frame(), keyword()}
 
     @default_max_features 1_000_000
     @default_max_vertices 10_000_000
@@ -108,8 +142,11 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       :basemap,
       :height,
       :legend,
-      :scale
+      :scale,
+      :name
     ]
+    # Options of the whole map; a layer in `{frame, options}` cannot set them.
+    @map_options [:max_features, :max_vertices, :basemap, :height, :scale]
     @legend_max_items 10
     # Three ticks of at most three significant digits fit the 180px bar without overlapping.
     @legend_ticks 3
@@ -141,12 +178,13 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     ]
 
     @doc """
-    Builds the widget kino. See the module docs for the options.
+    Builds the widget kino. See the module docs for the options and for drawing several frames
+    as layers.
 
     Raises `ArgumentError` for invalid options, unknown columns, an input above `:max_features`
     or one with nothing to draw.
     """
-    @spec new(GeoDataFrame.t() | GeoSeries.t(), keyword()) :: Kino.JS.Live.t()
+    @spec new(frame() | [layer()], keyword()) :: Kino.JS.Live.t()
     def new(frame, opts \\ []), do: LiveKino.new(__MODULE__, payload(frame, opts))
 
     @impl true
@@ -156,18 +194,148 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     def handle_connect(ctx), do: {:ok, ctx.assigns.payload, ctx}
 
     @doc false
-    @spec payload(GeoDataFrame.t() | GeoSeries.t(), keyword()) ::
-            {:binary, map(), binary()}
+    @spec payload(frame() | [layer()], keyword()) :: {:binary, map(), binary()}
+    def payload(frames, opts) when is_list(frames), do: layers_payload(frames, opts)
+
     def payload(frame, opts) do
       opts = validate!(opts)
       geometry = geometry(frame)
-      check_size!(geometry, opts)
+      check_size!([geometry], opts)
       geometry = to_lon_lat(geometry)
+      {layer, buffers, skipped, bounds} = build_layer(frame, geometry, opts, nil)
+      {entries, binary} = pack(buffers)
 
+      info =
+        %{
+          buffers: entries,
+          layers: layer.layers,
+          skipped: skipped,
+          bounds: bounds,
+          tooltip: layer.tooltip,
+          legend: layer.legend,
+          config: Map.merge(layer.config, map_config(opts))
+        }
+        |> put_popup(layer)
+
+      {:binary, info, binary}
+    end
+
+    # Several layers: one binary holding every layer's buffers, named "<index>.<buffer>", and one
+    # group per layer carrying its own counts, styles, legend, tooltip and popup.
+    defp layers_payload([], _opts),
+      do: raise(ArgumentError, "deck needs at least one layer; got an empty list")
+
+    defp layers_payload(entries, opts) do
+      map_opts = validate!(opts)
+      defaults = Keyword.delete(opts, :name)
+
+      frames =
+        entries
+        |> Enum.with_index()
+        |> Enum.map(fn {entry, i} -> layer_entry!(entry, i, defaults) end)
+
+      check_size!(Enum.map(frames, fn {frame, _} -> geometry(frame) end), map_opts)
+
+      built =
+        frames
+        |> Enum.with_index()
+        |> Enum.map(fn {{frame, layer_opts}, i} ->
+          layer_opts = Keyword.put_new(layer_opts, :name, "Layer #{i + 1}")
+          geometry = frame |> geometry() |> to_lon_lat()
+
+          {layer, buffers, skipped, bounds} =
+            build_layer(frame, geometry, layer_opts, layer_opts[:name])
+
+          prefix = "#{i}."
+          named = for {name, bin} <- buffers, do: {prefix <> name, bin}
+          {Map.merge(layer, %{name: layer_opts[:name], prefix: prefix}), named, skipped, bounds}
+        end)
+
+      {entries, binary} = built |> Enum.flat_map(&elem(&1, 1)) |> pack()
+      bounds = built |> Enum.map(&elem(&1, 3)) |> union_bounds()
+
+      info = %{
+        buffers: entries,
+        groups: Enum.map(built, fn {layer, _, _, _} -> group(layer) end),
+        skipped: built |> Enum.map(&elem(&1, 2)) |> Enum.sum(),
+        bounds: bounds,
+        config: map_config(map_opts)
+      }
+
+      {:binary, info, binary}
+    end
+
+    defp group(layer) do
+      %{
+        name: layer.name,
+        prefix: layer.prefix,
+        layers: layer.layers,
+        tooltip: layer.tooltip,
+        legend: layer.legend,
+        config: layer.config
+      }
+      |> put_popup(layer)
+    end
+
+    defp put_popup(info, %{popup: nil}), do: info
+    defp put_popup(info, %{popup: popup}), do: Map.put(info, :popup, popup)
+
+    defp layer_entry!({frame, layer_opts}, i, defaults) when is_list(layer_opts) do
+      unless Keyword.keyword?(layer_opts) do
+        raise ArgumentError, "layer #{i + 1}: options must be a keyword list"
+      end
+
+      case Keyword.keys(layer_opts) -- (@options -- @map_options) do
+        [] ->
+          :ok
+
+        [key | _] when key in @map_options ->
+          raise ArgumentError,
+                "layer #{i + 1}: #{inspect(key)} sets the whole map; pass it as a top-level option"
+
+        [_ | _] ->
+          :ok
+      end
+
+      opts = validate!(Keyword.merge(defaults, layer_opts))
+      layer_frame!(frame, i)
+      {frame, opts}
+    end
+
+    defp layer_entry!(frame, i, defaults), do: layer_entry!({frame, []}, i, defaults)
+
+    defp layer_frame!(%GeoDataFrame{}, _i), do: :ok
+    defp layer_frame!(%GeoSeries{}, _i), do: :ok
+
+    defp layer_frame!(other, i) do
+      raise ArgumentError,
+            "layer #{i + 1} must be a GeoDataFrame, a GeoSeries or {frame, options}; got: " <>
+              inspect(other)
+    end
+
+    defp union_bounds(all) do
+      [
+        all |> Enum.map(&Enum.at(&1, 0)) |> Enum.min(),
+        all |> Enum.map(&Enum.at(&1, 1)) |> Enum.min(),
+        all |> Enum.map(&Enum.at(&1, 2)) |> Enum.max(),
+        all |> Enum.map(&Enum.at(&1, 3)) |> Enum.max()
+      ]
+    end
+
+    defp map_config(opts),
+      do: %{basemap: opts[:basemap], height: opts[:height], scale: opts[:scale]}
+
+    # One layer's buffers and metadata; `geometry` is already in EPSG:4326.
+    defp build_layer(frame, geometry, opts, label) do
       bounds =
         case GeoSeries.total_bounds(geometry) do
-          nil -> raise ArgumentError, "nothing to draw: the geometry has no non-empty geometries"
-          {minx, miny, maxx, maxy} -> [minx, miny, maxx, maxy]
+          nil ->
+            raise ArgumentError,
+                  "#{if label, do: label <> " has", else: "there is"} nothing to draw: " <>
+                    "the geometry has no non-empty geometries"
+
+          {minx, miny, maxx, maxy} ->
+            [minx, miny, maxx, maxy]
         end
 
       {color_config, colors, legend} = color_style(frame, opts[:color])
@@ -180,34 +348,25 @@ if Code.ensure_loaded?(Kino.JS.Live) do
 
       {buffers, skipped} = build_buffers(geometry, colors, radius_sizes, width_sizes)
       rows = GeoSeries.size(geometry)
-      tooltip = tooltip(frame, opts[:tooltip], rows)
-      popup = popup(frame, opts[:popup], rows)
-      {entries, binary} = pack(buffers)
 
-      info = %{
-        buffers: entries,
+      layer = %{
         layers: %{
           points: count(buffers, "points.rows"),
           lines: count(buffers, "lines.rows"),
           polygons: count(buffers, "polygons.rows")
         },
-        skipped: skipped,
-        bounds: bounds,
-        tooltip: tooltip,
+        tooltip: tooltip(frame, opts[:tooltip], rows),
+        popup: popup(frame, opts[:popup], rows),
         legend: if(opts[:legend], do: legend),
         config: %{
           color: color_config,
           radius: radius_config,
           width: width_config,
-          opacity: opts[:opacity],
-          basemap: opts[:basemap],
-          height: opts[:height],
-          scale: opts[:scale]
+          opacity: opts[:opacity]
         }
       }
 
-      info = if popup, do: Map.put(info, :popup, popup), else: info
-      {:binary, info, binary}
+      {layer, buffers, skipped, bounds}
     end
 
     # -- options ---------------------------------------------------------------------------
@@ -229,11 +388,12 @@ if Code.ensure_loaded?(Kino.JS.Live) do
       height: ":height must be a positive integer (pixels)",
       basemap: ":basemap must be a style URL or nil",
       legend: ":legend must be true or false",
-      scale: ":scale must be true or false"
+      scale: ":scale must be true or false",
+      name: ":name must be a string (the layer's name in the layer control)"
     ]
 
     defp valid?(:opacity, v), do: is_number(v) and v >= 0 and v <= 1
-    defp valid?(:basemap, v), do: is_nil(v) or is_binary(v)
+    defp valid?(key, v) when key in [:basemap, :name], do: is_nil(v) or is_binary(v)
     defp valid?(key, v) when key in [:legend, :scale], do: is_boolean(v)
     defp valid?(_positive_integer, v), do: is_integer(v) and v > 0
 
@@ -261,8 +421,9 @@ if Code.ensure_loaded?(Kino.JS.Live) do
     defp geometry(%GeoDataFrame{geometry: geometry}), do: geometry
     defp geometry(%GeoSeries{} = series), do: series
 
-    defp check_size!(geometry, opts) do
-      size = GeoSeries.size(geometry)
+    # The caps are totals over every layer of the widget.
+    defp check_size!(geometries, opts) do
+      size = geometries |> Enum.map(&GeoSeries.size/1) |> Enum.sum()
 
       if size > opts[:max_features] do
         raise ArgumentError,
@@ -270,7 +431,7 @@ if Code.ensure_loaded?(Kino.JS.Live) do
                 "filter or sample the frame, or raise :max_features"
       end
 
-      vertices = GeoFrame.Kino.vertex_count(geometry)
+      vertices = geometries |> Enum.map(&GeoFrame.Kino.vertex_count/1) |> Enum.sum()
 
       if vertices > opts[:max_vertices] do
         raise ArgumentError,
