@@ -481,9 +481,24 @@ fn is_empty_result(geom: &Geometry<f64>) -> bool {
     }
 }
 
-/// `shapely.simplify(preserve_topology=False)`: GEOS `DouglasPeuckerSimplifier`. GEOS also
-/// repairs an invalid result with `buffer(0)`; that step is not reproduced, so a result whose
-/// rings cross or whose parts overlap stays as Douglas-Peucker left it.
+/// GEOS `DPTransformer::createValidArea`: a polygonal result that is not valid is repaired with
+/// `buffer(0)` (positive-winding regions, overlapping and touching parts dissolved). A result
+/// the repair cannot process stays as Douglas-Peucker left it.
+fn create_valid_area(rough: Geometry<f64>) -> Geometry<f64> {
+    let empty = match &rough {
+        Geometry::Polygon(p) => p.exterior().0.is_empty(),
+        Geometry::MultiPolygon(m) => m.0.is_empty(),
+        _ => true,
+    };
+    if empty || crate::validity::is_valid(&rough) {
+        return rough;
+    }
+    crate::buffer_zero::buffer_zero(&rough).unwrap_or(rough)
+}
+
+/// `shapely.simplify(preserve_topology=False)`: GEOS `DouglasPeuckerSimplifier`. An invalid
+/// polygonal result is repaired with `buffer(0)` as GEOS does: per polygon, but a multipolygon
+/// as a whole (`DPTransformer::transformPolygon` leaves it to the parent).
 fn douglas_peucker_geometry(geom: &Geometry<f64>, tolerance: f64) -> Geometry<f64> {
     match geom {
         Geometry::LineString(l) => Geometry::LineString(dp_line(l, tolerance)),
@@ -497,16 +512,16 @@ fn douglas_peucker_geometry(geom: &Geometry<f64>, tolerance: f64) -> Geometry<f6
                 Geometry::MultiLineString(MultiLineString::new(p))
             })
         }
-        Geometry::Polygon(p) => Geometry::Polygon(dp_polygon(p, tolerance)),
+        Geometry::Polygon(p) => create_valid_area(Geometry::Polygon(dp_polygon(p, tolerance))),
         Geometry::MultiPolygon(m) => {
             let parts: Vec<Polygon<f64>> =
                 m.0.iter()
                     .map(|p| dp_polygon(p, tolerance))
                     .filter(|p| !p.exterior().0.is_empty())
                     .collect();
-            from_parts(parts, Geometry::Polygon, |p| {
+            create_valid_area(from_parts(parts, Geometry::Polygon, |p| {
                 Geometry::MultiPolygon(MultiPolygon::new(p))
-            })
+            }))
         }
         Geometry::GeometryCollection(members) => {
             Geometry::GeometryCollection(GeometryCollection::new_from(

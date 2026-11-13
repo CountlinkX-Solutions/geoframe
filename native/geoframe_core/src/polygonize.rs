@@ -124,6 +124,15 @@ fn fraction(a: C, b: C, c: C) -> f64 {
 /// their own ends; identical pieces appear once. Returns the edges (chains of vertices between
 /// nodes).
 pub(crate) fn node_lines(lines: &[LineString<f64>]) -> Result<Vec<Vec<C>>, String> {
+    node_lines_with(lines, false)
+}
+
+/// [`node_lines`]; with `geos_points` a proper crossing is computed as GEOS does (double-double
+/// arithmetic, `CGAlgorithmsDD::intersection`) so the node coordinates agree to the last bit.
+pub(crate) fn node_lines_with(
+    lines: &[LineString<f64>],
+    geos_points: bool,
+) -> Result<Vec<Vec<C>>, String> {
     struct Seg {
         a: C,
         b: C,
@@ -178,6 +187,13 @@ pub(crate) fn node_lines(lines: &[LineString<f64>]) -> Result<Vec<Vec<C>>, Strin
                     if consecutive && intersection == s.b {
                         continue;
                     }
+                    let intersection =
+                        if geos_points && ![s.a, s.b, t.a, t.b].contains(&intersection) {
+                            crate::buffer_zero::geos_intersection(s.a, s.b, t.a, t.b)
+                                .unwrap_or(intersection)
+                        } else {
+                            intersection
+                        };
                     cuts[i].push(intersection);
                     cuts[j].push(intersection);
                     nodes.insert(key(intersection));

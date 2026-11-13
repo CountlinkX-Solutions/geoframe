@@ -817,9 +817,10 @@ defmodule GeoFrame.GeoSeries do
       than four vertices is removed: a hole disappears, a polygon whose shell collapses
       becomes empty, multipolygon parts and collection members drop, and a multi geometry
       with one part left is that part. A ring's start vertex is dropped when it lies within the
-      tolerance of the chord between its neighbours. Lines keep their two end points at least. The output
-      can be invalid; GEOS repairs such a result with `buffer(0)` (a self-crossing ring,
-      parts that touch along an edge) and this library does not, so those inputs differ.
+      tolerance of the chord between its neighbours. Lines keep their two end points at least. A
+      polygonal result that is not valid (a self-crossing ring, parts that overlap or touch along
+      an edge) is repaired with `buffer(0)` as GEOS does: a bowtie keeps its clockwise lobe,
+      overlapping and touching parts are dissolved.
 
   Shapely's topology-preserving mode is a distance-based Douglas-Peucker variant, so the
   same `tolerance` yields different vertices here in the default mode.
