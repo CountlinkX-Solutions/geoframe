@@ -103,6 +103,8 @@ mod crs_convert_tests;
 #[cfg(test)]
 mod crs_esri_datum_tests;
 #[cfg(test)]
+mod crs_esri_projection_tests;
+#[cfg(test)]
 mod crs_parity_tests;
 #[cfg(test)]
 mod datum_tests;

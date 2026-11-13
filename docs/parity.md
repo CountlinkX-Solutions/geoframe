@@ -425,8 +425,26 @@ PROJJSON, WKT1 or WKT2 text, with or without an identifier (as `pyproj.CRS.from_
   documented deviations, not pursued.
   GDA94, GDA2020 and CR-SIRGAS names are left out on purpose:
   PROJ runs a null operation first there and the Helmert table does not (1.7 m), which would
-  move a `.prj` that agrees with pyproj today. A definition whose projection ESRI names
-  differently (`Double_Stereographic`, `Gauss_Kruger`) is still refused: that is the converter, not the datum.
+  move a `.prj` that agrees with pyproj today. ESRI names several
+  projections differently from EPSG, and these are read as the EPSG method PROJ maps them to:
+  `Double_Stereographic` (Oblique Stereographic, RD New), `Gauss_Kruger` (Transverse Mercator),
+  `Albers` (Albers Equal Area), `Cassini`, `Stereographic_North_Pole` / `Stereographic_South_Pole`
+  (Polar Stereographic variant B), `Stereographic` / `Polar_Stereographic_Variant_A` on a pole
+  (variant A), `Mercator` with a standard parallel (variant B), `Hotine_Oblique_Mercator_Azimuth_Natural_Origin`
+  and `Rectified_Skew_Orthomorphic_Natural_Origin` (Hotine variant A), `Rectified_Skew_Orthomorphic_Center`
+  (variant B), `Equidistant_Cylindrical`, `Behrmann`, `Equal_Earth`, ESRI's `Krovak` (south
+  orientated, or north orientated with `X_Scale` -1 and `XY_Plane_Rotation` 90), a two-parallel
+  `Lambert_Conformal_Conic` with a scale factor (2SP Michigan), and the EPSG parameter names
+  PROJ writes for some of them (`Transverse_Mercator_South_Orientated`, `Lambert_Azimuthal_Equal_Area`,
+  `Azimuthal_Equidistant`, `Lambert_Conformal_Conic_2SP_Belgium`, `New_Zealand_Map_Grid`);
+  `Hotine_Oblique_Mercator_Azimuth_*` without a rectified grid angle use the azimuth, as PROJ does.
+  Still refused: `IGAC_Plano_Cartesiano` (Colombia Urban; proj4rs differs from PROJ by about
+  1 m there, also for EPSG:6244), `Local`, `Cylindrical_Equal_Area` with EPSG parameter names (PROJ
+  ignores the standard parallel), a non-polar `Stereographic`, and `Transverse_Mercator`
+  with `Direction` / `Vertical_Shift`. Over the 5 330 projected EPSG CRSs written as WKT1_ESRI
+  (area-of-use centre, one point each) 1 007 were refused before and 35 are now; the CRSs that
+  newly differ from pyproj (26) are the datum deviations above (Ferro, Jakarta, Bern, RD/83,
+  Potsdam, Qatar 1948, ...), not the projection.
   Any other datum is left unshifted, which is PROJ's ballpark and what pyproj does for a custom
   datum.
 * **Labels.** A definition with an identifier that the tables have is that code (`EPSG:5515`). Any
