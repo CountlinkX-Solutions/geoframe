@@ -712,6 +712,16 @@ fn insert_on_outline(
     )
 }
 
+/// The faces enclosed by `lines` noded together (a polygonize with noding, for callers that
+/// already hold the linework): shells with the holes they directly contain.
+pub(crate) fn faces_of_lines(lines: &[LineString<f64>]) -> Result<Vec<Polygon<f64>>, String> {
+    guarded(|| {
+        let outcome = polygonize_chains(node_lines(lines)?);
+        Ok(assemble(&outcome.shells, &outcome.holes))
+    })
+    .unwrap_or_else(|| Err("polygonize: the linework could not be processed".to_string()))
+}
+
 fn column_of(template: &GeoColumn, rows: Vec<Geometry<f64>>) -> Result<GeoColumn, String> {
     let rows: Vec<Option<Geometry<f64>>> = rows.into_iter().map(Some).collect();
     template.rebuild_merged(&rows)
