@@ -11,19 +11,25 @@
 //!
 //! * a point or multipoint gives its ordinary buffer for a positive distance and an empty
 //!   result otherwise;
-//! * a polygon gives only the band around its rings: the buffer without the polygon for a
-//!   positive distance, the polygon without its eroded part for a negative one;
+//! * a polygon gives what GEOS does (single-sided only shapes lines): its ordinary buffer `B`,
+//!   unless the input boundary noded with the boundary of `B` encloses more than one face, in
+//!   which case the face of the largest area (holes subtracted) is kept. For a square of side
+//!   `s` and a distance `d > 0` that is the band between the square and `B` up to
+//!   `s / d = 2 + sqrt(4 + pi)` (about 4.68) and the square itself above; for `d < 0` the band
+//!   (square minus its erosion) up to about 6.83 and the negative buffer above; a square of
+//!   side at most `2 |d|` erodes to nothing. A multipolygon is buffered member by member and
+//!   the results are united;
 //! * a collection is the union of its members' bands; a distance of 0 and an empty input give
 //!   an empty polygon.
 //!
 //! Deviations from GEOS: where GEOS' own output is inconsistent it is not copied. A closed line
 //! gets the band between the ring and its offset (GEOS returns the interior of the inner ring),
-//! a polygon with a hole or a multipolygon with parts closer than the distance can differ, and
-//! a band that overlaps itself (a line doubling back closer than the distance) keeps every
+//! and a band that overlaps itself (a line doubling back closer than the distance) keeps every
 //! covered point where GEOS can drop the overlap.
 
-use geo::{unary_union, BooleanOps, Buffer, Coord, Geometry, LineString, MultiPolygon, Polygon};
+use geo::{unary_union, Area, Buffer, Coord, Geometry, LineString, MultiPolygon, Polygon};
 
+use crate::polygonize::faces_of_lines;
 use crate::unary::{collapse, BufferOptions};
 
 type C = Coord<f64>;
@@ -188,8 +194,6 @@ enum Ring {
     /// A closed line: inside corners are met at the start too, but an outside corner there stays
     /// flat as in GEOS.
     ClosedLine,
-    /// A polygon ring: every corner is joined.
-    Polygon,
 }
 
 /// The band polygons of one line or ring.
@@ -263,20 +267,6 @@ fn band(coords: &[C], ring: Ring, d: f64, sided: &Sided, out: &mut Vec<Polygon<f
     }
 }
 
-/// A ring's distinct vertices without the closing repeat; `None` below three.
-fn clean_ring(ring: &LineString<f64>) -> Option<Vec<C>> {
-    let mut coords: Vec<C> = Vec::with_capacity(ring.0.len());
-    for &c in &ring.0 {
-        if coords.last() != Some(&c) {
-            coords.push(c);
-        }
-    }
-    if coords.len() > 1 && coords.first() == coords.last() {
-        coords.pop();
-    }
-    (coords.len() >= 3).then_some(coords)
-}
-
 fn line_bands(line: &LineString<f64>, d: f64, sided: &Sided, out: &mut Vec<Polygon<f64>>) {
     let mut coords: Vec<C> = Vec::with_capacity(line.0.len());
     for &c in &line.0 {
@@ -289,28 +279,6 @@ fn line_bands(line: &LineString<f64>, d: f64, sided: &Sided, out: &mut Vec<Polyg
         band(&coords, Ring::ClosedLine, d, sided, out);
     } else if coords.len() >= 2 {
         band(&coords, Ring::Open, d, sided, out);
-    }
-}
-
-fn clockwise(coords: &[C]) -> bool {
-    let n = coords.len();
-    (0..n)
-        .map(|i| (coords[(i + 1) % n].x - coords[i].x) * (coords[(i + 1) % n].y + coords[i].y))
-        .sum::<f64>()
-        > 0.0
-}
-
-/// Bands of the rings of `p`, oriented so a positive distance grows the polygon.
-fn polygon_bands(p: &Polygon<f64>, d: f64, sided: &Sided, out: &mut Vec<Polygon<f64>>) {
-    let rings =
-        std::iter::once((p.exterior(), true)).chain(p.interiors().iter().map(|r| (r, false)));
-    for (ring, shell) in rings {
-        if let Some(mut coords) = clean_ring(ring) {
-            if clockwise(&coords) != shell {
-                coords.reverse();
-            }
-            band(&coords, Ring::Polygon, d, sided, out);
-        }
     }
 }
 
@@ -336,42 +304,44 @@ fn members(
         Geometry::Line(l) => line_bands(&LineString::from(*l), d, sided, acc),
         Geometry::LineString(l) => line_bands(l, d, sided, acc),
         Geometry::MultiLineString(m) => m.0.iter().for_each(|l| line_bands(l, d, sided, acc)),
-        Geometry::Polygon(p) => acc.extend(polygon_band(p, d, sided, options).0),
+        Geometry::Polygon(p) => acc.extend(polygon_sided(p, d, options).0),
         Geometry::MultiPolygon(m) => {
             m.0.iter()
-                .for_each(|p| acc.extend(polygon_band(p, d, sided, options).0))
+                .for_each(|p| acc.extend(polygon_sided(p, d, options).0))
         }
-        Geometry::Rect(r) => acc.extend(polygon_band(&r.to_polygon(), d, sided, options).0),
-        Geometry::Triangle(t) => acc.extend(polygon_band(&t.to_polygon(), d, sided, options).0),
+        Geometry::Rect(r) => acc.extend(polygon_sided(&r.to_polygon(), d, options).0),
+        Geometry::Triangle(t) => acc.extend(polygon_sided(&t.to_polygon(), d, options).0),
         Geometry::GeometryCollection(c) => {
             c.0.iter().for_each(|m| members(m, d, sided, options, acc))
         }
     }
 }
 
-fn polygon_band(
-    p: &Polygon<f64>,
-    d: f64,
-    sided: &Sided,
-    options: &BufferOptions,
-) -> MultiPolygon<f64> {
-    // GEOS leaves out a polygon that a negative distance erodes completely.
-    if d < 0.0 {
-        let eroded = options
-            .style(d)
-            .map_or(true, |style| p.buffer_with_style(style).0.is_empty());
-        if eroded {
-            return MultiPolygon::new(vec![]);
-        }
+/// The ordinary buffer of `p`, or the largest face of the polygon boundary noded with the
+/// buffer boundary when that makes more than one (`BufferBuilder` for single-sided buffers).
+fn polygon_sided(p: &Polygon<f64>, d: f64, options: &BufferOptions) -> MultiPolygon<f64> {
+    let Ok(style) = options.style(d) else {
+        return MultiPolygon::new(vec![]);
+    };
+    let buffer = p.buffer_with_style(style);
+    if buffer.0.is_empty() {
+        return buffer;
     }
-    let mut bands = Vec::new();
-    polygon_bands(p, d, sided, &mut bands);
-    let bands = union(bands);
-    let body = MultiPolygon::new(vec![p.clone()]);
-    if d > 0.0 {
-        bands.difference(&body)
-    } else {
-        bands.intersection(&body)
+    let rings = |p: &Polygon<f64>| {
+        std::iter::once(p.exterior().clone())
+            .chain(p.interiors().iter().cloned())
+            .collect::<Vec<_>>()
+    };
+    let lines: Vec<LineString<f64>> = rings(p)
+        .into_iter()
+        .chain(buffer.0.iter().flat_map(rings))
+        .collect();
+    match faces_of_lines(&lines) {
+        Ok(faces) if faces.len() > 1 => faces
+            .into_iter()
+            .max_by(|a, b| a.unsigned_area().total_cmp(&b.unsigned_area()))
+            .map_or(buffer, |face| MultiPolygon::new(vec![face])),
+        _ => buffer,
     }
 }
 
