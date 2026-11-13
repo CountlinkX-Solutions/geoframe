@@ -223,6 +223,7 @@ fn open_plan(
     columns: Option<&[String]>,
     bbox: Option<[f64; 4]>,
     batch_size: usize,
+    offset: usize,
 ) -> Result<ReadPlan, String> {
     if let Some([minx, miny, maxx, maxy]) = bbox {
         if !(minx <= maxx && miny <= maxy) {
@@ -288,6 +289,11 @@ fn open_plan(
             .map_err(|e| format!("cannot filter {path} by bbox: {e}"))?;
     }
 
+    // The offset counts rows after the pushed-down bbox filter; a bbox that is applied after
+    // decoding (`post_filter`) cannot use it, so the caller must drop those rows itself.
+    if offset > 0 && !(bbox.is_some() && !pushed_down) {
+        builder = builder.with_offset(offset);
+    }
     let reader = builder
         .with_batch_size(batch_size)
         .build()
@@ -346,7 +352,7 @@ fn read_filtered(
     columns: Option<&[String]>,
     bbox: Option<[f64; 4]>,
 ) -> Result<GeoParquetRead, String> {
-    let mut plan = open_plan(path, columns, bbox, BATCH_SIZE)?;
+    let mut plan = open_plan(path, columns, bbox, BATCH_SIZE, 0)?;
     let mut batches = (&mut plan.reader)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot read {path}: {e}"))?;
@@ -382,6 +388,10 @@ pub(crate) struct ParquetStream {
     batch_size: usize,
     /// The rest of a record batch that did not fit the batch being assembled.
     carry: Option<RecordBatch>,
+    /// What the plan was opened with, to reopen it past some rows.
+    columns: Option<Vec<String>>,
+    bbox: Option<[f64; 4]>,
+    started: bool,
 }
 
 impl ParquetStream {
@@ -392,7 +402,7 @@ impl ParquetStream {
         batch_size: usize,
     ) -> Result<Self, String> {
         let plan = catch_unwind(AssertUnwindSafe(|| {
-            open_plan(path, columns, bbox, batch_size)
+            open_plan(path, columns, bbox, batch_size, 0)
         }))
         .unwrap_or_else(|_| Err(panic_message(path)))?;
         Ok(Self {
@@ -400,7 +410,41 @@ impl ParquetStream {
             plan,
             batch_size,
             carry: None,
+            columns: columns.map(<[String]>::to_vec),
+            bbox,
+            started: false,
         })
+    }
+
+    /// Drops the next `count` rows. Without a bbox, or with one the reader filters itself, the
+    /// reader is reopened with an offset, so whole row groups (and pages) are never read;
+    /// returns `false` (and drops nothing) when the rows have to be decoded to be counted.
+    pub(crate) fn skip(&mut self, count: usize) -> Result<bool, String> {
+        if self.plan.post_filter.is_some() || self.started || self.carry.is_some() {
+            return Ok(false);
+        }
+        if count > 0 {
+            let (path, columns, bbox, batch_size) = (
+                self.path.clone(),
+                self.columns.clone(),
+                self.bbox,
+                self.batch_size,
+            );
+            self.plan = catch_unwind(AssertUnwindSafe(|| {
+                open_plan(&path, columns.as_deref(), bbox, batch_size, count)
+            }))
+            .unwrap_or_else(|_| Err(panic_message(&path)))?;
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    /// Changes the rows per batch (used to read past rows in exact amounts).
+    pub(crate) fn set_batch_size(&mut self, batch_size: usize) {
+        self.batch_size = batch_size;
     }
 
     /// The next `batch_size` rows (fewer at the end), `None` when the file is exhausted.
@@ -410,6 +454,7 @@ impl ParquetStream {
     }
 
     fn next(&mut self) -> Result<Option<GeoParquetRead>, String> {
+        self.started = true;
         let path = self.path.clone();
         let mut parts: Vec<RecordBatch> = Vec::new();
         let mut rows = 0;
@@ -424,6 +469,10 @@ impl ParquetStream {
                     }
                 },
             };
+            if batch.num_rows() == 0 {
+                // A row filter or an offset can leave a record batch empty.
+                continue;
+            }
             let room = self.batch_size - rows;
             if batch.num_rows() > room {
                 self.carry = Some(batch.slice(room, batch.num_rows() - room));

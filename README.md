@@ -218,7 +218,7 @@ extracts a notebook's code cells and runs them in order. It also runs the Python
 - Inputs that would abort the VM (a stack overflow, a huge allocation) are rejected with an
   error; the caps (WKT depth, grid cells, buffer vertices, ...) are in
   [Resource limits](docs/parity.md#resource-limits).
-- `read_file/2` reads a file into memory whole. `GeoFrame.stream_file/2` reads GeoParquet, FlatGeobuf, Arrow IPC / Feather, Shapefile (`.shp`, `.zip`), GeoPackage and GeoJSON lazily as a stream of `GeoDataFrame` batches (`batch_size:`, and where the format supports it `columns:`, `bbox:`, `layer:`, `encoding:`), so a file larger than memory can be processed (GeoJSON is read twice, once to infer the column types, so every batch has the dtypes of `read_file/2`); `read_file(rows:)` is not implemented yet.
+- `read_file/2` reads a file into memory whole. `GeoFrame.stream_file/2` reads GeoParquet, FlatGeobuf, Arrow IPC / Feather, Shapefile (`.shp`, `.zip`), GeoPackage and GeoJSON lazily as a stream of `GeoDataFrame` batches (`batch_size:`, and where the format supports it `columns:`, `bbox:`, `layer:`, `encoding:`), so a file larger than memory can be processed (GeoJSON is read twice, once to infer the column types, so every batch has the dtypes of `read_file/2`); `read_file(path, rows: n | first..last)` reads only those rows through the same readers (GeoParquet skips row groups), so the first rows of a huge file are cheap.
 - Not planned: `plot` (use the Kino map), geocoding, pandas index alignment, a persistent
   spatial index object, and OGR drivers that need GDAL (GML, KML, GPX, FileGDB, ...; convert
   with `ogr2ogr` first).

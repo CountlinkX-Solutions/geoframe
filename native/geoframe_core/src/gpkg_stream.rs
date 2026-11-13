@@ -144,6 +144,15 @@ impl GpkgStream {
         })
     }
 
+    pub(crate) fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    /// Changes the rows per batch (used to read past rows in exact amounts).
+    pub(crate) fn set_batch_size(&mut self, batch_size: usize) {
+        self.batch_size = batch_size;
+    }
+
     /// The next `batch_size` rows (fewer at the end), `None` when none are left.
     pub(crate) fn next_batch(&mut self) -> Result<Option<VectorRead>, String> {
         let mut wkb_rows: Vec<Option<Vec<u8>>> = Vec::new();

@@ -1506,6 +1506,20 @@ fn next_batch<'a>(env: Env<'a>, reader: Reader) -> Result<NextBatch<'a>, String>
     )))
 }
 
+/// Drops the first `count` rows the reader would yield, so the next batch starts there
+/// (GeoParquet skips row groups without reading them). Call it before the first `next_batch`.
+#[rustler::nif(schedule = "DirtyIo")]
+fn skip_rows(reader: Reader, count: usize) -> Result<rustler::Atom, String> {
+    let mut guard = reader
+        .0
+        .lock()
+        .map_err(|_| "the reader is poisoned".to_string())?;
+    if let Some(open) = guard.as_mut() {
+        open.skip_rows(count)?;
+    }
+    Ok(ok())
+}
+
 /// Releases the file now; later `next_batch` calls return `nil`. Idempotent.
 #[rustler::nif]
 fn close_reader(reader: Reader) -> rustler::Atom {

@@ -602,6 +602,23 @@ defmodule GeoFrame do
   selects a GeoPackage layer); unknown options raise `ArgumentError`.
   An unrecognised extension or driver raises `ArgumentError`; read failures are
   `{:error, message}`.
+
+  `rows:` reads only some rows, as GeoPandas' `read_file(rows=...)` does: an integer `n` is
+  the first `n` rows, a range `first..last` is the rows at positions `first` to `last`
+  (inclusive: `5..14` is ten rows, GeoPandas' `slice(5, 15)`). The result equals
+  `read_file(path)` followed by `GeoDataFrame.slice/3` (a window past the end is cut short, an
+  empty window gives an empty frame with the file's columns and CRS), but the file is read
+  through the same incremental readers as `stream_file/2`, so the first rows of a huge file
+  are cheap and memory is bounded by the window: GeoParquet skips whole row groups (and
+  pages) before the window and stops after it, FlatGeobuf skips features without decoding
+  them, Feather skips whole Arrow record batches, and the other formats read past the rows
+  in bounded chunks. With `bbox:` (where the format accepts it) the window counts the rows
+  that pass the filter. A GeoJSON file is still scanned once whole to infer the column
+  types, so `rows:` saves its decoding and memory, not that pass. Unlike pyogrio, `rows: 0`
+  is an empty frame (pyogrio treats a zero limit as no limit); negative values, a range with
+  a step other than 1 or a decreasing range raise `ArgumentError` (GeoPandas raises
+  `ValueError` for a negative start or a step). `rows:` accepts the options `stream_file/2`
+  accepts for the format.
   """
   @spec read_file(Path.t(), keyword()) :: {:ok, GeoDataFrame.t()} | {:error, String.t()}
   def read_file(path, opts \\ []), do: Formats.read_file(path, opts)

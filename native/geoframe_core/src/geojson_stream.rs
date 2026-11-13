@@ -530,6 +530,15 @@ impl GeojsonStream {
         Ok(None)
     }
 
+    /// Drops up to `count` rows without building anything; returns how many were dropped.
+    pub(crate) fn skip(&mut self, count: usize) -> Result<usize, String> {
+        let mut skipped = 0;
+        while skipped < count && self.next_kept()?.is_some() {
+            skipped += 1;
+        }
+        Ok(skipped)
+    }
+
     /// The next `batch_size` features (fewer at the end), `None` when none are left.
     pub(crate) fn next_batch(&mut self) -> Result<Option<VectorRead>, String> {
         let mut builder = ColumnBuilder::new(Some(CRS84));

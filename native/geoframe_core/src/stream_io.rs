@@ -26,6 +26,32 @@ pub fn open_batch_readers() -> usize {
     OPEN_READERS.load(Ordering::SeqCst)
 }
 
+/// The most rows read at once when rows are dropped by reading them.
+const SKIP_CHUNK: usize = 65_536;
+
+/// Reads and drops `count` rows from `stream` in chunks (batch sizes changed to match, so no
+/// row past `count` is consumed), then restores its batch size.
+macro_rules! discard_batches {
+    ($stream:expr, $count:expr) => {{
+        let original = $stream.batch_size();
+        let mut left: usize = $count;
+        let mut outcome: Result<(), String> = Ok(());
+        while left > 0 {
+            $stream.set_batch_size(left.min(SKIP_CHUNK));
+            match $stream.next_batch() {
+                Ok(Some(read)) => left -= read.geometry.len(),
+                Ok(None) => break,
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
+            }
+        }
+        $stream.set_batch_size(original);
+        outcome
+    }};
+}
+
 /// One batch of a stream.
 pub struct StreamBatch {
     /// The primary geometry column, with the file's CRS.
@@ -130,6 +156,37 @@ impl BatchReader {
     ) -> Result<Self, String> {
         let stream = GeojsonStream::open(path, bbox, batch_size)?;
         Ok(Self::counted(Source::GeoJson(Box::new(stream))))
+    }
+
+    /// Drops the first `count` rows of what the reader yields (after any `bbox`), so the next
+    /// batch starts at row `count`. GeoParquet skips whole row groups and pages without
+    /// reading them (Feather whole record batches, FlatGeobuf unfiltered features, GeoJSON
+    /// features, undecoded); a bbox the format cannot filter itself, Shapefile and GeoPackage
+    /// read past the rows in chunks of at most [`SKIP_CHUNK`]. Past the end of the file the
+    /// reader is simply exhausted. Call it before the first `next_batch`.
+    pub fn skip_rows(&mut self, count: usize) -> Result<(), String> {
+        if count == 0 {
+            return Ok(());
+        }
+        match &mut self.source {
+            Source::GeoParquet(stream) => {
+                if !stream.skip(count)? {
+                    discard_batches!(stream, count)?;
+                }
+            }
+            Source::FlatGeobuf(stream) => {
+                if !stream.skip(count)? {
+                    discard_batches!(stream, count)?;
+                }
+            }
+            Source::Feather(stream) => stream.skip(count)?,
+            Source::GeoJson(stream) => {
+                stream.skip(count)?;
+            }
+            Source::Shapefile(stream) => discard_batches!(stream, count)?,
+            Source::GeoPackage(stream) => discard_batches!(stream, count)?,
+        }
+        Ok(())
     }
 
     /// The next batch, `None` once the file is exhausted. A batch has `batch_size` rows except
