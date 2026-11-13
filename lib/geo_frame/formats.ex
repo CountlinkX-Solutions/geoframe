@@ -280,7 +280,7 @@ defmodule GeoFrame.Formats do
   # -- streaming ------------------------------------------------------------------------
 
   @default_batch_size 65_536
-  @streamable [:parquet, :flatgeobuf]
+  @streamable [:parquet, :flatgeobuf, :feather, :shapefile, :gpkg]
 
   def stream_file(path, opts) do
     {driver, opts} = driver_for(path, opts)
@@ -327,17 +327,41 @@ defmodule GeoFrame.Formats do
     fn -> Native.open_flatgeobuf_reader(path, bbox, batch_size) end
   end
 
+  defp stream_opener(:feather, path, opts, batch_size) do
+    validate_options!(opts, [:columns, :geometry])
+    columns = opts |> Keyword.get(:columns) |> normalize_columns()
+    geometry = opts |> Keyword.get(:geometry) |> optional_string()
+    fn -> Native.open_feather_reader(path, columns, geometry, batch_size) end
+  end
+
+  defp stream_opener(:shapefile, path, opts, batch_size) do
+    validate_options!(opts, [:encoding, :bbox])
+    encoding = opts |> Keyword.get(:encoding) |> optional_string()
+    bbox = opts |> Keyword.get(:bbox) |> normalize_bbox!() |> check_bbox_order!()
+    fn -> Native.open_shapefile_reader(path, encoding, bbox, batch_size) end
+  end
+
+  defp stream_opener(:gpkg, path, opts, batch_size) do
+    validate_options!(opts, [:layer, :columns, :bbox])
+    layer = opts |> Keyword.get(:layer) |> optional_string()
+    columns = opts |> Keyword.get(:columns) |> normalize_columns()
+    bbox = opts |> Keyword.get(:bbox) |> normalize_bbox!() |> check_bbox_order!()
+    fn -> Native.open_gpkg_reader(path, layer, columns, bbox, batch_size) end
+  end
+
   defp unwrap_open!({:ok, reader}), do: reader
   defp unwrap_open!({:error, message}), do: raise(ArgumentError, message)
 
-  defp unwrap_batch!({ref, nil, ipc, _secondary}, :flatgeobuf, opts) do
+  defp unwrap_batch!({ref, nil, ipc, _secondary}, driver, opts)
+       when driver in [:flatgeobuf, :shapefile, :gpkg] do
     case assemble(ref, ipc, opts) do
       {:ok, gdf} -> gdf
       {:error, message} -> raise ArgumentError, message
     end
   end
 
-  defp unwrap_batch!({ref, name, ipc, secondary}, :parquet, _opts) do
+  defp unwrap_batch!({ref, name, ipc, secondary}, driver, _opts)
+       when driver in [:parquet, :feather] do
     case assemble_named(ref, name, ipc) do
       {:ok, gdf} -> put_secondary(gdf, secondary)
       {:error, message} -> raise ArgumentError, message

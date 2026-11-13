@@ -32,6 +32,7 @@
 //! `population_urban` become `population` and `populati_1`. This is GDAL's behaviour.
 
 use std::collections::HashSet;
+use std::io::Read;
 use std::sync::Arc;
 
 use arrow_array::builder::{
@@ -326,15 +327,48 @@ pub(crate) fn read_dbf_capped(
         ));
     }
 
-    let types: Vec<DataType> = header
+    let types = field_types(&header)?;
+    let (columns, deleted) = decode_records(
+        &bytes[header.header_len..],
+        records,
+        &header,
+        &types,
+        encoding,
+    );
+    Ok(DbfRead {
+        fields: arrow_fields(&header, &types),
+        columns,
+        records,
+        deleted,
+    })
+}
+
+fn field_types(header: &Header) -> Result<Vec<DataType>, String> {
+    header.fields.iter().map(arrow_type).collect()
+}
+
+fn arrow_fields(header: &Header, types: &[DataType]) -> Vec<Field> {
+    header
         .fields
         .iter()
-        .map(arrow_type)
-        .collect::<Result<_, _>>()?;
+        .zip(types)
+        .map(|(f, t)| Field::new(&f.name, t.clone(), true))
+        .collect()
+}
+
+/// Decodes `records` fixed-width records (`bytes` starts at the first one) into one array per
+/// field, and which records carry the deleted flag.
+fn decode_records(
+    bytes: &[u8],
+    records: usize,
+    header: &Header,
+    types: &[DataType],
+    encoding: Encoding,
+) -> (Vec<ArrayRef>, Vec<bool>) {
     let mut deleted = Vec::with_capacity(records);
     let mut texts: Vec<Vec<Option<&[u8]>>> = vec![Vec::with_capacity(records); header.fields.len()];
     for row in 0..records {
-        let start = header.header_len + row * header.record_len;
+        let start = row * header.record_len;
         let record = &bytes[start..start + header.record_len];
         deleted.push(record.first() == Some(&b'*'));
         let mut pos = 1;
@@ -344,24 +378,90 @@ pub(crate) fn read_dbf_capped(
             pos = end;
         }
     }
-
     let columns = types
         .iter()
         .zip(&texts)
         .map(|(data_type, cells)| build_column(data_type, cells, encoding))
-        .collect::<Vec<_>>();
-    let fields = header
-        .fields
-        .iter()
-        .zip(&types)
-        .map(|(f, t)| Field::new(&f.name, t.clone(), true))
         .collect();
-    Ok(DbfRead {
-        fields,
-        columns,
-        records,
-        deleted,
-    })
+    (columns, deleted)
+}
+
+/// A `.dbf` read a chunk of records at a time from any reader, so the whole table never sits
+/// in memory. Decoding is shared with [`read_dbf`], so the chunks add up to what it returns.
+pub(crate) struct DbfCursor<R> {
+    source: R,
+    header: Header,
+    types: Vec<DataType>,
+    encoding: Encoding,
+    /// Records not read yet (the header's count, capped by what the file holds).
+    remaining: usize,
+}
+
+impl<R: Read> DbfCursor<R> {
+    /// Reads the header from `source`, which holds a `.dbf` of `file_len` bytes.
+    pub(crate) fn open(
+        mut source: R,
+        file_len: u64,
+        encoding: Encoding,
+        max_cells: usize,
+    ) -> Result<Self, String> {
+        let mut head = vec![0u8; 32];
+        source
+            .read_exact(&mut head)
+            .map_err(|_| "the .dbf file is truncated".to_string())?;
+        let header_len = usize::from(u16::from_le_bytes([head[8], head[9]]));
+        head.resize(header_len.max(33), 0);
+        source
+            .read_exact(&mut head[32..])
+            .map_err(|_| "the .dbf file is truncated".to_string())?;
+        let header = parse_header(&head, encoding)?;
+        let available = usize::try_from(file_len)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(header.header_len)
+            .checked_div(header.record_len)
+            .unwrap_or(0);
+        let remaining = header.records.min(available);
+        if remaining.saturating_mul(header.fields.len()) > max_cells {
+            return Err(format!(
+                "the .dbf expands to {remaining} records x {} fields, above the {max_cells} cell limit",
+                header.fields.len()
+            ));
+        }
+        let types = field_types(&header)?;
+        Ok(Self {
+            source,
+            header,
+            types,
+            encoding,
+            remaining,
+        })
+    }
+
+    pub(crate) fn fields(&self) -> Vec<Field> {
+        arrow_fields(&self.header, &self.types)
+    }
+
+    /// Records not yet read.
+    pub(crate) fn remaining(&self) -> usize {
+        self.remaining
+    }
+
+    /// The next `count` records (fewer at the end of the table) as arrays and deleted flags.
+    pub(crate) fn read(&mut self, count: usize) -> Result<(Vec<ArrayRef>, Vec<bool>), String> {
+        let count = count.min(self.remaining);
+        let mut bytes = vec![0u8; count * self.header.record_len];
+        self.source
+            .read_exact(&mut bytes)
+            .map_err(|e| format!("the .dbf file is truncated: {e}"))?;
+        self.remaining -= count;
+        Ok(decode_records(
+            &bytes,
+            count,
+            &self.header,
+            &self.types,
+            self.encoding,
+        ))
+    }
 }
 
 /// Drops the rows flagged in `deleted` from every column.

@@ -616,25 +616,43 @@ defmodule GeoFrame do
   `open_arrow` batches are the nearest).
 
   The format comes from the extension or `driver:`, as in `read_file/2`. Streaming is
-  available for GeoParquet (`.parquet`, `.geoparquet`) and FlatGeobuf (`.fgb`); the other
-  formats raise `ArgumentError` (use `read_file/2`).
+  available for GeoParquet (`.parquet`, `.geoparquet`), FlatGeobuf (`.fgb`), Arrow IPC /
+  Feather (`.feather`, `.arrow`), Shapefile (`.shp`, `.zip`) and GeoPackage (`.gpkg`); GeoJSON
+  raises `ArgumentError` (use `read_file/2`).
 
-  Every batch holds `:batch_size` rows (the last one fewer), whatever the row group size of
-  a Parquet file, and has the CRS, the attribute dtypes and the geometry column name
+  Every batch holds `:batch_size` rows (the last one fewer), whatever the row group or record
+  batch size of the file, and has the CRS, the attribute dtypes and the geometry column name
   `read_file/2` gives, so concatenating the batches equals `read_file/2` with the same
   options. A file without rows (or a `:bbox` that matches none) yields no batches.
 
-  Options:
+  Options (an option a format does not support raises `ArgumentError`):
 
     * `:batch_size` - rows per batch, a positive integer (default `65_536`).
-    * `:columns` - GeoParquet only: attribute column names to read (the geometry is always
-      read), as in `read_parquet/2`; the other columns are never decoded.
+    * `:columns` - GeoParquet, Feather and GeoPackage: attribute column names to read (the
+      geometry is always read), as in `read_parquet/2` and `read_feather/2`. GeoParquet never
+      decodes the other columns; Feather decodes only these from each record batch; a
+      GeoPackage selects only these columns.
     * `:bbox` - `{minx, miny, maxx, maxy}` in the file's CRS: only rows whose geometry
-      bounding box intersects it, with the semantics of `read_parquet/2` (row groups are
-      skipped from a covering `bbox` column or native encoding) and `read_flatgeobuf/2`
-      (the packed R-tree index, an error without one).
+      bounding box intersects it (GeoParquet, FlatGeobuf, Shapefile, GeoPackage). GeoParquet
+      has the semantics of `read_parquet/2` (row groups are skipped from a covering `bbox`
+      column or native encoding), FlatGeobuf those of `read_flatgeobuf/2` (the packed R-tree
+      index, an error without one). A GeoPackage layer uses its R-tree when it has one and
+      checks every row's exact bounds either way. A Shapefile has no index, so each record is
+      filtered after it is decoded. Rows without a geometry never match.
+    * `:layer` - GeoPackage: the layer, as in `read_gpkg/2`.
+    * `:encoding` - Shapefile: the `.dbf` encoding, as in `read_shapefile/2`.
+    * `:geometry` - Feather: the geometry column, as in `read_feather/2`.
     * `:driver` and `:geometry_column` - as in `read_file/2` (`:geometry_column` is a
       FlatGeobuf option).
+
+  Memory is bounded by the batch for GeoParquet (one row group at a time), FlatGeobuf, Shapefile
+  (the `.shp` record by record and the `.dbf` in matching chunks) and GeoPackage (pages of
+  `batch_size` rows through a primary key cursor, O(n) in total). A Feather file is read one
+  Arrow record batch at a time, so it only stays small when the file was written in small
+  record batches; GeoFrame's own `write_file/3` writes a single record batch. A `.zip`
+  shapefile is extracted to a scratch directory in the system temp dir (the `.shp` and `.dbf`
+  members, each capped as in `read_file/2`), which is removed when the stream ends, halts or
+  fails.
 
   The file is opened when the stream is first enumerated (each enumeration reads it again)
   and closed when the stream finishes, halts early (`Enum.take/2`) or its consumer raises;

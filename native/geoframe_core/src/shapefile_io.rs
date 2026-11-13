@@ -73,7 +73,7 @@ pub(crate) struct Parts {
     cpg: Option<String>,
 }
 
-fn is_zip(path: &str) -> bool {
+pub(crate) fn is_zip(path: &str) -> bool {
     path.to_ascii_lowercase().ends_with(".zip")
 }
 
@@ -93,7 +93,7 @@ fn sidecar_path(path: &Path, extension: &str) -> PathBuf {
     PathBuf::from(format!("{stem}.{extension}"))
 }
 
-fn sibling(path: &Path, extension: &str) -> Option<PathBuf> {
+pub(crate) fn sibling(path: &Path, extension: &str) -> Option<PathBuf> {
     [extension.to_string(), extension.to_ascii_uppercase()]
         .into_iter()
         .map(|e| sidecar_path(path, &e))
@@ -127,6 +127,31 @@ fn load_zip(path: &str) -> Result<Parts, String> {
     load_zip_capped(path, MAX_ZIP_MEMBER_BYTES)
 }
 
+/// The path (inside the archive, without extension) of the one shapefile in an archive.
+pub(crate) fn zip_stem(path: &str, names: &[String]) -> Result<String, String> {
+    let shapes: Vec<&String> = names
+        .iter()
+        .filter(|n| n.to_ascii_lowercase().ends_with(".shp") && !n.starts_with("__MACOSX/"))
+        .collect();
+    match shapes.as_slice() {
+        [one] => Ok(one[..one.len() - 4].to_string()),
+        [] => Err(format!("{path} contains no .shp file")),
+        _ => Err(format!(
+            "{path} contains several .shp files; extract the one you want"
+        )),
+    }
+}
+
+/// The archive entry named `{stem}.{extension}`, in any case.
+pub(crate) fn zip_member<'a>(
+    names: &'a [String],
+    stem: &str,
+    extension: &str,
+) -> Option<&'a String> {
+    let wanted = format!("{stem}.{extension}").to_ascii_lowercase();
+    names.iter().find(|n| n.to_ascii_lowercase() == wanted)
+}
+
 pub(crate) fn load_zip_capped(path: &str, cap: u64) -> Result<Parts, String> {
     let file = fs::File::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
     let mut archive = zip::ZipArchive::new(file)
@@ -136,22 +161,9 @@ pub(crate) fn load_zip_capped(path: &str, cap: u64) -> Result<Parts, String> {
         .filter_map(Result::ok)
         .map(|n| n.into_owned())
         .collect();
-    let shapes: Vec<&String> = names
-        .iter()
-        .filter(|n| n.to_ascii_lowercase().ends_with(".shp") && !n.starts_with("__MACOSX/"))
-        .collect();
-    let stem = match shapes.as_slice() {
-        [one] => one[..one.len() - 4].to_string(),
-        [] => return Err(format!("{path} contains no .shp file")),
-        _ => {
-            return Err(format!(
-                "{path} contains several .shp files; extract the one you want"
-            ))
-        }
-    };
+    let stem = zip_stem(path, &names)?;
     let mut member = |extension: &str| -> Result<Option<Vec<u8>>, String> {
-        let wanted = format!("{stem}.{extension}").to_ascii_lowercase();
-        let Some(name) = names.iter().find(|n| n.to_ascii_lowercase() == wanted) else {
+        let Some(name) = zip_member(&names, &stem, extension) else {
             return Ok(None);
         };
         let Ok(entry) = archive.by_name(name) else {
@@ -189,7 +201,10 @@ pub(crate) fn load_zip_capped(path: &str, cap: u64) -> Result<Parts, String> {
 }
 
 /// An explicit `encoding` wins, then the `.cpg`, then UTF-8.
-fn resolve_encoding(explicit: Option<&str>, cpg: Option<&str>) -> Result<Encoding, String> {
+pub(crate) fn resolve_encoding(
+    explicit: Option<&str>,
+    cpg: Option<&str>,
+) -> Result<Encoding, String> {
     match (explicit, cpg.map(str::trim).filter(|c| !c.is_empty())) {
         (Some(name), _) => Encoding::parse(name),
         (None, Some(name)) => Encoding::parse(name)
@@ -323,7 +338,7 @@ impl ShapePoint for shapefile::PointZ {
 /// an M type is XYM. A polyline with one part is a `LineString`, with several a
 /// `MultiLineString`; a polygon shape with one outer ring a `Polygon`, with several a
 /// `MultiPolygon`.
-fn shape_to_wkb(shape: shapefile::Shape) -> Result<Option<Vec<u8>>, String> {
+pub(crate) fn shape_to_wkb(shape: shapefile::Shape) -> Result<Option<Vec<u8>>, String> {
     use shapefile::Shape as S;
     let (z, m_type) = match &shape {
         S::NullShape => return Ok(None),

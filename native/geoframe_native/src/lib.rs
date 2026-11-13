@@ -1418,6 +1418,53 @@ fn open_flatgeobuf_reader(
     BatchReader::open_flatgeobuf(&path, bbox, batch_size).map(new_reader)
 }
 
+/// Opens a Feather v2 / Arrow IPC file for batched reading (`columns` and `geometry` as
+/// `read_feather_file`).
+#[rustler::nif(schedule = "DirtyIo")]
+fn open_feather_reader(
+    path: String,
+    columns: Option<Vec<String>>,
+    geometry: Option<String>,
+    batch_size: usize,
+) -> Result<Reader, String> {
+    BatchReader::open_feather(&path, columns.as_deref(), geometry.as_deref(), batch_size)
+        .map(new_reader)
+}
+
+/// Opens a shapefile (`.shp` or `.zip`) for batched reading (`encoding` as
+/// `read_shapefile_file`; `bbox` is applied record by record).
+#[rustler::nif(schedule = "DirtyIo")]
+fn open_shapefile_reader(
+    path: String,
+    encoding: Option<String>,
+    bbox: Option<(f64, f64, f64, f64)>,
+    batch_size: usize,
+) -> Result<Reader, String> {
+    let bbox = bbox.map(|(a, b, c, d)| [a, b, c, d]);
+    BatchReader::open_shapefile(&path, encoding.as_deref(), bbox, batch_size).map(new_reader)
+}
+
+/// Opens one GeoPackage layer for batched reading (`layer` as `read_gpkg_file`; `columns`
+/// restricts the attributes; `bbox` uses the layer's R-tree when it has one).
+#[rustler::nif(schedule = "DirtyIo")]
+fn open_gpkg_reader(
+    path: String,
+    layer: Option<String>,
+    columns: Option<Vec<String>>,
+    bbox: Option<(f64, f64, f64, f64)>,
+    batch_size: usize,
+) -> Result<Reader, String> {
+    let bbox = bbox.map(|(a, b, c, d)| [a, b, c, d]);
+    BatchReader::open_gpkg(
+        &path,
+        layer.as_deref(),
+        columns.as_deref(),
+        bbox,
+        batch_size,
+    )
+    .map(new_reader)
+}
+
 type NextBatch<'a> = Option<(Handle, Option<String>, Binary<'a>, Secondary)>;
 
 /// The next batch as `{geometry, geometry_column | nil, attributes_ipc, secondary}`, or `nil`

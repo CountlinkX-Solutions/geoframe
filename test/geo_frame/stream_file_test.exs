@@ -129,6 +129,190 @@ defmodule GeoFrame.StreamFileTest do
     end
   end
 
+  describe "Feather / Arrow IPC" do
+    test "batches have the requested size and concatenate to read_file/2", %{tmp_dir: dir} do
+      path = written(dir, "s.feather")
+      batches = assert_same_as_read_file(path, [], 7)
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [7, 7, 7, 4]
+    end
+
+    test "the .arrow extension and every geometry encoding stream", %{tmp_dir: dir} do
+      for {file, opts} <- [{"s.arrow", []}, {"native.feather", [geometry_encoding: :geoarrow]}] do
+        path = written(dir, file, opts)
+        assert_same_as_read_file(path, [], 10)
+      end
+    end
+
+    test "columns: projects the attributes", %{tmp_dir: dir} do
+      path = written(dir, "s.feather")
+      batches = assert_same_as_read_file(path, [columns: ["name"]], 10)
+      assert DataFrame.names(GeoDataFrame.data(hd(batches))) == ["name"]
+    end
+
+    test "geometry: names the geometry column", %{tmp_dir: dir} do
+      path = Path.join(dir, "geom.feather")
+      gdf = GeoDataFrame.new(sample(@rows).data, sample(@rows).geometry, geometry_column: "geom")
+      :ok = GeoFrame.write_file(gdf, path)
+      batches = assert_same_as_read_file(path, [geometry: "geom"], 10)
+      assert hd(batches).geometry_column == "geom"
+    end
+
+    test "bbox: is not supported and raises", %{tmp_dir: dir} do
+      path = written(dir, "s.feather")
+
+      assert_raise ArgumentError, ~r/unknown option/, fn ->
+        GeoFrame.stream_file(path, bbox: {0, 0, 1, 1})
+      end
+    end
+
+    test "an empty file yields no batches", %{tmp_dir: dir} do
+      path = Path.join(dir, "empty.feather")
+      empty = GeoDataFrame.new(DataFrame.new(id: [1]), GeoSeries.from_wkt!(["POINT (0 0)"]))
+      :ok = GeoFrame.write_file(GeoDataFrame.head(empty, 0), path)
+      assert path |> GeoFrame.stream_file() |> Enum.to_list() == []
+    end
+
+    test "a missing column or a file that is not Feather raises when enumerated", %{tmp_dir: dir} do
+      path = written(dir, "s.feather")
+
+      assert_raise ArgumentError, ~r/column "nope" not found/, fn ->
+        path |> GeoFrame.stream_file(columns: ["nope"]) |> Enum.to_list()
+      end
+
+      junk = Path.join(dir, "junk.feather")
+      File.write!(junk, "not arrow")
+      assert_raise ArgumentError, fn -> junk |> GeoFrame.stream_file() |> Enum.to_list() end
+    end
+  end
+
+  describe "Shapefile" do
+    test "batches have the requested size and concatenate to read_file/2", %{tmp_dir: dir} do
+      path = written(dir, "s.shp")
+      batches = assert_same_as_read_file(path, [], 7)
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [7, 7, 7, 4]
+    end
+
+    test "bbox: filters record by record like a post-read filter", %{tmp_dir: dir} do
+      path = written(dir, "s.shp")
+
+      batches =
+        path |> GeoFrame.stream_file(bbox: {3, 0, 9, 100}, batch_size: 3) |> Enum.to_list()
+
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [3, 3, 1]
+      assert Enum.flat_map(batches, &col(&1, "id")) == Enum.to_list(3..9)
+
+      assert_raise ArgumentError, ~r/bbox/, fn ->
+        path |> GeoFrame.stream_file(bbox: {9, 0, 3, 100}) |> Enum.to_list()
+      end
+    end
+
+    test "encoding: is applied like read_file/2", %{tmp_dir: dir} do
+      path = Path.join(dir, "latin.shp")
+      geometry = GeoSeries.from_wkt!(["POINT (0 0)", "POINT (1 1)"])
+      gdf = GeoDataFrame.new(DataFrame.new(t: ["é", "ü"]), geometry)
+      :ok = GeoFrame.write_file(gdf, path, encoding: "ISO-8859-1")
+
+      assert_same_as_read_file(path, [], 1)
+      batches = assert_same_as_read_file(path, [encoding: "UTF-8"], 1)
+      refute Enum.flat_map(batches, &col(&1, "t")) == ["é", "ü"]
+    end
+
+    test "a .zip archive streams like a .shp and leaves no files behind", %{tmp_dir: dir} do
+      path = written(dir, "s.zip")
+
+      scratch = fn ->
+        File.ls!(System.tmp_dir!()) |> Enum.filter(&String.starts_with?(&1, "geoframe-shp-"))
+      end
+
+      before = scratch.()
+      batches = assert_same_as_read_file(path, [], 10)
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [10, 10, 5]
+      assert scratch.() == before
+      assert [_] = path |> GeoFrame.stream_file(batch_size: 5) |> Enum.take(1)
+      assert scratch.() == before
+    end
+
+    test "an empty shapefile yields no batches and junk raises", %{tmp_dir: dir} do
+      path = Path.join(dir, "empty.shp")
+      empty = GeoDataFrame.new(DataFrame.new(id: [1]), GeoSeries.from_wkt!(["POINT (0 0)"]))
+      :ok = GeoFrame.write_file(GeoDataFrame.head(empty, 0), path)
+      assert path |> GeoFrame.stream_file() |> Enum.to_list() == []
+
+      junk = Path.join(dir, "junk.shp")
+      File.write!(junk, "not a shapefile")
+      assert_raise ArgumentError, fn -> junk |> GeoFrame.stream_file() |> Enum.to_list() end
+
+      assert_raise ArgumentError, ~r/unknown option/, fn ->
+        GeoFrame.stream_file(path, columns: ["id"])
+      end
+    end
+  end
+
+  describe "GeoPackage" do
+    test "batches have the requested size and concatenate to read_file/2", %{tmp_dir: dir} do
+      path = written(dir, "s.gpkg")
+      batches = assert_same_as_read_file(path, [], 7)
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [7, 7, 7, 4]
+    end
+
+    test "layer: selects a layer like read_file/2", %{tmp_dir: dir} do
+      path = written(dir, "s.gpkg", layer: "first")
+      second = GeoDataFrame.head(sample(@rows), 6)
+      :ok = GeoFrame.write_file(second, path, layer: "second", mode: :a)
+
+      assert_raise ArgumentError, ~r/several layers/, fn ->
+        path |> GeoFrame.stream_file() |> Enum.to_list()
+      end
+
+      assert_raise ArgumentError, ~r/layer "nope" not found/, fn ->
+        path |> GeoFrame.stream_file(layer: "nope") |> Enum.to_list()
+      end
+
+      batches = assert_same_as_read_file(path, [layer: "second"], 4)
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [4, 2]
+      assert_same_as_read_file(path, [layer: "first"], 10)
+    end
+
+    test "columns: projects the attributes", %{tmp_dir: dir} do
+      path = written(dir, "s.gpkg")
+      batches = path |> GeoFrame.stream_file(columns: ["name"], batch_size: 10) |> Enum.to_list()
+      assert DataFrame.names(GeoDataFrame.data(hd(batches))) == ["name"]
+      assert Enum.flat_map(batches, &col(&1, "name")) == Enum.map(0..24, &"n#{&1}")
+
+      assert_raise ArgumentError, ~r/column "nope" not found/, fn ->
+        path |> GeoFrame.stream_file(columns: ["nope"]) |> Enum.to_list()
+      end
+    end
+
+    test "bbox: keeps the matching rows with and without an R-tree", %{tmp_dir: dir} do
+      for indexed <- [true, false] do
+        path = written(dir, "s#{indexed}.gpkg", spatial_index: indexed)
+
+        batches =
+          path |> GeoFrame.stream_file(bbox: {3, 0, 9, 100}, batch_size: 3) |> Enum.to_list()
+
+        assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [3, 3, 1]
+        assert Enum.flat_map(batches, &col(&1, "id")) == Enum.to_list(3..9)
+        assert Enum.all?(batches, &(GeoDataFrame.crs(&1) == "EPSG:3857"))
+      end
+    end
+
+    test "an empty layer yields no batches", %{tmp_dir: dir} do
+      path = Path.join(dir, "empty.gpkg")
+      empty = GeoDataFrame.new(DataFrame.new(id: [1]), GeoSeries.from_wkt!(["POINT (0 0)"]))
+      :ok = GeoFrame.write_file(GeoDataFrame.head(empty, 0), path)
+      assert path |> GeoFrame.stream_file() |> Enum.to_list() == []
+
+      junk = Path.join(dir, "junk.gpkg")
+      File.write!(junk, String.duplicate("not sqlite ", 20))
+      assert_raise ArgumentError, fn -> junk |> GeoFrame.stream_file() |> Enum.to_list() end
+
+      assert_raise ArgumentError, ~r/unknown option/, fn ->
+        GeoFrame.stream_file(path, encoding: "x")
+      end
+    end
+  end
+
   describe "resource lifetime" do
     test "the stream is lazy: nothing opens before it is enumerated", %{tmp_dir: dir} do
       path = written(dir, "s.parquet")
@@ -137,7 +321,14 @@ defmodule GeoFrame.StreamFileTest do
       assert Native.open_readers() == before
     end
 
-    for {name, file, opts} <- [{"GeoParquet", "s.parquet", []}, {"FlatGeobuf", "s.fgb", []}] do
+    for {name, file, opts} <- [
+          {"GeoParquet", "s.parquet", []},
+          {"FlatGeobuf", "s.fgb", []},
+          {"Feather", "s.feather", []},
+          {"Shapefile", "s.shp", []},
+          {"Shapefile zip", "s.zip", []},
+          {"GeoPackage", "s.gpkg", []}
+        ] do
       test "#{name}: a full run closes the reader", %{tmp_dir: dir} do
         path = written(dir, unquote(file))
         before = Native.open_readers()
@@ -183,7 +374,7 @@ defmodule GeoFrame.StreamFileTest do
 
   describe "errors" do
     test "formats that cannot stream yet raise ArgumentError naming the format", %{tmp_dir: dir} do
-      for file <- ["a.geojson", "a.shp", "a.gpkg", "a.feather", "a.zip"] do
+      for file <- ["a.geojson", "a.json"] do
         assert_raise ArgumentError, ~r/stream_file\/2 does not support/, fn ->
           GeoFrame.stream_file(Path.join(dir, file))
         end
