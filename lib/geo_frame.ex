@@ -382,8 +382,10 @@ defmodule GeoFrame do
 
   Options:
 
-    * `:bbox` - `{minx, miny, maxx, maxy}`: only features whose bounding box intersects it
-      are read, using the file's spatial index (an error if the file has none).
+    * `:bbox` - `{minx, miny, maxx, maxy}`: only features whose geometry intersects it
+      are read (as GDAL's spatial filter, so GeoPandas `read_file(bbox=...)`: the index
+      narrows the search by bounding box, then each geometry is checked; an error if the file
+      has no index). Features without a geometry never match.
     * `:geometry_column` - as in `read_geojson/2`.
 
   Returns `{:error, message}` when the file cannot be read or is not FlatGeobuf.
@@ -604,6 +606,17 @@ defmodule GeoFrame do
   The remaining options go to the format's reader (`read_parquet/2`, `read_geojson/2`,
   `read_flatgeobuf/2`, `read_feather/2`, `read_shapefile/2`, `read_gpkg/2` - so `layer:`
   selects a GeoPackage layer); unknown options raise `ArgumentError`.
+
+  `bbox: {minx, miny, maxx, maxy}` (in the file's CRS) filters rows as GeoPandas'
+  `read_file(bbox=...)` does, for GeoParquet, FlatGeobuf, Shapefile, GeoPackage and GeoJSON
+  (Feather has none: `read_feather` has no `bbox`, and pyogrio has no Arrow driver). GeoParquet
+  keeps the rows whose geometry bounding box intersects the box (the covering column, as
+  GeoPandas `read_parquet`); the GDAL formats keep the rows whose *geometry* intersects the
+  box, so a diagonal line whose bounding box meets the box without touching it is dropped,
+  and rows without a geometry never match. Shapefile, GeoPackage and GeoJSON are read through
+  the `stream_file/2` readers (the same filter) and concatenated, so the result has the
+  dtypes and CRS of an unfiltered read, and an empty match is an empty frame with them.
+  `rows:` counts the rows that pass the filter. `mask:` is not supported.
   An unrecognised extension or driver raises `ArgumentError`; read failures are
   `{:error, message}`.
 
@@ -653,13 +666,15 @@ defmodule GeoFrame do
       geometry is always read), as in `read_parquet/2` and `read_feather/2`. GeoParquet never
       decodes the other columns; Feather decodes only these from each record batch; a
       GeoPackage selects only these columns.
-    * `:bbox` - `{minx, miny, maxx, maxy}` in the file's CRS: only rows whose geometry
-      bounding box intersects it (GeoParquet, FlatGeobuf, Shapefile, GeoPackage, GeoJSON). GeoParquet
-      has the semantics of `read_parquet/2` (row groups are skipped from a covering `bbox`
-      column or native encoding), FlatGeobuf those of `read_flatgeobuf/2` (the packed R-tree
-      index, an error without one). A GeoPackage layer uses its R-tree when it has one and
-      checks every row's exact bounds either way. A Shapefile has no index, so each record is
-      filtered after it is decoded, and so is each GeoJSON feature. Rows without a geometry never match.
+    * `:bbox` - `{minx, miny, maxx, maxy}` in the file's CRS (GeoParquet, FlatGeobuf,
+      Shapefile, GeoPackage, GeoJSON), with the semantics of `read_file/2`'s `bbox:`: GeoParquet
+      keeps the rows whose geometry bounding box intersects it, as `read_parquet/2` does (row
+      groups are skipped from a covering `bbox` column or native encoding); the other formats
+      keep the rows whose geometry itself intersects the box, as GDAL's spatial filter does.
+      FlatGeobuf uses the packed R-tree index (an error without one) and then checks the
+      geometry. A GeoPackage layer uses its R-tree when it has one and checks every row either
+      way. A Shapefile has no index, so each record is filtered after it is decoded, and so is
+      each GeoJSON feature. Rows without a geometry (or an empty one) never match.
     * `:layer` - GeoPackage: the layer, as in `read_gpkg/2`.
     * `:encoding` - Shapefile: the `.dbf` encoding, as in `read_shapefile/2`.
     * `:geometry` - Feather: the geometry column, as in `read_feather/2`.
@@ -670,7 +685,8 @@ defmodule GeoFrame do
   (the `.shp` record by record and the `.dbf` in matching chunks) and GeoPackage (pages of
   `batch_size` rows through a primary key cursor, O(n) in total). A Feather file is read one
   Arrow record batch at a time, so it only stays small when the file was written in small
-  record batches; GeoFrame's own `write_file/3` writes a single record batch. A `.zip`
+  record batches; `write_feather/3` writes batches of `record_batch_size:` rows (65 536 by
+  default), files written before 0.2.0 hold a single batch. A `.zip`
   shapefile is extracted to a scratch directory in the system temp dir (the `.shp` and `.dbf`
   members, each capped as in `read_file/2`), which is removed when the stream ends, halts or
   fails.

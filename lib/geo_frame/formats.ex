@@ -240,7 +240,24 @@ defmodule GeoFrame.Formats do
     end
   end
 
-  defp read_whole(driver, path, opts) do
+  @bbox_read_options [shapefile: [:encoding], gpkg: [:layer], geojson: [:geometry_column]]
+
+  # GeoParquet and FlatGeobuf filter inside their whole readers; the other formats have no
+  # index there, so a bbox read goes through the `stream_file/2` readers (the same filter) and
+  # concatenates the batches.
+  defp read_whole(driver, path, opts) when driver in [:shapefile, :gpkg, :geojson] do
+    if Keyword.get(opts, :bbox) == nil do
+      read_unfiltered(driver, path, Keyword.delete(opts, :bbox))
+    else
+      validate_options!(opts, [:bbox | @bbox_read_options[driver]])
+      read_rows(driver, path, {0, :all}, opts)
+    end
+  end
+
+  defp read_whole(driver, path, opts), do: read_unfiltered(driver, path, opts)
+
+  # The whole read of `driver` with its own options (no `bbox:` for Shapefile, GeoPackage, GeoJSON).
+  defp read_unfiltered(driver, path, opts) do
     case driver do
       :parquet -> GeoFrame.read_parquet(path, opts)
       :geojson -> read_geojson(path, opts)
@@ -271,7 +288,10 @@ defmodule GeoFrame.Formats do
 
   defp read_rows(driver, path, {offset, length}, opts) do
     path = to_string(path)
-    batch_size = length |> min(@rows_batch_cap) |> max(1)
+
+    batch_size =
+      if length == :all, do: @rows_batch_cap, else: length |> min(@rows_batch_cap) |> max(1)
+
     open = stream_opener(driver, path, opts, batch_size)
 
     try do
@@ -309,13 +329,21 @@ defmodule GeoFrame.Formats do
 
       {:ok, batch} ->
         gdf = unwrap_batch!(batch, driver, opts)
-        gdf = if GeoDataFrame.n_rows(gdf) > left, do: GeoDataFrame.head(gdf, left), else: gdf
-        take_rows(reader, driver, opts, left - GeoDataFrame.n_rows(gdf), [gdf | frames])
+
+        gdf =
+          if left != :all and GeoDataFrame.n_rows(gdf) > left,
+            do: GeoDataFrame.head(gdf, left),
+            else: gdf
+
+        take_rows(reader, driver, opts, rows_left(left, gdf), [gdf | frames])
 
       {:error, message} ->
         raise ArgumentError, message
     end
   end
+
+  defp rows_left(:all, _gdf), do: :all
+  defp rows_left(left, gdf), do: left - GeoDataFrame.n_rows(gdf)
 
   defp rows_frame([], driver, path, opts), do: empty_rows_frame(driver, path, opts)
   defp rows_frame([only], _driver, _path, _opts), do: only

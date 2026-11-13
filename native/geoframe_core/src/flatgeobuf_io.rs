@@ -64,10 +64,11 @@ use geo_traits::{GeometryTrait, PointTrait};
 use geoarrow_array::scalar::Geometry as Scalar;
 use geoarrow_array::GeoArrowArrayAccessor;
 use geozero::error::Result as GeozeroResult;
-use geozero::{ColumnValue, GeomProcessor, GeozeroGeometry, PropertyProcessor};
+use geozero::{ColumnValue, GeomProcessor, GeozeroGeometry, PropertyProcessor, ToGeo};
 
 use crate::attributes::{ipc_from_columns, Cell, Table};
 use crate::column::ColumnBuilder;
+use crate::parquet_io::geometry_meets_bbox;
 use crate::{GeoColumn, VectorRead};
 
 // -- read ---------------------------------------------------------------------------------
@@ -223,12 +224,14 @@ struct FeatureReader {
     columns: Vec<(String, ColumnType)>,
     has_z: bool,
     has_m: bool,
-    /// A bbox query: geometry-less rows are never part of its result.
-    filtered: bool,
+    /// A bbox query: geometry-less rows are never part of its result, and the index answers with
+    /// envelopes, so each feature's geometry is checked against the box too (GDAL's spatial
+    /// filter keeps the features whose geometry intersects it).
+    query: Option<[f64; 4]>,
 }
 
 impl FeatureReader {
-    fn new(path: &str, header: &Header<'_>, filtered: bool) -> Self {
+    fn new(path: &str, header: &Header<'_>, query: Option<[f64; 4]>) -> Self {
         Self {
             path: path.to_string(),
             crs: header_crs(header),
@@ -243,7 +246,7 @@ impl FeatureReader {
                 .unwrap_or_default(),
             has_z: header.has_z(),
             has_m: header.has_m(),
-            filtered,
+            query,
         }
     }
 
@@ -262,7 +265,7 @@ impl FeatureReader {
         // The encoder stores a null geometry as an empty one (and gives it a stale index
         // box), so empty means null. A bbox query never returns geometry-less rows.
         if is_empty_geometry(feature) {
-            if self.filtered {
+            if self.query.is_some() {
                 return Ok(false);
             }
             table.builder.push(None::<&Scalar<'_>>)?;
@@ -270,6 +273,14 @@ impl FeatureReader {
             if let Some(raw) = feature.geometry() {
                 check_ordinates(&raw, self.has_z, self.has_m)
                     .map_err(|e| format!("cannot read {path}: {e}"))?;
+            }
+            if let Some(query) = self.query {
+                // The index matched an envelope; keep the feature only when its geometry does.
+                if let Ok(geo) = feature.to_geo() {
+                    if !geometry_meets_bbox(&geo, query) {
+                        return Ok(false);
+                    }
+                }
             }
             let geometry = feature
                 .geometry_trait()
@@ -329,7 +340,7 @@ fn read(path: &str, bbox: Option<[f64; 4]>) -> Result<VectorRead, String> {
         .map_err(|e| format!("cannot read {path} as FlatGeobuf: {e}"))?;
 
     let header = reader.header();
-    let source = FeatureReader::new(path, &header, bbox.is_some());
+    let source = FeatureReader::new(path, &header, bbox);
     let empty = header.features_count() == 0;
     let mut table = source.open_table();
     if !empty {
@@ -375,7 +386,7 @@ impl FgbStream {
         let reader = FgbReader::open(BufReader::new(file))
             .map_err(|e| format!("cannot read {path} as FlatGeobuf: {e}"))?;
         let header = reader.header();
-        let source = FeatureReader::new(path, &header, bbox.is_some());
+        let source = FeatureReader::new(path, &header, bbox);
         let features = if header.features_count() == 0 {
             None
         } else {
@@ -399,7 +410,7 @@ impl FgbStream {
     /// Drops the next `count` features without decoding them. Returns `false` (and drops
     /// nothing) when a bbox query has to decode each feature to know whether it counts.
     pub(crate) fn skip(&mut self, count: usize) -> Result<bool, String> {
-        if self.source.filtered {
+        if self.source.query.is_some() {
             return Ok(false);
         }
         let Some(features) = self.features.as_mut() else {

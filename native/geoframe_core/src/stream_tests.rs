@@ -1000,3 +1000,33 @@ fn arrow_stream_writer_emits_record_batches_of_the_requested_size() {
 fn the_default_record_batch_size_matches_pyarrow() {
     assert_eq!(DEFAULT_RECORD_BATCH_SIZE, 65_536);
 }
+
+// -- bbox keeps geometries that intersect the box, not just their envelopes ----------------
+
+#[test]
+fn bbox_keep_exact_matches_gdals_spatial_filter() {
+    use crate::parquet_io::{bbox_keep, bbox_keep_exact};
+    let column = GeoColumn::from_wkt(
+        &[
+            Some("LINESTRING (0 0, 10 10)"),
+            Some("POINT (6 3)"),
+            Some("POINT (7 4)"),
+            Some("POLYGON ((0 0, 0 10, 5 10, 5 5, 10 5, 10 0, 0 0))"),
+            Some("POINT EMPTY"),
+            None,
+        ],
+        None,
+    )
+    .unwrap();
+    let query = [6.0, 0.0, 9.0, 3.0];
+    // The diagonal's envelope meets the box, the line does not; the L's bay is outside the
+    // polygon but the box lies in its arm; the box edge counts; empty and null never match.
+    assert_eq!(
+        bbox_keep(&column, query),
+        [true, true, false, true, false, false]
+    );
+    assert_eq!(
+        bbox_keep_exact(&column, query),
+        [false, true, false, true, false, false]
+    );
+}
