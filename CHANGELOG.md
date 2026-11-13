@@ -8,6 +8,15 @@ change before 1.0.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-13
+
+Like earlier releases, it is distributed through the `v0.3.1` git tag and GitHub release, not
+through Hex yet; the release attaches precompiled NIFs for nine targets. A git dependency builds
+the NIF from source (a stable Rust toolchain is required).
+
+A patch release: WKT is read as GEOS reads it in two more cases. Text that 0.3.0 read is read the
+same way, and no public function changes.
+
 ### Fixed
 
 - WKT without a `Z`, `M` or `ZM` tag whose coordinates have three or four ordinates is read as
@@ -406,7 +415,8 @@ through Hex. The NIF is compiled on your machine, so you need a stable Rust tool
   `GeoDataFrame.set_crs(frame, "EPSG:2223")`, the same projection in international feet (about
   2 ppm off, fine for maps).
 
-[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.1
 [0.3.0]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.0
 [0.2.0]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.2.0
 [0.1.2]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.1.2
