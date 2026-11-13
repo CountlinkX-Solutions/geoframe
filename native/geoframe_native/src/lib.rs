@@ -7,9 +7,9 @@ use geoframe_core::{
     read_gpkg, read_shapefile, shapefile_info, to_arrow_ipc_multi_batched,
     write_feather_multi_batched, write_flatgeobuf, write_geojson, write_geoparquet_multi,
     write_gpkg, write_shapefile, BatchReader, BufferOptions, FeatherCompression, GeoColumn,
-    GeometryEncoding, GpkgWriteOptions, GridFeature, GridType, JoinHow, LayerInfo, NearestPairs,
-    OffsetJoin, OffsetParams, Origin, ParquetOptions, PrecisionMode, Predicate, QueryPredicate,
-    SetOp, TableRead, UnaryOp, VectorRead, VertexKind, VertexParts,
+    GeometryEncoding, GpkgWriteOptions, GridFeature, GridType, GroupAgg, JoinHow, LayerInfo,
+    NearestPairs, OffsetJoin, OffsetParams, Origin, ParquetOptions, PrecisionMode, Predicate,
+    QueryPredicate, SetOp, TableRead, UnaryOp, VectorRead, VertexKind, VertexParts,
 };
 use rustler::{Binary, Encoder, Env, OwnedBinary, ResourceArc, Term};
 use std::sync::Mutex;
@@ -348,6 +348,20 @@ fn clip_by_rect(
 #[rustler::nif(schedule = "DirtyCpu")]
 fn union_groups(column: Handle, group_ids: Vec<u32>, n_groups: usize) -> Result<Handle, String> {
     column.0.union_groups(&group_ids, n_groups).map(wrap)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn aggregate_groups(
+    column: Handle,
+    group_ids: Vec<u32>,
+    n_groups: usize,
+    agg: String,
+) -> Result<Handle, String> {
+    let agg = GroupAgg::from_name(&agg).ok_or_else(|| format!("unknown aggregation: {agg}"))?;
+    column
+        .0
+        .aggregate_groups(&group_ids, n_groups, agg)
+        .map(wrap)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]

@@ -43,7 +43,12 @@ defmodule GeoFrame.MixProject do
       ],
       groups_for_modules: [
         Core: [GeoFrame, GeoFrame.GeoDataFrame, GeoFrame.GeoSeries],
-        "Spatial operations": [GeoFrame.SpatialJoin, GeoFrame.Overlay, GeoFrame.Dissolve],
+        "Spatial operations": [
+          GeoFrame.SpatialJoin,
+          GeoFrame.Overlay,
+          GeoFrame.Dissolve,
+          GeoFrame.GroupBy
+        ],
         "CRS and datum grids": [GeoFrame.CRS, GeoFrame.Grids],
         Livebook: [
           GeoFrame.Kino,
