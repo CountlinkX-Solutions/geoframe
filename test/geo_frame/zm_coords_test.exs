@@ -108,6 +108,21 @@ defmodule GeoFrame.ZmCoordsTest do
       "POINT M (1 2 5)"
     ]
 
+    # Shapely 2.2 returns the stored values: NaN and infinities included.
+    test "NaN and infinite ordinates are returned, as Shapely does" do
+      df =
+        GeoSeries.get_coordinates(
+          s(["POINT (NaN 1)", "LINESTRING (0 0, inf -1)", "POINT ZM (1 2 -Infinity Infinity)"]),
+          include_z: true,
+          include_m: true
+        )
+
+      assert list(df["x"]) == [:nan, 0.0, :infinity, 1.0]
+      assert list(df["y"]) == [1.0, 0.0, -1.0, 2.0]
+      assert list(df["z"]) == [:nan, :nan, :nan, :neg_infinity]
+      assert list(df["m"]) == [:nan, :nan, :nan, :infinity]
+    end
+
     test "default columns are unchanged" do
       assert DataFrame.names(GeoSeries.get_coordinates(s(@rows))) == ["x", "y"]
     end
