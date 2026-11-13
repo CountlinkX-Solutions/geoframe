@@ -4,10 +4,6 @@
     "continents.dissolved_vertices": {
       "rel": 0.06,
       "why": "Vertex count of a union is an algorithm artifact: GeoFrame's union drops collinear and near-duplicate vertices (Antarctica 4660 vs 4923, Asia 12257 vs 12259, others equal); areas and hulls agree within 1e-6."
-    },
-    "continents.country_vertices_simplified_50km": {
-      "rel": 0.01,
-      "why": "Douglas-Peucker at 50 km leaves an invalid ring in VEN, USA, RUS, SAH, IDN and CAN; GEOS repairs it with buffer(0) and GeoFrame returns the raw rings (documented in docs/parity.md), so those countries differ by 2 vertices or fewer; the other 236 agree vertex for vertex."
     }
   }
 }
