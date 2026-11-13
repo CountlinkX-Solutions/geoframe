@@ -450,17 +450,47 @@ defmodule GeoFrame.GeoSeries do
   `crs` is stored as given: `"EPSG:<code>"`, `"OGC:CRS84"`, or a PROJJSON or WKT definition
   (see `to_crs/2` for what a definition may hold). An integer EPSG code is accepted as in
   `to_crs/2` (a positive integer; `4326` is stored as `"EPSG:4326"`). `nil` clears the CRS.
+
+  As in GeoPandas, a series that already has a CRS refuses a *different* one: it raises
+  `ArgumentError` unless `allow_override: true` is passed (use `to_crs/2` to reproject
+  instead). Setting the same CRS, setting one on a series without a CRS, and `nil` need no
+  option. CRSs are compared by their stored text, so `"OGC:CRS84"` and `"EPSG:4326"` count as
+  different, as in pyproj.
+
+  Options: `:allow_override` (boolean, default `false`).
   """
-  @spec set_crs(t(), String.t() | pos_integer() | nil) :: t()
-  def set_crs(%__MODULE__{ref: ref}, crs) when is_binary(crs) or (is_integer(crs) and crs > 0) do
-    %__MODULE__{ref: Native.set_crs(ref, crs_label(crs))}
+  @spec set_crs(t(), String.t() | pos_integer() | nil, keyword()) :: t()
+  def set_crs(series, crs, opts \\ [])
+
+  def set_crs(%__MODULE__{} = series, crs, opts) do
+    GeoFrame.Options.validate!(opts, [:allow_override])
+    allow? = Keyword.get(opts, :allow_override, false)
+
+    unless is_boolean(allow?) do
+      raise ArgumentError, "allow_override must be a boolean, got: #{inspect(allow?)}"
+    end
+
+    label = new_crs_label(crs)
+    current = crs(series)
+
+    if not allow? and current != nil and label != nil and label != current do
+      raise ArgumentError,
+            "the series already has a CRS (#{inspect(String.slice(current, 0, 60))}) that is " <>
+              "not equal to the one passed; pass allow_override: true to replace it without " <>
+              "transforming the coordinates, or use to_crs/2 to reproject"
+    end
+
+    %__MODULE__{ref: Native.set_crs(series.ref, label)}
   end
 
-  def set_crs(%__MODULE__{}, crs) when is_integer(crs) do
+  defp new_crs_label(nil), do: nil
+
+  defp new_crs_label(crs) when is_binary(crs) or (is_integer(crs) and crs > 0),
+    do: crs_label(crs)
+
+  defp new_crs_label(crs) when is_integer(crs) do
     raise ArgumentError, "an EPSG code must be a positive integer, got: #{crs}"
   end
-
-  def set_crs(%__MODULE__{ref: ref}, nil), do: %__MODULE__{ref: Native.set_crs(ref, nil)}
 
   @doc """
   Selects rows by zero-based position; repeats and reordering are allowed.

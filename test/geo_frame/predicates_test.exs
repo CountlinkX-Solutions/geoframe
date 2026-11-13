@@ -186,7 +186,7 @@ defmodule GeoFrame.PredicatesTest do
 
     test "CRS mismatch raises, unknown CRS is compatible" do
       a = s(["POINT (1 1)"], crs: "EPSG:4326")
-      b = GeoSeries.set_crs(a, "EPSG:3857")
+      b = GeoSeries.set_crs(a, "EPSG:3857", allow_override: true)
 
       assert_raise ArgumentError, ~r/CRS mismatch/, fn -> GeoSeries.intersects(a, b) end
       assert_raise ArgumentError, ~r/CRS mismatch/, fn -> GeoSeries.distance(a, b) end
