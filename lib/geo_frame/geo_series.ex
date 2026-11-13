@@ -710,11 +710,14 @@ defmodule GeoFrame.GeoSeries do
       default `5.0`, at least `1.0`.
     * `:single_sided` - default `false`. Buffers only one side of a line: the left of its
       direction for a positive distance, the right for a negative one. Ends are flat (the
-      cap style is ignored) and outside corners use the join style. A point gives its
-      buffer for a positive distance and an empty polygon otherwise; a polygon gives only
-      the band around its rings (its buffer without the polygon, or the polygon without its
-      eroded part for a negative distance). GEOS' result for a closed line, a polygon (it has no stable rule: it depends on the size relative to the distance) with
-      holes or a band that overlaps itself is not reproduced (see `docs/parity.md`).
+      cap style is ignored) and outside corners use the join style, as GEOS. A point gives
+      its buffer for a positive distance and an empty polygon otherwise. A polygon gives the
+      band around its rings (its buffer without the polygon, or the polygon without its
+      eroded part for a negative distance). GEOS has no stable rule for polygons: for a
+      polygon that is large relative to the distance it returns the polygon itself (positive
+      distance) or the ordinary negative buffer (negative distance), for a small one the
+      band, so polygon results, closed lines and bands that overlap themselves can differ
+      from GeoPandas (see `docs/parity.md`).
 
   Invalid options raise `ArgumentError`.
 
