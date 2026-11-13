@@ -57,8 +57,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field};
 use flatgeobuf::{
-    ColumnType, FallibleStreamingIterator, FeatureProperties, FgbCrs, FgbFeature, FgbReader,
-    FgbWriter, FgbWriterOptions, GeometryType, Header,
+    ColumnType, FallibleStreamingIterator, FeatureIter, FeatureProperties, FgbCrs, FgbFeature,
+    FgbReader, FgbWriter, FgbWriterOptions, GeometryType, Header, Seekable,
 };
 use geo_traits::{GeometryTrait, PointTrait};
 use geoarrow_array::scalar::Geometry as Scalar;
@@ -215,6 +215,113 @@ pub(crate) fn prevalidate(path: &str, bbox: Option<[f64; 4]>) -> Result<(), Stri
     Ok(())
 }
 
+/// What the feature loop needs to know about the file, shared by the whole read and the
+/// batched one.
+struct FeatureReader {
+    path: String,
+    crs: Option<String>,
+    columns: Vec<(String, ColumnType)>,
+    has_z: bool,
+    has_m: bool,
+    /// A bbox query: geometry-less rows are never part of its result.
+    filtered: bool,
+}
+
+impl FeatureReader {
+    fn new(path: &str, header: &Header<'_>, filtered: bool) -> Self {
+        Self {
+            path: path.to_string(),
+            crs: header_crs(header),
+            columns: header
+                .columns()
+                .map(|columns| {
+                    columns
+                        .iter()
+                        .map(|c| (c.name().to_string(), c.type_()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            has_z: header.has_z(),
+            has_m: header.has_m(),
+            filtered,
+        }
+    }
+
+    fn open_table(&self) -> RowTable {
+        RowTable {
+            builder: ColumnBuilder::new(self.crs.as_deref()),
+            cells: vec![Vec::new(); self.columns.len()],
+            slots: Slots(vec![None; self.columns.len()]),
+        }
+    }
+
+    /// Appends one feature to `table`; `false` when it was skipped (a geometry-less row of a
+    /// bbox query).
+    fn push(&self, feature: &FgbFeature, table: &mut RowTable) -> Result<bool, String> {
+        let path = &self.path;
+        // The encoder stores a null geometry as an empty one (and gives it a stale index
+        // box), so empty means null. A bbox query never returns geometry-less rows.
+        if is_empty_geometry(feature) {
+            if self.filtered {
+                return Ok(false);
+            }
+            table.builder.push(None::<&Scalar<'_>>)?;
+        } else {
+            if let Some(raw) = feature.geometry() {
+                check_ordinates(&raw, self.has_z, self.has_m)
+                    .map_err(|e| format!("cannot read {path}: {e}"))?;
+            }
+            let geometry = feature
+                .geometry_trait()
+                .map_err(|e| format!("unsupported geometry in {path}: {e}"))?;
+            table.builder.push(geometry.as_ref())?;
+        }
+
+        table.slots.0.iter_mut().for_each(|slot| *slot = None);
+        feature
+            .process_properties(&mut table.slots)
+            .map_err(|e| format!("cannot read properties of {path}: {e}"))?;
+        for (column, slot) in table.cells.iter_mut().zip(table.slots.0.iter_mut()) {
+            column.push(slot.take());
+        }
+        Ok(true)
+    }
+
+    fn finish(&self, table: RowTable) -> Result<VectorRead, String> {
+        let geometry = table.builder.finish();
+        let rows = geometry.len();
+        let (fields, arrays): (Vec<Field>, Vec<ArrayRef>) = self
+            .columns
+            .iter()
+            .zip(&table.cells)
+            .map(|((name, kind), cells)| {
+                let array = build_column(*kind, cells);
+                (Field::new(name, array.data_type().clone(), true), array)
+            })
+            .unzip();
+        Ok(VectorRead {
+            geometry,
+            attributes_ipc: ipc_from_columns(fields, arrays, rows)?,
+        })
+    }
+}
+
+/// The rows collected so far.
+struct RowTable {
+    builder: ColumnBuilder,
+    cells: Vec<Vec<Option<Value>>>,
+    slots: Slots,
+}
+
+fn no_index_message(path: &str, e: flatgeobuf::Error) -> String {
+    match e {
+        flatgeobuf::Error::NoIndex => {
+            format!("{path} has no spatial index (index missing), so it cannot be filtered by bbox")
+        }
+        e => format!("cannot read {path}: {e}"),
+    }
+}
+
 fn read(path: &str, bbox: Option<[f64; 4]>) -> Result<VectorRead, String> {
     prevalidate(path, bbox)?;
     let file = File::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
@@ -222,79 +329,107 @@ fn read(path: &str, bbox: Option<[f64; 4]>) -> Result<VectorRead, String> {
         .map_err(|e| format!("cannot read {path} as FlatGeobuf: {e}"))?;
 
     let header = reader.header();
-    let crs = header_crs(&header);
-    let columns: Vec<(String, ColumnType)> = header
-        .columns()
-        .map(|columns| {
-            columns
-                .iter()
-                .map(|c| (c.name().to_string(), c.type_()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let source = FeatureReader::new(path, &header, bbox.is_some());
     let empty = header.features_count() == 0;
-    let (has_z, has_m) = (header.has_z(), header.has_m());
-
-    let mut builder = ColumnBuilder::new(crs.as_deref());
-    let mut cells: Vec<Vec<Option<Value>>> = vec![Vec::new(); columns.len()];
-    let mut slots = Slots(vec![None; columns.len()]);
+    let mut table = source.open_table();
     if !empty {
         let mut features = match bbox {
             None => reader.select_all(),
             Some([min_x, min_y, max_x, max_y]) => reader.select_bbox(min_x, min_y, max_x, max_y),
         }
-        .map_err(|e| match e {
-            flatgeobuf::Error::NoIndex => format!(
-                "{path} has no spatial index (index missing), so it cannot be filtered by bbox"
-            ),
-            e => format!("cannot read {path}: {e}"),
-        })?;
+        .map_err(|e| no_index_message(path, e))?;
         while let Some(feature) = features
             .next()
             .map_err(|e| format!("cannot read {path}: {e}"))?
         {
-            // The encoder stores a null geometry as an empty one (and gives it a stale index
-            // box), so empty means null. A bbox query never returns geometry-less rows.
-            if is_empty_geometry(feature) {
-                if bbox.is_some() {
-                    continue;
-                }
-                builder.push(None::<&Scalar<'_>>)?;
-            } else {
-                if let Some(raw) = feature.geometry() {
-                    check_ordinates(&raw, has_z, has_m)
-                        .map_err(|e| format!("cannot read {path}: {e}"))?;
-                }
-                let geometry = feature
-                    .geometry_trait()
-                    .map_err(|e| format!("unsupported geometry in {path}: {e}"))?;
-                builder.push(geometry.as_ref())?;
-            }
-
-            slots.0.iter_mut().for_each(|slot| *slot = None);
-            feature
-                .process_properties(&mut slots)
-                .map_err(|e| format!("cannot read properties of {path}: {e}"))?;
-            for (column, slot) in cells.iter_mut().zip(slots.0.iter_mut()) {
-                column.push(slot.take());
-            }
+            source.push(feature, &mut table)?;
         }
     }
+    source.finish(table)
+}
 
-    let geometry = builder.finish();
-    let rows = geometry.len();
-    let (fields, arrays): (Vec<Field>, Vec<ArrayRef>) = columns
-        .iter()
-        .zip(&cells)
-        .map(|((name, kind), cells)| {
-            let array = build_column(*kind, cells);
-            (Field::new(name, array.data_type().clone(), true), array)
+/// A FlatGeobuf file read `batch_size` features at a time.
+pub(crate) struct FgbStream {
+    source: FeatureReader,
+    /// `None` for a file without features.
+    features: Option<FeatureIter<BufReader<File>, Seekable>>,
+    batch_size: usize,
+}
+
+impl FgbStream {
+    pub(crate) fn open(
+        path: &str,
+        bbox: Option<[f64; 4]>,
+        batch_size: usize,
+    ) -> Result<Self, String> {
+        if batch_size == 0 {
+            return Err("batch_size must be a positive number of rows".to_string());
+        }
+        catch_unwind(AssertUnwindSafe(|| Self::open_file(path, bbox, batch_size)))
+            .unwrap_or_else(|_| Err(not_readable(path)))
+    }
+
+    fn open_file(path: &str, bbox: Option<[f64; 4]>, batch_size: usize) -> Result<Self, String> {
+        prevalidate(path, bbox)?;
+        let file = File::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
+        let reader = FgbReader::open(BufReader::new(file))
+            .map_err(|e| format!("cannot read {path} as FlatGeobuf: {e}"))?;
+        let header = reader.header();
+        let source = FeatureReader::new(path, &header, bbox.is_some());
+        let features = if header.features_count() == 0 {
+            None
+        } else {
+            Some(
+                match bbox {
+                    None => reader.select_all(),
+                    Some([min_x, min_y, max_x, max_y]) => {
+                        reader.select_bbox(min_x, min_y, max_x, max_y)
+                    }
+                }
+                .map_err(|e| no_index_message(path, e))?,
+            )
+        };
+        Ok(Self {
+            source,
+            features,
+            batch_size,
         })
-        .unzip();
-    Ok(VectorRead {
-        geometry,
-        attributes_ipc: ipc_from_columns(fields, arrays, rows)?,
-    })
+    }
+
+    /// The next `batch_size` features (fewer at the end), `None` when none are left.
+    pub(crate) fn next_batch(&mut self) -> Result<Option<VectorRead>, String> {
+        catch_unwind(AssertUnwindSafe(|| self.next()))
+            .unwrap_or_else(|_| Err(not_readable(&self.source.path)))
+    }
+
+    fn next(&mut self) -> Result<Option<VectorRead>, String> {
+        let Some(features) = self.features.as_mut() else {
+            return Ok(None);
+        };
+        let path = &self.source.path;
+        let mut table = self.source.open_table();
+        let mut rows = 0;
+        while rows < self.batch_size {
+            let Some(feature) = features
+                .next()
+                .map_err(|e| format!("cannot read {path}: {e}"))?
+            else {
+                break;
+            };
+            if self.source.push(feature, &mut table)? {
+                rows += 1;
+            }
+        }
+        if rows == 0 {
+            // Exhausted: the iterator is finished, so further calls return `None` at once.
+            return Ok(None);
+        }
+        self.source.finish(table).map(Some)
+    }
+}
+
+fn not_readable(path: &str) -> String {
+    format!("{path} is not a readable FlatGeobuf file")
 }
 
 /// Requires every geometry part to carry as many Z (and M) values as it has vertices when the

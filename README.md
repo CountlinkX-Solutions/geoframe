@@ -218,7 +218,7 @@ extracts a notebook's code cells and runs them in order. It also runs the Python
 - Inputs that would abort the VM (a stack overflow, a huge allocation) are rejected with an
   error; the caps (WKT depth, grid cells, buffer vertices, ...) are in
   [Resource limits](docs/parity.md#resource-limits).
-- Files are read into memory whole; there is no streaming or batched read.
+- `read_file/2` reads a file into memory whole. `GeoFrame.stream_file/2` reads GeoParquet and FlatGeobuf lazily as a stream of `GeoDataFrame` batches (`batch_size:`, `columns:`, `bbox:`), so a file larger than memory can be processed; Arrow IPC / Feather, Shapefile, GeoPackage and GeoJSON do not stream yet, and `read_file(rows:)` is not implemented.
 - Not planned: `plot` (use the Kino map), geocoding, pandas index alignment, a persistent
   spatial index object, and OGR drivers that need GDAL (GML, KML, GPX, FileGDB, ...; convert
   with `ogr2ogr` first).
