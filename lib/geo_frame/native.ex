@@ -78,6 +78,7 @@ defmodule GeoFrame.Native do
   def union_all(_ref), do: err()
   def union_groups(_ref, _group_ids, _n_groups), do: err()
   def intersection_all(_ref), do: err()
+  def aggregate_groups(_ref, _group_ids, _n_groups, _agg), do: err()
   def explode(_ref), do: err()
   def clip_by_rect(_ref, _xmin, _ymin, _xmax, _ymax), do: err()
   def unary(_ref, _name), do: err()

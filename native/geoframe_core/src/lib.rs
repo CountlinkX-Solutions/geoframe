@@ -28,6 +28,7 @@ mod geojson_io;
 mod geojson_stream;
 mod gpkg_io;
 mod gpkg_stream;
+mod group_agg;
 mod line_merge;
 mod mixed_ops;
 mod noding;
@@ -78,6 +79,7 @@ pub use gpkg_io::{
     gpkg_info, gpkg_layers, read_gpkg, write_gpkg, GpkgRead, GpkgWriteOptions, LayerInfo,
     LayerSummary,
 };
+pub use group_agg::GroupAgg;
 pub use offset_curve::{OffsetJoin, OffsetParams, MAX_QUAD_SEGS};
 pub use parity_e::{GridFeature, GridType};
 pub use parity_i::{FlatVertexParts, PrecisionMode, VertexKind, VertexParts, VertexRing};
@@ -130,6 +132,8 @@ mod geojson_stream_tests;
 mod geojson_tests;
 #[cfg(test)]
 mod gpkg_tests;
+#[cfg(test)]
+mod group_agg_tests;
 #[cfg(test)]
 mod hardening_tests;
 #[cfg(test)]
