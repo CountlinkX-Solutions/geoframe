@@ -248,6 +248,71 @@ defmodule GeoFrame.StreamFileTest do
     end
   end
 
+  describe "GeoPackage" do
+    test "batches have the requested size and concatenate to read_file/2", %{tmp_dir: dir} do
+      path = written(dir, "s.gpkg")
+      batches = assert_same_as_read_file(path, [], 7)
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [7, 7, 7, 4]
+    end
+
+    test "layer: selects a layer like read_file/2", %{tmp_dir: dir} do
+      path = written(dir, "s.gpkg", layer: "first")
+      second = GeoDataFrame.head(sample(@rows), 6)
+      :ok = GeoFrame.write_file(second, path, layer: "second", mode: :a)
+
+      assert_raise ArgumentError, ~r/several layers/, fn ->
+        path |> GeoFrame.stream_file() |> Enum.to_list()
+      end
+
+      assert_raise ArgumentError, ~r/layer "nope" not found/, fn ->
+        path |> GeoFrame.stream_file(layer: "nope") |> Enum.to_list()
+      end
+
+      batches = assert_same_as_read_file(path, [layer: "second"], 4)
+      assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [4, 2]
+      assert_same_as_read_file(path, [layer: "first"], 10)
+    end
+
+    test "columns: projects the attributes", %{tmp_dir: dir} do
+      path = written(dir, "s.gpkg")
+      batches = path |> GeoFrame.stream_file(columns: ["name"], batch_size: 10) |> Enum.to_list()
+      assert DataFrame.names(GeoDataFrame.data(hd(batches))) == ["name"]
+      assert Enum.flat_map(batches, &col(&1, "name")) == Enum.map(0..24, &"n#{&1}")
+
+      assert_raise ArgumentError, ~r/column "nope" not found/, fn ->
+        path |> GeoFrame.stream_file(columns: ["nope"]) |> Enum.to_list()
+      end
+    end
+
+    test "bbox: keeps the matching rows with and without an R-tree", %{tmp_dir: dir} do
+      for indexed <- [true, false] do
+        path = written(dir, "s#{indexed}.gpkg", spatial_index: indexed)
+
+        batches =
+          path |> GeoFrame.stream_file(bbox: {3, 0, 9, 100}, batch_size: 3) |> Enum.to_list()
+
+        assert Enum.map(batches, &GeoDataFrame.n_rows/1) == [3, 3, 1]
+        assert Enum.flat_map(batches, &col(&1, "id")) == Enum.to_list(3..9)
+        assert Enum.all?(batches, &(GeoDataFrame.crs(&1) == "EPSG:3857"))
+      end
+    end
+
+    test "an empty layer yields no batches", %{tmp_dir: dir} do
+      path = Path.join(dir, "empty.gpkg")
+      empty = GeoDataFrame.new(DataFrame.new(id: [1]), GeoSeries.from_wkt!(["POINT (0 0)"]))
+      :ok = GeoFrame.write_file(GeoDataFrame.head(empty, 0), path)
+      assert path |> GeoFrame.stream_file() |> Enum.to_list() == []
+
+      junk = Path.join(dir, "junk.gpkg")
+      File.write!(junk, String.duplicate("not sqlite ", 20))
+      assert_raise ArgumentError, fn -> junk |> GeoFrame.stream_file() |> Enum.to_list() end
+
+      assert_raise ArgumentError, ~r/unknown option/, fn ->
+        GeoFrame.stream_file(path, encoding: "x")
+      end
+    end
+  end
+
   describe "resource lifetime" do
     test "the stream is lazy: nothing opens before it is enumerated", %{tmp_dir: dir} do
       path = written(dir, "s.parquet")
@@ -261,7 +326,8 @@ defmodule GeoFrame.StreamFileTest do
           {"FlatGeobuf", "s.fgb", []},
           {"Feather", "s.feather", []},
           {"Shapefile", "s.shp", []},
-          {"Shapefile zip", "s.zip", []}
+          {"Shapefile zip", "s.zip", []},
+          {"GeoPackage", "s.gpkg", []}
         ] do
       test "#{name}: a full run closes the reader", %{tmp_dir: dir} do
         path = written(dir, unquote(file))

@@ -567,3 +567,208 @@ fn shapefile_empty_file_yields_no_batches() {
     let mut reader = BatchReader::open_shapefile(&file, None, None, 4).unwrap();
     assert!(reader.next_batch().unwrap().is_none());
 }
+
+// -- GeoPackage ---------------------------------------------------------------------------
+
+use crate::{read_gpkg, write_gpkg, GpkgWriteOptions};
+
+fn gpkg_options(spatial_index: bool) -> GpkgWriteOptions {
+    GpkgWriteOptions {
+        append: false,
+        spatial_index,
+    }
+}
+
+fn gpkg_file(dir: &TempDir, rows: usize, layer: &str, spatial_index: bool) -> String {
+    let (geometry, attributes) = grid(rows, Some("EPSG:3857"));
+    let file = path(dir, "s.gpkg");
+    write_gpkg(
+        &file,
+        &geometry,
+        &attributes,
+        layer,
+        gpkg_options(spatial_index),
+    )
+    .unwrap();
+    file
+}
+
+fn sql(file: &str, statements: &str) {
+    let conn = rusqlite::Connection::open(file).unwrap();
+    // The layer's triggers call the GeoPackage SQL functions.
+    crate::gpkg_io::register_functions(&conn).unwrap();
+    conn.execute_batch(statements).unwrap();
+}
+
+/// The dtypes of the attribute columns of every batch (they must agree to concatenate).
+fn batch_types(batches: &[StreamBatch]) -> Vec<Vec<(String, arrow_schema::DataType)>> {
+    batches
+        .iter()
+        .map(|b| {
+            crate::test_support::columns(&b.attributes_ipc)
+                .into_iter()
+                .map(|(name, data_type, _)| (name, data_type))
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn gpkg_batches_concatenate_to_the_whole_read() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = gpkg_file(&dir, 10, "pts", true);
+    let whole = read_gpkg(&file, None).unwrap().vector;
+
+    let batches = drain(BatchReader::open_gpkg(&file, None, None, None, 4).unwrap());
+    assert_eq!(sizes(&batches), vec![4, 4, 2]);
+    assert_eq!(all_wkt(&batches), wkt(&whole.geometry));
+    assert_eq!(all_ids(&batches), (0..10).collect::<Vec<i64>>());
+    for batch in &batches {
+        assert_eq!(batch.geometry.crs(), whole.geometry.crs());
+        assert_eq!(batch.geometry_column, None);
+    }
+    let whole_types = batch_types(&[StreamBatch {
+        geometry: whole.geometry,
+        geometry_column: None,
+        secondary_geometries: Vec::new(),
+        attributes_ipc: whole.attributes_ipc,
+    }]);
+    assert!(batch_types(&batches).iter().all(|t| *t == whole_types[0]));
+    let batches = drain(BatchReader::open_gpkg(&file, None, None, None, 100).unwrap());
+    assert_eq!(sizes(&batches), vec![10]);
+}
+
+#[test]
+fn gpkg_follows_the_feature_id_across_gaps_and_keeps_null_geometries() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = gpkg_file(&dir, 12, "pts", true);
+    sql(
+        &file,
+        "DELETE FROM pts WHERE fid IN (2, 3, 7, 12); UPDATE pts SET geom = NULL WHERE fid = 5;",
+    );
+    let whole = read_gpkg(&file, None).unwrap().vector;
+    assert_eq!(whole.geometry.len(), 8);
+    let batches = drain(BatchReader::open_gpkg(&file, None, None, None, 3).unwrap());
+    assert_eq!(sizes(&batches), vec![3, 3, 2]);
+    assert_eq!(all_wkt(&batches), wkt(&whole.geometry));
+    assert!(all_wkt(&batches).contains(&None));
+}
+
+#[test]
+fn gpkg_column_types_do_not_change_between_batches() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = gpkg_file(&dir, 8, "pts", true);
+    // Integers up to the last row, which no longer fits the declared 32 bits, and an untyped
+    // column that holds integers first and a real last: the whole read widens both.
+    sql(
+        &file,
+        "ALTER TABLE pts ADD COLUMN loose NUMERIC; ALTER TABLE pts ADD COLUMN narrow MEDIUMINT;
+         UPDATE pts SET loose = fid, narrow = fid;
+         UPDATE pts SET loose = 1.5, narrow = 5000000000 WHERE fid = 8;",
+    );
+    let whole = read_gpkg(&file, None).unwrap().vector;
+    let (loose, _) = column(&whole.attributes_ipc, "loose");
+    let (narrow, _) = column(&whole.attributes_ipc, "narrow");
+    assert_eq!(loose, arrow_schema::DataType::Float64);
+    assert_eq!(narrow, arrow_schema::DataType::Int64);
+
+    let batches = drain(BatchReader::open_gpkg(&file, None, None, None, 3).unwrap());
+    for batch in &batches {
+        assert_eq!(column(&batch.attributes_ipc, "loose").0, loose);
+        assert_eq!(column(&batch.attributes_ipc, "narrow").0, narrow);
+    }
+    assert_eq!(batch_types(&batches).len(), 3);
+}
+
+#[test]
+fn gpkg_layer_selection() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = gpkg_file(&dir, 4, "first", true);
+    let (geometry, attributes) = grid(6, Some("EPSG:4326"));
+    write_gpkg(&file, &geometry, &attributes, "second", gpkg_options(true)).unwrap();
+
+    assert!(BatchReader::open_gpkg(&file, None, None, None, 2).is_err());
+    assert!(BatchReader::open_gpkg(&file, Some("nope"), None, None, 2).is_err());
+    let batches = drain(BatchReader::open_gpkg(&file, Some("second"), None, None, 4).unwrap());
+    assert_eq!(sizes(&batches), vec![4, 2]);
+    assert_eq!(batches[0].geometry.crs().as_deref(), Some("EPSG:4326"));
+    let batches = drain(BatchReader::open_gpkg(&file, Some("first"), None, None, 4).unwrap());
+    assert_eq!(sizes(&batches), vec![4]);
+}
+
+#[test]
+fn gpkg_columns_projection() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = gpkg_file(&dir, 5, "pts", true);
+    let columns = vec!["name".to_string()];
+    let batches = drain(BatchReader::open_gpkg(&file, None, Some(&columns), None, 2).unwrap());
+    assert_eq!(sizes(&batches), vec![2, 2, 1]);
+    for batch in &batches {
+        assert_eq!(crate::test_support::names(&batch.attributes_ipc), ["name"]);
+    }
+    let missing = vec!["nope".to_string()];
+    assert!(BatchReader::open_gpkg(&file, None, Some(&missing), None, 2).is_err());
+    let none: Vec<String> = Vec::new();
+    let batches = drain(BatchReader::open_gpkg(&file, None, Some(&none), None, 2).unwrap());
+    assert!(crate::test_support::names(&batches[0].attributes_ipc).is_empty());
+}
+
+#[test]
+fn gpkg_bbox_with_and_without_an_rtree() {
+    let _guard = serial();
+    for indexed in [true, false] {
+        let dir = TempDir::new().unwrap();
+        let file = gpkg_file(&dir, 30, "pts", indexed);
+        let bbox = [3.0, 0.0, 9.0, 100.0];
+        let batches = drain(BatchReader::open_gpkg(&file, None, None, Some(bbox), 3).unwrap());
+        assert_eq!(sizes(&batches), vec![3, 3, 1], "indexed: {indexed}");
+        assert_eq!(all_ids(&batches), (3..10).collect::<Vec<i64>>());
+        let none = [500.0, 0.0, 600.0, 1.0];
+        assert!(
+            drain(BatchReader::open_gpkg(&file, None, None, Some(none), 3).unwrap()).is_empty()
+        );
+    }
+    let dir = TempDir::new().unwrap();
+    let file = gpkg_file(&dir, 5, "pts", true);
+    assert!(BatchReader::open_gpkg(&file, None, None, Some([5.0, 0.0, 1.0, 1.0]), 2).is_err());
+}
+
+#[test]
+fn gpkg_bbox_is_answered_by_the_rtree_when_the_layer_has_one() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let file = gpkg_file(&dir, 20, "pts", true);
+    // Emptying the index (not the table) changes the answer only if the index is consulted.
+    sql(&file, "DELETE FROM rtree_pts_geom WHERE id <= 10");
+    let bbox = [3.0, 0.0, 15.0, 100.0];
+    let batches = drain(BatchReader::open_gpkg(&file, None, None, Some(bbox), 4).unwrap());
+    assert_eq!(all_ids(&batches), (10..16).collect::<Vec<i64>>());
+    // Without a bbox the table is read whole, index or not.
+    let batches = drain(BatchReader::open_gpkg(&file, None, None, None, 4).unwrap());
+    assert_eq!(all_ids(&batches), (0..20).collect::<Vec<i64>>());
+}
+
+#[test]
+fn gpkg_empty_layer_errors_and_counting() {
+    let _guard = serial();
+    let dir = TempDir::new().unwrap();
+    let empty = gpkg_file(&dir, 0, "pts", true);
+    let before = open_batch_readers();
+    let mut reader = BatchReader::open_gpkg(&empty, None, None, None, 4).unwrap();
+    assert_eq!(open_batch_readers(), before + 1);
+    assert!(reader.next_batch().unwrap().is_none());
+    drop(reader);
+    assert_eq!(open_batch_readers(), before);
+
+    assert!(BatchReader::open_gpkg(&path(&dir, "nope.gpkg"), None, None, None, 2).is_err());
+    assert!(BatchReader::open_gpkg(&empty, None, None, None, 0).is_err());
+    let junk = path(&dir, "junk.gpkg");
+    std::fs::write(&junk, "not sqlite at all, not sqlite at all").unwrap();
+    assert!(BatchReader::open_gpkg(&junk, None, None, None, 2).is_err());
+    assert_eq!(open_batch_readers(), before);
+}

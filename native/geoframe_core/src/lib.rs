@@ -26,6 +26,7 @@ mod flatgeobuf_io;
 mod flatgeobuf_nulls;
 mod geojson_io;
 mod gpkg_io;
+mod gpkg_stream;
 mod line_merge;
 mod mixed_ops;
 mod noding;

@@ -1444,6 +1444,27 @@ fn open_shapefile_reader(
     BatchReader::open_shapefile(&path, encoding.as_deref(), bbox, batch_size).map(new_reader)
 }
 
+/// Opens one GeoPackage layer for batched reading (`layer` as `read_gpkg_file`; `columns`
+/// restricts the attributes; `bbox` uses the layer's R-tree when it has one).
+#[rustler::nif(schedule = "DirtyIo")]
+fn open_gpkg_reader(
+    path: String,
+    layer: Option<String>,
+    columns: Option<Vec<String>>,
+    bbox: Option<(f64, f64, f64, f64)>,
+    batch_size: usize,
+) -> Result<Reader, String> {
+    let bbox = bbox.map(|(a, b, c, d)| [a, b, c, d]);
+    BatchReader::open_gpkg(
+        &path,
+        layer.as_deref(),
+        columns.as_deref(),
+        bbox,
+        batch_size,
+    )
+    .map(new_reader)
+}
+
 type NextBatch<'a> = Option<(Handle, Option<String>, Binary<'a>, Secondary)>;
 
 /// The next batch as `{geometry, geometry_column | nil, attributes_ipc, secondary}`, or `nil`

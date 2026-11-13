@@ -231,7 +231,7 @@ pub(crate) fn decode_geometry_blob(blob: &[u8]) -> Result<Blob<'_>, String> {
 
 // -- connections ----------------------------------------------------------------------------
 
-fn sql_error(e: rusqlite::Error) -> String {
+pub(crate) fn sql_error(e: rusqlite::Error) -> String {
     e.to_string()
 }
 
@@ -253,7 +253,7 @@ fn blob_bounds(blob: &[u8]) -> Result<Option<[f64; 4]>, String> {
     Ok(column.bounds().into_iter().next().flatten())
 }
 
-fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
+pub(crate) fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
     let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
     for (name, index) in [
         ("ST_MinX", 0usize),
@@ -283,7 +283,7 @@ fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn open_read(path: &str) -> Result<Connection, String> {
+pub(crate) fn open_read(path: &str) -> Result<Connection, String> {
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -315,21 +315,21 @@ fn literal(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
 
-fn quote(identifier: &str) -> String {
+pub(crate) fn quote(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
 // -- layers ---------------------------------------------------------------------------------
 
-struct LayerRow {
-    name: String,
-    data_type: String,
-    geometry_type: Option<String>,
-    z: i64,
-    m: i64,
+pub(crate) struct LayerRow {
+    pub(crate) name: String,
+    pub(crate) data_type: String,
+    pub(crate) geometry_type: Option<String>,
+    pub(crate) z: i64,
+    pub(crate) m: i64,
 }
 
-fn layer_rows(conn: &Connection) -> Result<Vec<LayerRow>, String> {
+pub(crate) fn layer_rows(conn: &Connection) -> Result<Vec<LayerRow>, String> {
     let mut statement = conn
         .prepare(
             "SELECT c.table_name, c.data_type, g.geometry_type_name, g.z, g.m \
@@ -392,7 +392,7 @@ pub fn gpkg_layers(path: &str) -> Result<Vec<LayerSummary>, String> {
 
 /// Picks the layer to read. Without a name a lone feature layer is chosen; with several,
 /// `strict` reports the choice as an error while a lenient caller gets the first one.
-fn select_layer(
+pub(crate) fn select_layer(
     rows: &[LayerRow],
     layer: Option<&str>,
     strict: bool,
@@ -442,7 +442,7 @@ fn select_layer(
 // -- CRS ------------------------------------------------------------------------------------
 
 /// The CRS string of a `gpkg_spatial_ref_sys` row; `None` for the undefined SRS ids.
-fn crs_for_srs(conn: &Connection, srs_id: i64) -> Result<Option<String>, String> {
+pub(crate) fn crs_for_srs(conn: &Connection, srs_id: i64) -> Result<Option<String>, String> {
     if srs_id <= 0 {
         return Ok(None);
     }
@@ -597,13 +597,13 @@ fn next_custom_srs(conn: &Connection) -> Result<i64, String> {
 
 // -- reading --------------------------------------------------------------------------------
 
-struct Column {
-    name: String,
-    declared: String,
-    primary_key: bool,
+pub(crate) struct Column {
+    pub(crate) name: String,
+    pub(crate) declared: String,
+    pub(crate) primary_key: bool,
 }
 
-fn table_columns(conn: &Connection, table: &str) -> Result<Vec<Column>, String> {
+pub(crate) fn table_columns(conn: &Connection, table: &str) -> Result<Vec<Column>, String> {
     let mut statement = conn
         .prepare(&format!("PRAGMA table_info({})", quote(table)))
         .map_err(sql_error)?;
@@ -621,13 +621,13 @@ fn table_columns(conn: &Connection, table: &str) -> Result<Vec<Column>, String> 
     Ok(columns)
 }
 
-struct GeometryColumn {
-    name: String,
-    srs_id: i64,
-    type_name: String,
+pub(crate) struct GeometryColumn {
+    pub(crate) name: String,
+    pub(crate) srs_id: i64,
+    pub(crate) type_name: String,
 }
 
-fn geometry_column(conn: &Connection, table: &str) -> Result<GeometryColumn, String> {
+pub(crate) fn geometry_column(conn: &Connection, table: &str) -> Result<GeometryColumn, String> {
     conn.query_row(
         "SELECT column_name, srs_id, geometry_type_name FROM gpkg_geometry_columns \
          WHERE table_name = ?1",
@@ -649,7 +649,7 @@ fn geometry_column(conn: &Connection, table: &str) -> Result<GeometryColumn, Str
 }
 
 /// The integer primary key, which is the feature id rather than an attribute.
-fn is_fid(column: &Column, all: &[Column]) -> bool {
+pub(crate) fn is_fid(column: &Column, all: &[Column]) -> bool {
     column.primary_key
         && column.declared.to_ascii_uppercase().contains("INT")
         && all.iter().filter(|c| c.primary_key).count() == 1
@@ -724,7 +724,7 @@ pub fn read_gpkg(path: &str, layer: Option<&str>) -> Result<GpkgRead, String> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Declared {
+pub(crate) enum Declared {
     Bool,
     Int8,
     Int16,
@@ -739,7 +739,7 @@ enum Declared {
     Unknown,
 }
 
-fn declared_kind(declared: &str) -> Declared {
+pub(crate) fn declared_kind(declared: &str) -> Declared {
     let upper = declared.to_ascii_uppercase();
     let name = upper.split('(').next().unwrap_or("").trim();
     match name {
@@ -793,7 +793,84 @@ fn as_text(value: &Value) -> Option<String> {
     }
 }
 
+/// What the cells of a column say about the type it should be read as. The whole read feeds
+/// it every value before building the column; a batched read feeds it a first pass over the
+/// table, so every batch is built with the same type the whole read would pick.
+pub(crate) struct KindScan {
+    declared: Declared,
+    all_integer: bool,
+    all_numeric: bool,
+    all_blob: bool,
+    any_present: bool,
+    /// Every integer-like value fits the declared (narrow) integer width.
+    fits: bool,
+}
+
+impl KindScan {
+    pub(crate) fn new(declared: &str) -> Self {
+        Self {
+            declared: declared_kind(declared),
+            all_integer: true,
+            all_numeric: true,
+            all_blob: true,
+            any_present: false,
+            fits: true,
+        }
+    }
+
+    /// Whether the declared type alone does not fix the column type (a scan is needed).
+    pub(crate) fn needs_scan(&self) -> bool {
+        matches!(
+            self.declared,
+            Declared::Unknown | Declared::Int8 | Declared::Int16 | Declared::Int32
+        )
+    }
+
+    pub(crate) fn add(&mut self, value: &Value) {
+        match self.declared {
+            Declared::Unknown if !matches!(value, Value::Null) => {
+                self.any_present = true;
+                self.all_integer &= matches!(value, Value::Integer(_));
+                self.all_numeric &= matches!(value, Value::Integer(_) | Value::Real(_));
+                self.all_blob &= matches!(value, Value::Blob(_));
+            }
+            kind @ (Declared::Int8 | Declared::Int16 | Declared::Int32) => {
+                if let Some(x) = as_i64(value) {
+                    self.fits &= match kind {
+                        Declared::Int8 => i8::try_from(x).is_ok(),
+                        Declared::Int16 => i16::try_from(x).is_ok(),
+                        _ => i32::try_from(x).is_ok(),
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn finish(&self) -> Declared {
+        match self.declared {
+            // NUMERIC and untyped columns: decide from what the cells hold.
+            Declared::Unknown if self.all_integer => Declared::Int64,
+            Declared::Unknown if self.all_numeric => Declared::Float64,
+            Declared::Unknown if self.all_blob && self.any_present => Declared::Blob,
+            Declared::Unknown => Declared::Text,
+            // A value outside the declared width would otherwise be nulled; widen instead.
+            Declared::Int8 | Declared::Int16 | Declared::Int32 if !self.fits => Declared::Int64,
+            kind => kind,
+        }
+    }
+}
+
 fn build_column(declared: &str, values: &[Value]) -> Result<ArrayRef, String> {
+    let mut scan = KindScan::new(declared);
+    for value in values {
+        scan.add(value);
+    }
+    build_column_as(scan.finish(), values)
+}
+
+/// Builds the column of type `kind` (as settled by [`KindScan::finish`]) from `values`.
+pub(crate) fn build_column_as(kind: Declared, values: &[Value]) -> Result<ArrayRef, String> {
     macro_rules! numeric {
         ($builder:ident, $convert:expr) => {{
             let mut builder = $builder::new();
@@ -802,31 +879,6 @@ fn build_column(declared: &str, values: &[Value]) -> Result<ArrayRef, String> {
             }
             Arc::new(builder.finish()) as ArrayRef
         }};
-    }
-    let mut kind = declared_kind(declared);
-    if kind == Declared::Unknown {
-        // NUMERIC and untyped columns: decide from what the cells hold.
-        let present = || values.iter().filter(|v| !matches!(v, Value::Null));
-        kind = if present().all(|v| matches!(v, Value::Integer(_))) {
-            Declared::Int64
-        } else if present().all(|v| matches!(v, Value::Integer(_) | Value::Real(_))) {
-            Declared::Float64
-        } else if present().all(|v| matches!(v, Value::Blob(_))) && present().next().is_some() {
-            Declared::Blob
-        } else {
-            Declared::Text
-        };
-    }
-    if matches!(kind, Declared::Int8 | Declared::Int16 | Declared::Int32) {
-        // A value outside the declared width would otherwise be nulled; widen instead.
-        let fits = |x: i64| match kind {
-            Declared::Int8 => i8::try_from(x).is_ok(),
-            Declared::Int16 => i16::try_from(x).is_ok(),
-            _ => i32::try_from(x).is_ok(),
-        };
-        if values.iter().filter_map(as_i64).any(|x| !fits(x)) {
-            kind = Declared::Int64;
-        }
     }
     Ok(match kind {
         Declared::Bool => numeric!(BooleanBuilder, |v: &Value| as_f64(v).map(|x| x != 0.0)),
