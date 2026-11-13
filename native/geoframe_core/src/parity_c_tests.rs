@@ -412,8 +412,61 @@ fn frechet_densified_and_non_lines() {
         a.frechet_distance(&b, Some(0.5)).unwrap()[0],
         2.5_f64.hypot(1.0),
     );
-    let p = one("POINT (0 0)");
-    assert_eq!(a.frechet_distance(&p, None).unwrap()[0], None);
+}
+
+/// Shapely 2.2 / GEOS 3.14 (`shapely.frechet_distance(a, b[, densify=0.5])`): GEOS walks the
+/// flat coordinate sequence of any geometry (all parts, holes included); `densify` splits
+/// every consecutive pair of that sequence, except for a geometry of dimension 0.
+fn frechet(a: &str, b: &str, densify: Option<f64>) -> Option<f64> {
+    one(a).frechet_distance(&one(b), densify).unwrap()[0]
+}
+
+#[test]
+fn frechet_any_geometry_type_as_geos() {
+    let line = "LINESTRING (0 0, 10 0)";
+    close(frechet("POINT (1 1)", "POINT (4 5)", None), 5.0);
+    close(
+        frechet(
+            "MULTIPOINT ((0 0), (3 4), (1 1))",
+            "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))",
+            None,
+        ),
+        4.0,
+    );
+    let holed = "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 4 2, 4 4, 2 4, 2 2))";
+    close(frechet(holed, line, None), 200.0_f64.sqrt());
+    let multi = "MULTILINESTRING ((0 0, 1 0), (5 5, 6 5))";
+    close(frechet(multi, line, None), 50.0_f64.sqrt());
+    let collection = "GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (0 0, 2 2))";
+    close(frechet(collection, line, None), 68.0_f64.sqrt());
+    let mpoly = "MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), ((5 5, 6 5, 6 6, 5 5)))";
+    close(frechet(mpoly, "POINT (0 0)", None), 72.0_f64.sqrt());
+}
+
+#[test]
+fn frechet_densify_spans_the_flat_sequence_except_for_points() {
+    let line = "LINESTRING (0 0, 10 0)";
+    let holed = "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 4 2, 4 4, 2 4, 2 2))";
+    close(frechet(holed, line, Some(0.5)), 125.0_f64.sqrt());
+    let multi = "MULTILINESTRING ((0 0, 1 0), (5 5, 6 5))";
+    close(frechet(multi, line, Some(0.5)), 41.0_f64.sqrt());
+    // A MultiPoint is not densified: 4.0, not the 3.2 a densified sequence would give.
+    close(
+        frechet(
+            "MULTIPOINT ((0 0), (3 4), (1 1))",
+            "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))",
+            Some(0.5),
+        ),
+        4.0,
+    );
+}
+
+#[test]
+fn frechet_empty_is_null() {
+    let line = "LINESTRING (0 0, 10 0)";
+    assert_eq!(frechet("LINESTRING EMPTY", line, None), None);
+    assert_eq!(frechet(line, "POLYGON EMPTY", None), None);
+    assert_eq!(frechet("GEOMETRYCOLLECTION EMPTY", line, Some(0.5)), None);
 }
 
 // -- shortest_line --------------------------------------------------------------------

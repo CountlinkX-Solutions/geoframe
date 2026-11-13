@@ -12,8 +12,9 @@
 //!   of one geometry to the *linework* of the other (not to its nearest vertex), both ways.
 //!   Polygons count as their rings only: a vertex inside a polygon is not at distance zero.
 //!   `densify` adds vertices at `k / round(1 / densify)` along every segment first.
-//! * `frechet_distance` is the discrete Fréchet distance over vertices and needs two
-//!   linestrings; anything else is null.
+//! * `frechet_distance` is the discrete Fréchet distance over the flat vertex sequence of any
+//!   geometry (all parts and rings in order, as GEOS); `densify` splits each consecutive
+//!   pair, except for point-only geometries; an empty geometry gives null.
 //! * `remove_repeated_points` with a tolerance keeps the first and the last vertex of every
 //!   line and ring, so endpoints and ring closure survive.
 
@@ -372,11 +373,22 @@ fn directed_hausdorff(
         .reduce(f64::max)
 }
 
-fn as_line_string(g: &Geometry<f64>) -> Option<LineString<f64>> {
+/// The coordinates GEOS walks for a Fréchet distance: every vertex in order, densified
+/// across each consecutive pair (also between parts) unless the geometry has dimension 0.
+fn frechet_sequence(g: &Geometry<f64>, pieces: Option<usize>) -> Vec<Coord<f64>> {
+    let flat = LineString::new(g.coords_iter().collect());
+    match pieces {
+        Some(n) if has_dimension(g) => densified(&flat, n).0,
+        _ => flat.0,
+    }
+}
+
+/// Whether `g` holds a line or an area (a point-only geometry is never densified).
+fn has_dimension(g: &Geometry<f64>) -> bool {
     match g {
-        Geometry::LineString(l) if !l.0.is_empty() => Some(l.clone()),
-        Geometry::Line(l) => Some(LineString::from(vec![l.start, l.end])),
-        _ => None,
+        Geometry::Point(_) | Geometry::MultiPoint(_) => false,
+        Geometry::GeometryCollection(c) => c.0.iter().any(has_dimension),
+        _ => true,
     }
 }
 
@@ -403,7 +415,8 @@ impl GeoColumn {
         )
     }
 
-    /// Discrete Fréchet distance between each pair of linestrings; other types are null.
+    /// Discrete Fréchet distance between each pair, as GEOS: over the flat coordinate
+    /// sequence of each geometry (every part and ring, in order); null when either is empty.
     pub fn frechet_distance(
         &self,
         other: &GeoColumn,
@@ -413,12 +426,11 @@ impl GeoColumn {
         check_densify_budget(&[self, other], pieces)?;
         let both = |a: &Geometry<f64>, b: &Geometry<f64>| {
             guarded(|| {
-                let (a, b) = (as_line_string(a)?, as_line_string(b)?);
-                let (a, b) = match pieces {
-                    Some(n) => (densified(&a, n), densified(&b, n)),
-                    None => (a, b),
-                };
-                Some(Euclidean.frechet_distance(&a, &b))
+                let (a, b) = (frechet_sequence(a, pieces), frechet_sequence(b, pieces));
+                if a.is_empty() || b.is_empty() {
+                    return None;
+                }
+                Some(Euclidean.frechet_distance(&LineString::new(a), &LineString::new(b)))
             })
             .flatten()
         };

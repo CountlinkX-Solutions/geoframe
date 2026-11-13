@@ -458,6 +458,11 @@ def build_measures():
     w.group("frechet_distance", "float", "fd", lambda a, b: a.frechet_distance(b, align=False))
     w.group("frechet_distance", "float", "fd", lambda a, b: a.frechet_distance(b, densify=0.5, align=False),
             label="frechet_distance(densify=0.5)", args={"densify": 0.5})
+    # B9: every geometry type (GEOS walks the flat coordinate sequence), with and without densify.
+    w.group("frechet_distance", "float", "hd", lambda a, b: a.frechet_distance(b, align=False),
+            label="frechet_distance(mixed types)")
+    w.group("frechet_distance", "float", "hd", lambda a, b: a.frechet_distance(b, densify=0.5, align=False),
+            label="frechet_distance(mixed types, densify=0.5)", args={"densify": 0.5})
     w.dump()
 
 

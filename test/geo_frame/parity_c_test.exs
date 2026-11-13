@@ -187,11 +187,33 @@ defmodule GeoFrame.ParityCTest do
       assert_raise ArgumentError, ~r/CRS/, fn -> GeoSeries.hausdorff_distance(b, c) end
     end
 
-    test "frechet of a reversed line; non-lines are null" do
+    test "frechet of a reversed line; null rows are null" do
       a = s(["LINESTRING (0 0, 10 0)", "POINT (0 0)", nil])
-      assert list(GeoSeries.frechet_distance(a, "LINESTRING (10 0, 0 0)")) == [10.0, nil, nil]
-      assert list(GeoSeries.frechet_distance(a, a)) == [0.0, nil, nil]
+      assert [10.0, d, nil] = list(GeoSeries.frechet_distance(a, "LINESTRING (10 0, 0 0)"))
+      assert close?(d, 10.0)
+      assert list(GeoSeries.frechet_distance(a, a)) == [0.0, 0.0, nil]
+    end
 
+    # shapely.frechet_distance(a, b[, densify=0.5]) in Shapely 2.2 / GEOS 3.14: the flat
+    # coordinate sequence of any geometry; densify skips point-only geometries; empty is nan.
+    test "frechet of every geometry type, as GEOS" do
+      line = "LINESTRING (0 0, 10 0)"
+      holed = "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 4 2, 4 4, 2 4, 2 2))"
+      multi = "MULTILINESTRING ((0 0, 1 0), (5 5, 6 5))"
+
+      assert [d] = list(GeoSeries.frechet_distance(s([holed]), line))
+      assert close?(d, :math.sqrt(200))
+      assert [d] = list(GeoSeries.frechet_distance(s([holed]), line, densify: 0.5))
+      assert close?(d, :math.sqrt(125))
+      assert [d] = list(GeoSeries.frechet_distance(s([multi]), line, densify: 0.5))
+      assert close?(d, :math.sqrt(41))
+
+      assert [d] = list(GeoSeries.frechet_distance(s(["POINT (1 1)"]), "POINT (4 5)"))
+      assert close?(d, 5.0)
+      assert [nil] = list(GeoSeries.frechet_distance(s(["LINESTRING EMPTY"]), line))
+    end
+
+    test "frechet densified" do
       b = s(["LINESTRING (0 1, 5 1, 10 1)"])
 
       assert [d] =
