@@ -51,8 +51,8 @@ you need a stable Rust toolchain. Elixir 1.17 or later; development uses Elixir 
 
 ### Precompiled NIFs (from 0.2.0)
 
-From `0.2.0`, the NIF is downloaded as a precompiled library instead of being compiled, so
-**no Rust toolchain is needed** when you install from Hex. Each release attaches builds for
+From `0.2.0`, each release attaches precompiled NIF libraries, so once GeoFrame is on Hex
+**no Rust toolchain will be needed** to install it from there. Each release attaches builds for
 `aarch64-apple-darwin`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`,
 `x86_64-apple-darwin`, `x86_64-pc-windows-gnu`, `x86_64-pc-windows-msvc`,
 `x86_64-unknown-freebsd`, `x86_64-unknown-linux-gnu` and `x86_64-unknown-linux-musl` (NIF
