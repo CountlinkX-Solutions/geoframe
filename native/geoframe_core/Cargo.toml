@@ -16,7 +16,7 @@ geo-traits = "0.3"
 geojson = "1"
 geoarrow-array = "0.9"
 geoarrow-expr-geo = "0.9"
-geoarrow-schema = "0.9"
+geoarrow-schema = "0.10"
 geoparquet = "0.9"
 parquet = { version = "59", default-features = false, features = ["arrow", "snap", "brotli", "lz4", "zstd", "flate2-rust_backend"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
