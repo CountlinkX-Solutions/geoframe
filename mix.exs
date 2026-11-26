@@ -1,7 +1,7 @@
 defmodule GeoFrame.MixProject do
   use Mix.Project
 
-  @version "0.3.2"
+  @version "0.3.3"
   @source_url "https://github.com/CountlinkX-Solutions/geoframe"
 
   def project do
@@ -80,7 +80,8 @@ defmodule GeoFrame.MixProject do
       licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => @source_url,
-        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
+        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
+        "Docs" => "https://hexdocs.pm/geoframe"
       },
       files:
         ~w(lib native/geoframe_core/src native/geoframe_core/Cargo.toml

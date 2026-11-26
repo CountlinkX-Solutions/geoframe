@@ -8,8 +8,22 @@ change before 1.0.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-26
+
+The first release published to Hex, as the `geoframe` package. The Hex package downloads a
+precompiled NIF for nine targets, verified against the checksum file it ships, so it needs no
+Rust toolchain. The `v0.3.3` git tag still builds the NIF from source (a stable Rust toolchain is
+required). No public function changes.
+
 ### Documentation
 
+- The README installs GeoFrame from Hex (`{:geoframe, "~> 0.3.3"}`), keeps the git tag and
+  `path:` dependency as the way to build from source, and shows Hex and HexDocs badges.
+- The release steps in the README publish the package from `MIX_ENV=prod` (where Rustler is an
+  optional dependency) and the docs from `:dev`.
+- The Hex package links to its documentation on HexDocs.
+- The README link to the reference suite guide (`test/reference/README.md`) is an absolute
+  GitHub URL: as a relative link, ExDoc pointed it at the README page itself.
 - Community files for the public repository: a contributing guide, the Contributor Covenant
   2.1 code of conduct, a security policy, issue and pull request templates, and Dependabot
   configuration. The README lists the supported Elixir, OTP and Rust versions, and both Rust
@@ -406,7 +420,8 @@ through Hex. The NIF is compiled on your machine, so you need a stable Rust tool
   `GeoDataFrame.set_crs(frame, "EPSG:2223")`, the same projection in international feet (about
   2 ppm off, fine for maps).
 
-[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.3
 [0.3.2]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.2
 [0.3.1]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.1
 [0.3.0]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.0
