@@ -53,7 +53,7 @@ jobs:
       # `GeoFrame.Native`, so a restored `_build` that is already up to date would otherwise
       # leave the NIF missing (CI on main for 3d83621).
       - name: Cache deps and build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             deps
