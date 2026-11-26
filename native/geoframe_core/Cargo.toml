@@ -6,7 +6,7 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
-arrow-array = "59"
+arrow-array = "60"
 arrow-cast = "59"
 arrow-ipc = { version = "59", features = ["lz4", "zstd"] }
 arrow-schema = "59"
