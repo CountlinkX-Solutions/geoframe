@@ -8,6 +8,13 @@ change before 1.0.
 
 ## [Unreleased]
 
+### Documentation
+
+- Community files for the public repository: a contributing guide, the Contributor Covenant
+  2.1 code of conduct, a security policy, issue and pull request templates, and Dependabot
+  configuration. The README lists the supported Elixir, OTP and Rust versions, and both Rust
+  crates declare their Apache-2.0 license.
+
 ## [0.3.2] - 2026-11-13
 
 Like earlier releases, it is distributed through the `v0.3.2` git tag and GitHub release, not

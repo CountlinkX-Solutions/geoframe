@@ -78,7 +78,10 @@ defmodule GeoFrame.MixProject do
   defp package do
     [
       licenses: ["Apache-2.0"],
-      links: %{"GitHub" => @source_url},
+      links: %{
+        "GitHub" => @source_url,
+        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
+      },
       files:
         ~w(lib native/geoframe_core/src native/geoframe_core/Cargo.toml
                 native/geoframe_native/src native/geoframe_native/Cargo.toml
