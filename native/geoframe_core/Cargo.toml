@@ -9,7 +9,7 @@ publish = false
 arrow-array = "59"
 arrow-cast = "59"
 arrow-ipc = { version = "59", features = ["lz4", "zstd"] }
-arrow-schema = "59"
+arrow-schema = "60"
 arrow-select = "59"
 geo = "0.33"
 geo-traits = "0.3"
