@@ -9,7 +9,7 @@ all welcome. Everyone taking part is expected to follow the
 
 Open an issue with the **Bug report** template. The most useful reports include:
 
-- the GeoFrame version (release tag or commit SHA);
+- the GeoFrame version (Hex version, release tag or commit SHA);
 - the Elixir and OTP versions (`elixir --version`);
 - the operating system and target (for example `x86_64-unknown-linux-gnu`);
 - whether the NIF was built from source or downloaded precompiled;

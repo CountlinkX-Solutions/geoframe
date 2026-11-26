@@ -1,11 +1,13 @@
 # GeoFrame
 
 [![CI](https://github.com/CountlinkX-Solutions/geoframe/actions/workflows/ci.yml/badge.svg)](https://github.com/CountlinkX-Solutions/geoframe/actions/workflows/ci.yml)
+[![Hex version](https://img.shields.io/hexpm/v/geoframe.svg)](https://hex.pm/packages/geoframe)
+[![HexDocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/geoframe)
 
 GeoPandas-style geospatial dataframes for Elixir, powered by
 [GeoArrow](https://geoarrow.org) and Rust.
 
-> Status: latest release `0.3.2`, distributed from GitHub (not on Hex yet); see the
+> Status: latest release `0.3.3`, published on [Hex](https://hex.pm/packages/geoframe); see the
 > [changelog](CHANGELOG.md). Behaviour is checked against GeoPandas 1.2 / Shapely 2.2 on
 > 19 118 reference cases, but the API may still change before 1.0.
 
@@ -36,7 +38,7 @@ to both the attributes and the geometry, so they never drift apart.
 ```elixir
 def deps do
   [
-    {:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.3.2"},
+    {:geoframe, "~> 0.3.3"},
     # optional
     {:kino, "~> 0.19"},           # Livebook rendering, deck.gl widget, Smart Cells
     {:kino_maplibre, "~> 0.1"},   # the Map tab (the deck.gl widget needs nothing extra)
@@ -46,8 +48,17 @@ def deps do
 end
 ```
 
-GeoFrame is not on Hex yet, so depend on the `v0.3.2` git tag as above (or use a `path:`
-dependency on a checkout). A git or path dependency compiles the NIF on your machine with
+The Hex package downloads a precompiled NIF (no Rust toolchain needed) for the nine targets
+listed under *Precompiled NIFs* below, verified against the checksum file in the package.
+
+To build from source instead, depend on the `v0.3.3` git tag (or use a `path:` dependency on a
+checkout):
+
+```elixir
+{:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.3.3"}
+```
+
+A git or path dependency compiles the NIF on your machine with
 [Rustler](https://hex.pm/packages/rustler) (a dependency of GeoFrame; you do not add it), so
 you need a stable Rust toolchain.
 
@@ -55,26 +66,27 @@ you need a stable Rust toolchain.
 
 - **Elixir** 1.17 or later. CI tests Elixir 1.17 / OTP 27 and Elixir 1.19 / OTP 28;
   development uses Elixir 1.19 / OTP 28 (`.tool-versions`).
-- **Rust** (stable) only when the NIF is built from source, which today means every git or path
-  dependency. A precompiled NIF needs no Rust toolchain.
+- **Rust** (stable) only when the NIF is built from source: a git or path dependency, or
+  `GEOFRAME_BUILD=true` (for example on a platform without a precompiled build). The Hex
+  package's precompiled NIF needs no Rust toolchain.
 
 ### Precompiled NIFs (from 0.2.0)
 
-From `0.2.0`, each release attaches precompiled NIF libraries, so once GeoFrame is on Hex
-**no Rust toolchain will be needed** to install it from there. Each release attaches builds for
+From `0.2.0`, each release attaches precompiled NIF libraries, and from `0.3.3` GeoFrame is on
+Hex, so installing it from there needs **no Rust toolchain**. Each release attaches builds for
 `aarch64-apple-darwin`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`,
 `x86_64-apple-darwin`, `x86_64-pc-windows-gnu`, `x86_64-pc-windows-msvc`,
 `x86_64-unknown-freebsd`, `x86_64-unknown-linux-gnu` and `x86_64-unknown-linux-musl` (NIF
 version 2.15), through [rustler_precompiled](https://hex.pm/packages/rustler_precompiled). The
 download is verified against the checksum file shipped in the Hex package.
 
+- **Hex packages** (from 0.3.3) carry the checksum file and download the precompiled NIF.
 - **Git and path dependencies build the NIF from source automatically** (needs a Rust
   toolchain; Rustler is fetched as a dependency of GeoFrame). The precompiled download is
   verified against a checksum file that only the Hex package ships (it is generated from the
   release assets, after the tag exists), so a package without it, such as
-  `{:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.3.2"}`, is compiled instead.
+  `{:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.3.3"}`, is compiled instead.
   No environment variable is needed.
-- **Hex packages** (a later release) carry the checksum file and download the precompiled NIF.
 - **`GEOFRAME_BUILD=true`** forces a source build even when a checksum file is present, for
   example if your platform has no precompiled build. Set it for both `mix deps.get` and
   `mix deps.compile`, or add `{:rustler, "~> 0.38"}` to your own deps.
@@ -259,7 +271,8 @@ mix docs                  # ExDoc; CI fails on warnings
   fixtures in `test/reference/fixtures/`, and `test/geo_frame/reference_test.exs` compares
   GeoFrame with them in CI without Python. `REFERENCE_REPORT=1 mix test
   test/geo_frame/reference_test.exs` prints the cases per operation; known differences live in
-  `test/reference/known_deviations.exs`. See [test/reference/README.md](test/reference/README.md).
+  `test/reference/known_deviations.exs`. See
+  [test/reference/README.md](https://github.com/CountlinkX-Solutions/geoframe/blob/main/test/reference/README.md).
 - **I/O cross-check**: `scripts/crosscheck_io.sh` writes files with GeoFrame and reads them
   back in GeoPandas; `scripts/crosscheck_postgis.sh` does the same for PostGIS.
 - **PostGIS tests** are excluded unless a database is given:
@@ -270,20 +283,29 @@ mix docs                  # ExDoc; CI fails on warnings
   ```
 
 - **Benchmarks**: `mix run scripts/bench_sjoin.exs` times large spatial joins.
+- **Docs links**: `mix docs --warnings-as-errors` rejects a relative README link to a file
+  that is not an ExDoc extra (the `extras` in `mix.exs`), and a relative link whose file name
+  matches an extra (such as `test/reference/README.md`) silently points to that extra, so link
+  such files with an absolute GitHub URL, as the Contributing section does.
 - **Releasing precompiled NIFs**: pushing a `v*` tag runs `.github/workflows/release.yml`,
   which builds `libgeoframe_native` for every target listed in `lib/geo_frame/native.ex` and attaches the
   archives to the GitHub release of that tag (creating it if needed; the tag must equal
   `v` plus the `mix.exs` version). `workflow_dispatch` runs the same builds without
-  publishing. Once the release has all assets, before `mix hex.publish`, generate the checksum
-  file that goes into the package:
+  publishing. Once the release has all assets, generate the checksum file that goes into the
+  package, then publish the package and its docs:
 
   ```sh
   mix rustler_precompiled.download GeoFrame.Native --all --print
+  MIX_ENV=prod mix hex.publish package
+  mix hex.publish docs
   ```
 
-  It writes `checksum-Elixir.GeoFrame.Native.exs` (not committed to git; `mix hex.build`
-  picks it up through `checksum-*.exs`). Keep the target list in `release.yml` and
-  `lib/geo_frame/native.ex` in sync.
+  The first command writes `checksum-Elixir.GeoFrame.Native.exs` (not committed to git;
+  `mix hex.build` picks it up through `checksum-*.exs`). The package is published from `:prod`
+  because `build_from_source?/0` in `mix.exs` is true in `:dev` and `:test`, where the package
+  would list `rustler` as a required dependency (in `:prod`, with the checksum file present, it
+  is optional), and the docs from `:dev` because ExDoc is a `:dev`/`:test` dependency. Keep the
+  target list in `release.yml` and `lib/geo_frame/native.ex` in sync.
 
 ## Contributing
 
