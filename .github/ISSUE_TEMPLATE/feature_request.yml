@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a new function, option or file format.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what is missing or hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: The function, option or format you would like, with a short example if possible.
+      render: elixir
+  - type: input
+    id: geopandas
+    attributes:
+      label: GeoPandas equivalent
+      description: If GeoPandas or Shapely already has this, a link to its documentation.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today, or other approaches.

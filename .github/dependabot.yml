@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # mix.exs and mix.lock at the repository root.
+  - package-ecosystem: mix
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # The Cargo workspace (Cargo.toml and Cargo.lock) is at the repository root.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci

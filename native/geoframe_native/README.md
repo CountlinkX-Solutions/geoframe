@@ -1,20 +1,14 @@
-# NIF for GeoFrame.Native
+# geoframe_native
 
-## To build the NIF module:
+The Rustler NIF crate behind `GeoFrame.Native`. It is a thin wrapper around
+[`geoframe_core`](../geoframe_core): it converts between BEAM terms and core types, holds
+geometry columns and streaming batch readers as Rustler resources, and registers its functions
+under `Elixir.GeoFrame.Native`. All geometry, CRS and I/O logic, and its tests, live in
+`geoframe_core`.
 
-- Your NIF will now build along with your project.
-
-## To load the NIF:
-
-```elixir
-defmodule GeoFrame.Native do
-  use Rustler, otp_app: :geoframe, crate: "geoframe_native"
-
-  # When your NIF is loaded, it will override this function.
-  def add(_a, _b), do: :erlang.nif_error(:nif_not_loaded)
-end
-```
-
-## Examples
-
-[This](https://github.com/rusterlium/NifIo) is a complete example of a NIF written in Rust.
+- Built as a `cdylib` (`libgeoframe_native`); not published to crates.io (`publish = false`).
+- Long-running calls run on dirty CPU or dirty I/O schedulers.
+- It has no Rust tests: NIF symbols (`enif_*`) only resolve inside the BEAM, so the crate is
+  exercised by the Elixir test suite (`mix test`).
+- A checkout or a git or path dependency builds it from source through Rustler. Releases attach
+  precompiled builds of it for `rustler_precompiled`; see the main [README](../../README.md).

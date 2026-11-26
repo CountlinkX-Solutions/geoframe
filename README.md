@@ -1,5 +1,7 @@
 # GeoFrame
 
+[![CI](https://github.com/CountlinkX-Solutions/geoframe/actions/workflows/ci.yml/badge.svg)](https://github.com/CountlinkX-Solutions/geoframe/actions/workflows/ci.yml)
+
 GeoPandas-style geospatial dataframes for Elixir, powered by
 [GeoArrow](https://geoarrow.org) and Rust.
 
@@ -47,7 +49,14 @@ end
 GeoFrame is not on Hex yet, so depend on the `v0.3.2` git tag as above (or use a `path:`
 dependency on a checkout). A git or path dependency compiles the NIF on your machine with
 [Rustler](https://hex.pm/packages/rustler) (a dependency of GeoFrame; you do not add it), so
-you need a stable Rust toolchain. Elixir 1.17 or later; development uses Elixir 1.19 / OTP 28.
+you need a stable Rust toolchain.
+
+### Supported versions
+
+- **Elixir** 1.17 or later. CI tests Elixir 1.17 / OTP 27 and Elixir 1.19 / OTP 28;
+  development uses Elixir 1.19 / OTP 28 (`.tool-versions`).
+- **Rust** (stable) only when the NIF is built from source, which today means every git or path
+  dependency. A precompiled NIF needs no Rust toolchain.
 
 ### Precompiled NIFs (from 0.2.0)
 
@@ -275,6 +284,16 @@ mix docs                  # ExDoc; CI fails on warnings
   It writes `checksum-Elixir.GeoFrame.Native.exs` (not committed to git; `mix hex.build`
   picks it up through `checksum-*.exs`). Keep the target list in `release.yml` and
   `lib/geo_frame/native.ex` in sync.
+
+## Contributing
+
+Contributions are welcome; see
+[CONTRIBUTING.md](https://github.com/CountlinkX-Solutions/geoframe/blob/main/CONTRIBUTING.md).
+Everyone taking part is expected to follow the
+[Code of Conduct](https://github.com/CountlinkX-Solutions/geoframe/blob/main/CODE_OF_CONDUCT.md).
+Report security vulnerabilities privately as described in
+[SECURITY.md](https://github.com/CountlinkX-Solutions/geoframe/blob/main/SECURITY.md), not in
+public issues.
 
 ## License
 

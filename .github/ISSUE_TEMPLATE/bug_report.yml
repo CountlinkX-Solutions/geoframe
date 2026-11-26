@@ -1,0 +1,77 @@
+name: Bug report
+description: Report a wrong result, a crash, or a build or install failure.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Known differences from GeoPandas are listed in
+        [docs/parity.md](https://github.com/CountlinkX-Solutions/geoframe/blob/main/docs/parity.md).
+        Do not report security vulnerabilities here; see
+        [SECURITY.md](https://github.com/CountlinkX-Solutions/geoframe/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: GeoFrame version
+      description: Release tag or commit SHA.
+      placeholder: v0.3.2
+    validations:
+      required: true
+  - type: input
+    id: elixir-otp
+    attributes:
+      label: Elixir and OTP versions
+      description: The output of `elixir --version`.
+      placeholder: Elixir 1.19.5 (compiled with Erlang/OTP 28)
+    validations:
+      required: true
+  - type: input
+    id: os-target
+    attributes:
+      label: Operating system and target
+      placeholder: Ubuntu 24.04, x86_64-unknown-linux-gnu
+    validations:
+      required: true
+  - type: dropdown
+    id: nif
+    attributes:
+      label: How was the NIF obtained?
+      options:
+        - Built from source (git or path dependency, a checkout, or GEOFRAME_BUILD=true)
+        - Precompiled (downloaded by rustler_precompiled)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: rust
+    attributes:
+      label: Rust version
+      description: For source builds only, the output of `rustc --version`.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: >-
+        The smallest Elixir code that shows the problem. If a file is needed, attach the smallest
+        one that reproduces it.
+      render: elixir
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Error output
+      description: Stack trace, compiler or build output.
+      render: text
+  - type: textarea
+    id: geopandas
+    attributes:
+      label: GeoPandas result
+      description: If the result differs from GeoPandas / Shapely, what they return for the same input.

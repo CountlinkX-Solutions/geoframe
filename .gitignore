@@ -31,3 +31,8 @@ geoframe-*.tar
 
 # Generated from the GitHub release assets at release time (see README "Releasing").
 /checksum-*.exs
+
+# Local planning notes and tool indexes; not part of the project.
+/odd/
+/.codegraph/
+/.atl/
