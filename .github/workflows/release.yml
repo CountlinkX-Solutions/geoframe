@@ -50,7 +50,7 @@ jobs:
 
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v7
 
       - name: Read the project version from mix.exs
         shell: bash
@@ -142,7 +142,7 @@ jobs:
 
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v7
 
       - name: Read the project version from mix.exs
         shell: bash
