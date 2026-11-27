@@ -5,6 +5,10 @@ defmodule GeoFrame.Application do
 
   use Application
 
+  # Kino is optional. Elixir 1.19 also checks a remote call made through a variable that holds
+  # the module, so this attribute is what keeps `register_smart_cells/0` from warning without it.
+  @compile {:no_warn_undefined, Kino.SmartCell}
+
   @smart_cells [GeoFrame.Kino.ReadFileCell, GeoFrame.Kino.SpatialJoinCell]
 
   @impl true
@@ -22,12 +26,9 @@ defmodule GeoFrame.Application do
     end
   end
 
-  # The module held in a variable keeps the optional `Kino.SmartCell` out of compile-time checks.
   defp register_smart_cells do
-    registry = Kino.SmartCell
-
-    if Code.ensure_loaded?(registry) do
-      for module <- @smart_cells, Code.ensure_loaded?(module), do: registry.register(module)
+    if Code.ensure_loaded?(Kino.SmartCell) do
+      for module <- @smart_cells, Code.ensure_loaded?(module), do: Kino.SmartCell.register(module)
     end
 
     :ok
