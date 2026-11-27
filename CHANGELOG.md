@@ -8,6 +8,12 @@ change before 1.0.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-26
+
+A patch release: installing without the optional `kino` dependency compiles without warnings,
+and each GitHub release now attaches the license texts of the third-party Rust crates linked
+into the precompiled NIFs. No public function changes.
+
 ### Added
 
 - Each GitHub release attaches `THIRD_PARTY_LICENSES.html`, the license texts of the
@@ -434,7 +440,8 @@ through Hex. The NIF is compiled on your machine, so you need a stable Rust tool
   `GeoDataFrame.set_crs(frame, "EPSG:2223")`, the same projection in international feet (about
   2 ppm off, fine for maps).
 
-[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/CountlinkX-Solutions/geoframe/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.4
 [0.3.3]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.3
 [0.3.2]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.2
 [0.3.1]: https://github.com/CountlinkX-Solutions/geoframe/releases/tag/v0.3.1

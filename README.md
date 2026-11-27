@@ -7,7 +7,7 @@
 GeoPandas-style geospatial dataframes for Elixir, powered by
 [GeoArrow](https://geoarrow.org) and Rust.
 
-> Status: latest release `0.3.3`, published on [Hex](https://hex.pm/packages/geoframe); see the
+> Status: latest release `0.3.4`, published on [Hex](https://hex.pm/packages/geoframe); see the
 > [changelog](CHANGELOG.md). Behaviour is checked against GeoPandas 1.2 / Shapely 2.2 on
 > 19 118 reference cases, but the API may still change before 1.0.
 
@@ -38,7 +38,7 @@ to both the attributes and the geometry, so they never drift apart.
 ```elixir
 def deps do
   [
-    {:geoframe, "~> 0.3.3"},
+    {:geoframe, "~> 0.3.4"},
     # optional
     {:kino, "~> 0.19"},           # Livebook rendering, deck.gl widget, Smart Cells
     {:kino_maplibre, "~> 0.1"},   # the Map tab (the deck.gl widget needs nothing extra)
@@ -51,11 +51,11 @@ end
 The Hex package downloads a precompiled NIF (no Rust toolchain needed) for the nine targets
 listed under *Precompiled NIFs* below, verified against the checksum file in the package.
 
-To build from source instead, depend on the `v0.3.3` git tag (or use a `path:` dependency on a
+To build from source instead, depend on the `v0.3.4` git tag (or use a `path:` dependency on a
 checkout):
 
 ```elixir
-{:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.3.3"}
+{:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.3.4"}
 ```
 
 A git or path dependency compiles the NIF on your machine with
@@ -85,7 +85,7 @@ download is verified against the checksum file shipped in the Hex package.
   toolchain; Rustler is fetched as a dependency of GeoFrame). The precompiled download is
   verified against a checksum file that only the Hex package ships (it is generated from the
   release assets, after the tag exists), so a package without it, such as
-  `{:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.3.3"}`, is compiled instead.
+  `{:geoframe, github: "CountlinkX-Solutions/geoframe", tag: "v0.3.4"}`, is compiled instead.
   No environment variable is needed.
 - **`GEOFRAME_BUILD=true`** forces a source build even when a checksum file is present, for
   example if your platform has no precompiled build. Set it for both `mix deps.get` and
