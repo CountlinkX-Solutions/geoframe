@@ -14,7 +14,7 @@ body:
     attributes:
       label: GeoFrame version
       description: Hex version, release tag or commit SHA.
-      placeholder: 0.3.3
+      placeholder: 0.3.4
     validations:
       required: true
   - type: input
