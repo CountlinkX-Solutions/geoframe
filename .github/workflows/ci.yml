@@ -87,6 +87,30 @@ jobs:
           GEOFRAME_POSTGIS_URL: postgres://postgres:geoframe@127.0.0.1:5432/postgres
         run: mix test --only postgis
 
+      # The next two steps build Explorer again in a fresh build directory, and fetching its
+      # precompiled NIF with :httpc fails on GitHub's long redirect headers (header_too_long).
+      # Prefetch it into the rustler_precompiled cache with curl; the checksum is still verified.
+      - name: Prefetch Explorer's precompiled NIF
+        if: matrix.elixir == '1.19'
+        run: |
+          version=$(sed -n 's/.*"explorer": {:hex, :explorer, "\([0-9.]*\)".*/\1/p' mix.lock)
+          nif="libexplorer-v${version}-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz"
+          cache="$HOME/.cache/rustler_precompiled/precompiled_nifs"
+          mkdir -p "$cache"
+          curl -fsSL --retry 5 -o "$cache/$nif" \
+            "https://github.com/elixir-nx/explorer/releases/download/v${version}/${nif}"
+
+      # Compiles GeoFrame as a user without the optional dependencies (kino, maplibre,
+      # kino_maplibre, postgrex) gets it, where a call into one of them must not warn. A separate
+      # build path is needed: Mix still loads the optional dependencies already compiled into
+      # `_build/test`, even with `--no-optional-deps`. `--force` recompiles every file, so a
+      # cached build cannot hide a warning.
+      - name: Compile without optional dependencies
+        if: matrix.elixir == '1.19'
+        env:
+          MIX_BUILD_PATH: _build/no_optional_deps
+        run: mix compile --no-optional-deps --warnings-as-errors --force
+
       # Runs the code cells of every notebook against this checkout (Mix.install with a path
       # dependency, so the NIF is built once more in Mix.install's own directory, debug mode).
       # Guards against regressions that only show in a fresh install, such as the optional
@@ -98,15 +122,6 @@ jobs:
         env:
           MIX_ENV: dev
         run: |
-          # Mix.install fetches Explorer's precompiled NIF with :httpc, which fails on
-          # GitHub's long redirect headers (header_too_long). Prefetch it into the
-          # rustler_precompiled cache with curl; the checksum is still verified.
-          version=$(sed -n 's/.*"explorer": {:hex, :explorer, "\([0-9.]*\)".*/\1/p' mix.lock)
-          nif="libexplorer-v${version}-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz"
-          cache="$HOME/.cache/rustler_precompiled/precompiled_nifs"
-          mkdir -p "$cache"
-          curl -fsSL --retry 5 -o "$cache/$nif" \
-            "https://github.com/elixir-nx/explorer/releases/download/v${version}/${nif}"
           for notebook in deck tour spike compare; do
             elixir scripts/run_livemd.exs "notebooks/${notebook}.livemd"
           done
