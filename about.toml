@@ -1,0 +1,41 @@
+# cargo-about configuration for THIRD_PARTY_LICENSES.html, the licenses of the Rust crates
+# linked into the precompiled NIF. The release workflow generates it and attaches it to each
+# GitHub release:
+#
+#     cargo about generate --locked --fail -c about.toml \
+#       -m native/geoframe_native/Cargo.toml -o THIRD_PARTY_LICENSES.html about.hbs
+
+# Exactly the licenses the dependency tree of `geoframe_native` needs, in order of preference
+# for crates that offer a choice. A crate whose license none of these satisfies, such as a new
+# copyleft dependency, fails the generation: review its license before adding it here.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+# The release targets; keep in sync with `targets` in lib/geo_frame/native.ex and the matrix in
+# .github/workflows/release.yml. Crates that only another platform uses are left out.
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-freebsd",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+]
+
+# Test-only crates are not part of the NIF.
+ignore-dev-dependencies = true
+
+# GeoFrame's own crates (`publish = false`) are covered by its LICENSE.
+[private]
+ignore = true

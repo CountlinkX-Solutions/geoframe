@@ -23,3 +23,12 @@ software, provided its source is acknowledged and the data are not presented as 
 version. The data are provided "as is" without warranty of any kind; IOGP and the other
 contributors accept no liability for their use. Use the EPSG registry (https://epsg.org) for the
 authoritative definitions.
+
+Third-party Rust crates
+-----------------------
+The GeoFrame NIF library (libgeoframe_native), including the precompiled builds attached to
+the GitHub releases, statically links third-party Rust crates, each under its own license (MIT,
+Apache-2.0, BSD and other permissive licenses). Releases after 0.3.3 attach
+THIRD_PARTY_LICENSES.html, which lists those crates with their license texts:
+https://github.com/CountlinkX-Solutions/geoframe/releases
+It is generated with cargo-about from about.toml in the repository.
