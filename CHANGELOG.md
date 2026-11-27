@@ -8,6 +8,13 @@ change before 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- Compiling GeoFrame without the optional `kino` dependency no longer warns that
+  `Kino.SmartCell.register/1` is undefined (Elixir 1.19). CI now compiles the library without
+  its optional dependencies (`kino`, `maplibre`, `kino_maplibre`, `postgrex`) with warnings as
+  errors.
+
 ## [0.3.3] - 2026-11-26
 
 The first release published to Hex, as the `geoframe` package. The Hex package downloads a
