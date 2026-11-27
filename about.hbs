@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GeoFrame third-party licenses</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 50rem;
+            margin: 0 auto;
+            padding: 0 1rem;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            body {
+                background: #222;
+                color: #eee;
+            }
+
+            a {
+                color: skyblue;
+            }
+        }
+
+        .licenses-list {
+            list-style-type: none;
+            padding: 0;
+        }
+
+        .license-text {
+            max-height: 15rem;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <h1>Third-party licenses</h1>
+        <p>
+            The precompiled GeoFrame NIF libraries (<code>libgeoframe_native</code>) attached to
+            this release include the Rust crates listed below. GeoFrame itself is licensed under
+            the Apache License 2.0; see
+            <a href="https://github.com/CountlinkX-Solutions/geoframe/blob/main/LICENSE">LICENSE</a>
+            and <a href="https://github.com/CountlinkX-Solutions/geoframe/blob/main/NOTICE">NOTICE</a>.
+            Generated with <a href="https://github.com/EmbarkStudios/cargo-about">cargo-about</a>.
+        </p>
+
+        <h2>Overview</h2>
+        <ul>
+            {{#each overview}}
+            <li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+            {{/each}}
+        </ul>
+
+        <h2>License texts</h2>
+        <ul class="licenses-list">
+            {{#each licenses}}
+            <li>
+                {{#if first_of_kind}}
+                <h3 id="{{id}}">{{name}}</h3>
+                {{/if}}
+                <h4 id="{{id}}-{{@index}}">{{name}}</h4>
+                <p>Used by:</p>
+                <ul>
+                    {{#each used_by}}
+                    <li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+                    {{/each}}
+                </ul>
+                <pre class="license-text">{{text}}</pre>
+            </li>
+            {{/each}}
+        </ul>
+    </main>
+</body>
+
+</html>

@@ -8,6 +8,13 @@ change before 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- Each GitHub release attaches `THIRD_PARTY_LICENSES.html`, the license texts of the
+  third-party Rust crates the precompiled NIFs link, generated with cargo-about from
+  `about.toml` for all nine targets. The release workflow fails when a crate's license is not
+  one of the accepted licenses. The README and NOTICE point to the file.
+
 ## [0.3.3] - 2026-11-26
 
 The first release published to Hex, as the `geoframe` package. The Hex package downloads a
